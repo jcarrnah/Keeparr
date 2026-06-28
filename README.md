@@ -144,6 +144,11 @@ SESSION_SECRET="$(openssl rand -hex 32)" docker compose up -d --build
   the stored Plex/Tautulli/Seerr tokens at rest — rotating it means re-entering
   them.
 - Optional `APP_URL` sets the Plex auth `forwardUrl` for redirect-style logins.
+- **Plain HTTP vs HTTPS:** the session cookie is only marked `Secure` when the
+  request arrives over HTTPS (detected via `x-forwarded-proto` from a TLS reverse
+  proxy). Accessing directly over `http://<host>:<port>` on your LAN works — the
+  cookie isn't forced Secure, so it isn't dropped. Behind a TLS proxy it's set
+  Secure automatically.
 
 The image build runs the test suite as a gate (`RUN npm test`), so a failing
 test blocks the image.

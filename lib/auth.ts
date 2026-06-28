@@ -1,4 +1,4 @@
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import {
   SESSION_COOKIE,
   SESSION_MAX_AGE_SECONDS,
@@ -9,6 +9,22 @@ import { getUser } from './queries';
 import { getApiKey, getOwnerId } from './settings';
 import type { SessionUser } from './types';
 
+/**
+ * Whether the current request is actually served over HTTPS. We only mark the
+ * session cookie `Secure` in that case: over plain HTTP on a LAN (e.g.
+ * http://tower:8767) a Secure cookie is silently dropped by the browser, which
+ * would bounce the user straight back to /login after a successful sign-in.
+ * Behind a TLS reverse proxy, x-forwarded-proto is `https` and we set Secure.
+ */
+async function isHttpsRequest(): Promise<boolean> {
+  try {
+    const proto = (await headers()).get('x-forwarded-proto') ?? '';
+    return proto.split(',')[0].trim().toLowerCase() === 'https';
+  } catch {
+    return false; // headers() unavailable (e.g. unit tests)
+  }
+}
+
 /** Set the signed session cookie for a logged-in Plex user. */
 export async function setSessionCookie(plexUserId: string): Promise<void> {
   const token = await createSessionToken(plexUserId, Date.now());
@@ -16,7 +32,7 @@ export async function setSessionCookie(plexUserId: string): Promise<void> {
   store.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: await isHttpsRequest(),
     path: '/',
     maxAge: SESSION_MAX_AGE_SECONDS,
   });
