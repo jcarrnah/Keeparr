@@ -28,6 +28,7 @@ WORKDIR /app
 LABEL org.opencontainers.image.title="Keeparr" \
       org.opencontainers.image.description="Plex-login web app to decide what media to keep and report what's reclaimable. Tags and reports only — never deletes." \
       org.opencontainers.image.source="https://github.com/drohack/Keeparr" \
+      org.opencontainers.image.licenses="MIT" \
       net.unraid.docker.icon="https://raw.githubusercontent.com/drohack/Keeparr/main/public/icon.png" \
       net.unraid.docker.webui="http://[IP]:[PORT:3000]/"
 

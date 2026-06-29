@@ -164,3 +164,14 @@ sizes** job is separate from the cheap **Library data** job — schedule the siz
 recompute less often (default every 12h) and the inventory refresh more often
 (default hourly), or run either on demand. Jobs are checked each minute and fire
 when due.
+
+## Contributing
+
+Issues and pull requests are welcome — it's meant to be a small, friendly
+companion to the *arr / Plex self-hosting stack. Before opening a PR, run
+`npm run verify` (tests + production build); the Docker image build also gates on
+the test suite.
+
+## License
+
+[MIT](LICENSE) — free and open source. Use it, fork it, ship it.
