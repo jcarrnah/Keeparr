@@ -24,6 +24,13 @@ RUN npm run build
 FROM node:22-alpine AS runner
 WORKDIR /app
 
+# Image metadata + Unraid Docker UI hints (icon + WebUI button).
+LABEL org.opencontainers.image.title="Keeparr" \
+      org.opencontainers.image.description="Plex-login web app to decide what media to keep and report what's reclaimable. Tags and reports only — never deletes." \
+      org.opencontainers.image.source="https://github.com/drohack/Keeparr" \
+      net.unraid.docker.icon="https://raw.githubusercontent.com/drohack/Keeparr/main/public/icon.png" \
+      net.unraid.docker.webui="http://[IP]:[PORT:3000]/"
+
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
