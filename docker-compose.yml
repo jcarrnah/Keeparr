@@ -17,6 +17,10 @@ services:
       SESSION_SECRET: "${SESSION_SECRET:-}"
       # Optional: public URL of this app, used to build the Plex auth forwardUrl.
       # APP_URL: "https://keeparr.example.net"
+      # Optional: UID/GID the app runs as (it chowns /data to this on start).
+      # Defaults to 1001:1001. On Unraid use 99:100 (nobody:users).
+      # PUID: "1001"
+      # PGID: "1001"
     volumes:
       # Persist the SQLite db. On unraid point this at e.g.
       # /mnt/user/appdata/keeparr/data
@@ -32,7 +36,7 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3

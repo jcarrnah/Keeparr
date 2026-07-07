@@ -135,7 +135,10 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   user's feed (`FEED_ELIGIBILITY`).
 - `users` — media-server accounts (`plex_user_id` is the internal id — historically
   Plex, now the Plex/Jellyfin/Emby account id); `is_admin` (first login / server owner),
-  `enabled` (admin can block an account; Owner is exempt). Migrated via guarded `ALTER TABLE`.
+  `enabled` (admin can block an account; Owner is exempt), `session_epoch` (bumped to
+  invalidate that user's outstanding tokens — "sign out all devices" and admin-disable
+  both bump it; session tokens carry the epoch at mint time and `getSessionUser` rejects
+  a mismatch). Migrated via guarded `ALTER TABLE`.
 - `watch_history` — `(plex_user_id, rating_key)` `plays` + `last_watched`, from
   **Tautulli (Plex)** or **native `UserData` (Jellyfin/Emby)** — `syncWatchHistory` uses
   `getBackend().getWatchData()` (native) and falls back to Tautulli when the backend has
@@ -191,7 +194,13 @@ when it has no tvdb/tmdb **and** no imdb.
   records the chosen server type, and for Jellyfin/Emby tests+stores the server URL.
   `POST /api/auth/login {username, password}` — Jellyfin/Emby credential login (a
   successful auth IS server access; first user bootstraps owner and their access token
-  becomes the server read token). `POST /api/auth/logout`; `GET /api/auth/me`.
+  becomes the server read token). `POST /api/auth/logout` (clear this device's
+  cookie); `POST /api/auth/logout-all` (bump the user's `session_epoch` →
+  invalidate every token they hold, then clear the cookie — "sign out all
+  devices"); `GET /api/auth/me`. The Plex PIN create/poll endpoints
+  (`/api/auth/plex/pin`, `/api/auth/plex/check`) and the credential
+  `/api/auth/login` are per-IP rate-limited (`lib/rate-limit.ts`); login also
+  buckets per-username + globally so `X-Forwarded-For` rotation can't bypass it.
 - `GET /api/feed/random?limit=&section=&largest=1` → home batch. Default (no
   params) = screen-fill mix across **all Plex libraries**, weighted toward big
   series with a guaranteed few movies. `section=<id>` limits to one Plex library;
@@ -364,22 +373,32 @@ backend-aware UI are clickable offline (default = Plex). All inert/absent in pro
   (use **Import users from Plex** to pre-create accounts, then toggle Enabled).
   `getSessionUser` returns null for a disabled non-owner, so blocking takes effect
   immediately. The Owner is always allowed/enabled.
-- **Security posture** (audited July 2026): all SQL is parameterized (`lib/queries.ts`),
-  every `/api/admin/*` route calls `requireAdmin`, secrets are AES-GCM encrypted at
-  rest (`lib/crypto.ts` `SECRET_KEYS`). Hardening in place: the image proxy validates
-  `path` against an SSRF allowlist (`lib/image-path.ts isSafeImagePath` — Plex must be
-  `/library/…`, no `://`/`..`; JF/Emby an opaque id); `/api/auth/login` (Jellyfin/Emby
-  creds) is rate-limited per IP (`lib/rate-limit.ts`, 10 / 5 min); the API-key and
-  session-signature compares are constant-time (`safeEqual`); `instrumentation.ts`
-  logs a loud warning if a production boot uses the default `SESSION_SECRET`. The
-  Docker image strips npm/yarn/corepack from the runtime stage (unused attack surface)
-  and `npm audit` is clean (postcss pinned via an `overrides` entry). Baseline
-  response headers set in `next.config.js` (`X-Frame-Options`, `X-Content-Type-Options`,
+- **Security posture** (audited July 2026, hardened for CA listing): all SQL is
+  parameterized (`lib/queries.ts`), every `/api/admin/*` route calls `requireAdmin`,
+  secrets are AES-GCM encrypted at rest (`lib/crypto.ts` `SECRET_KEYS`). Hardening in
+  place: the image proxy **requires auth** (`requireUserOrApiKey` — middleware's
+  `X-Api-Key` passthrough only DEFERS validation, so every `/api/` route must guard
+  itself) and validates `path` against an SSRF allowlist (`lib/image-path.ts
+  isSafeImagePath` — Plex must be `/library/…`, no `://`/`..`; JF/Emby an opaque id),
+  clamps `w`/`h`, and only serves `image/*`; `/api/auth/login` (Jellyfin/Emby creds) is
+  rate-limited per IP **and per-username + globally** so `X-Forwarded-For` rotation
+  can't bypass it (`lib/rate-limit.ts`), and the Plex PIN create/poll endpoints are
+  per-IP capped; `/api/auth/setup` rejects non-http(s) URLs before its pre-auth probe;
+  session tokens carry a per-user `session_epoch` so "sign out all devices" /
+  admin-disable revoke outstanding tokens; all outbound `fetch`es have a 15s timeout;
+  the API-key and session-signature compares are constant-time (`safeEqual`);
+  `instrumentation.ts` **fails closed** (throws) on a production boot with a missing/
+  default `SESSION_SECRET` and warns on a short one. The Docker image runs the app as a
+  non-root `PUID:PGID` (root only chowns `/data`, then drops via `su-exec`), strips
+  npm/yarn/corepack from the runtime stage, pins the base image by digest, and `npm
+  audit` is clean (postcss pinned via an `overrides` entry). CI/release pin every
+  GitHub Action to a commit SHA (Dependabot keeps them fresh). Baseline response headers
+  set in `next.config.js` (`X-Frame-Options`, `X-Content-Type-Options`,
   `Referrer-Policy`, CSP `frame-ancestors 'self'`) — deliberately NO strict
   script/style CSP (would break the inline theme script + Scalar). Backup filenames
   are regex-validated (`isValidBackupName`); the image cache key is SHA-1-hashed before
-  becoming a path. `KEEPARR_DEV_LOGIN` is the only auth bypass and is env-gated + inert
-  in production (never set it in the image).
+  becoming a path. `KEEPARR_DEV_LOGIN` is the only auth bypass and is env-gated +
+  `NODE_ENV`-guarded + inert in production (never set it in the image).
 - **API key** (`api_key`): `requireAdminOrApiKey`/`requireUserOrApiKey` (`lib/auth.ts`)
   accept an `X-Api-Key` header as an alternative to a session (for `/api/admin/jobs`
   + `/api/stats`). `middleware.ts` lets `/api/` requests carrying that header past the
@@ -494,7 +513,12 @@ A fuller source-verified reference is in the planning doc
   auto-generates SESSION_SECRET into `$DATA_DIR/.session-secret` when the env
   var is unset (env wins; it runs BEFORE node so the Edge middleware sees the
   same process.env — never move this into app code, Edge can't read files).
-  Shell scripts are forced LF via .gitattributes (CRLF breaks alpine sh).
+  The entrypoint runs as **root** (no `USER` line in the Dockerfile) solely to
+  `chown -R $PUID:$PGID $DATA_DIR` (default `1001:1001`, Unraid `99:100`) — fixing
+  a fresh root-owned bind mount — then drops privileges via `su-exec` before
+  exec'ing node; the chown happens AFTER secret generation so `.session-secret`
+  is re-owned and stays readable post-drop. Shell scripts are forced LF via
+  .gitattributes (CRLF breaks alpine sh).
   Unraid users install via the
   Community Applications template (github.com/drohack/unraid-templates,
   `keeparr.xml`) — keep its port/paths/vars in sync with the Dockerfile when

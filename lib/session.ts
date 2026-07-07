@@ -43,34 +43,43 @@ export function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** Create a signed session token for a Plex user, valid for SESSION_TTL_MS. */
+/**
+ * Create a signed session token for a user, valid for SESSION_TTL_MS. The
+ * `epoch` is the user's `session_epoch` at mint time — bumping it in the DB
+ * invalidates every token minted before the bump (logout-everywhere / disable).
+ */
 export async function createSessionToken(
   plexUserId: string,
+  epoch: number,
   now: number
 ): Promise<string> {
   const exp = now + SESSION_TTL_MS;
-  const payload = `${plexUserId}.${exp}`;
+  const payload = `${plexUserId}.${epoch}.${exp}`;
   const sig = await hmac(payload);
   return `${payload}.${sig}`;
 }
 
 /**
- * Verify a session token's signature and expiry. Returns the Plex user id on
- * success, or null. Token format: `${plexUserId}.${exp}.${sig}`.
+ * Verify a session token's signature and expiry. Returns `{ userId, epoch }` on
+ * success, or null. Token format: `${plexUserId}.${epoch}.${exp}.${sig}`. This
+ * runs in the Edge runtime and CANNOT read the DB, so the epoch is returned for
+ * the Node layer (getSessionUser) to compare against the user's current epoch.
  */
 export async function verifySessionToken(
   token: string | undefined,
   now: number
-): Promise<string | null> {
+): Promise<{ userId: string; epoch: number } | null> {
   if (!token) return null;
   const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  const [plexUserId, expStr, sig] = parts;
+  if (parts.length !== 4) return null;
+  const [plexUserId, epochStr, expStr, sig] = parts;
   const exp = Number(expStr);
+  const epoch = Number(epochStr);
   if (!Number.isFinite(exp) || exp < now) return null;
-  const expected = await hmac(`${plexUserId}.${expStr}`);
+  if (!Number.isInteger(epoch)) return null;
+  const expected = await hmac(`${plexUserId}.${epochStr}.${expStr}`);
   if (!safeEqual(sig, expected)) return null;
-  return plexUserId;
+  return { userId: plexUserId, epoch };
 }
 
 export const SESSION_MAX_AGE_SECONDS = Math.floor(SESSION_TTL_MS / 1000);

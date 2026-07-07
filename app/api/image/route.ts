@@ -5,20 +5,35 @@ import {
 } from '@/lib/settings';
 import { isSafeImagePath } from '@/lib/image-path';
 import { readImageCache, writeImageCache } from '@/lib/cache';
+import { requireUserOrApiKey } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 
 /**
  * Proxy a poster through our server so the browser never sees the media-server
  * token. Query: ?path=<thumb ref>&w=&h=. The `path` is backend-specific: a Plex
- * relative thumb path ("/library/metadata/…") or a Jellyfin/Emby item id. Auth is
- * enforced by middleware.
+ * relative thumb path ("/library/metadata/…") or a Jellyfin/Emby item id.
+ *
+ * This handler enforces its OWN auth: middleware lets any /api request carrying
+ * an X-Api-Key header past the edge gate but only DEFERS validation to the Node
+ * route (the Edge runtime can't read the DB-stored key), so a bogus header would
+ * otherwise reach an unguarded route. requireUserOrApiKey validates the key
+ * constant-time and falls back to the session, 401ing a junk key.
  */
 export async function GET(req: Request) {
+  try {
+    await requireUserOrApiKey(req);
+  } catch {
+    return new Response('unauthorized', { status: 401 });
+  }
+
   const url = new URL(req.url);
   const path = url.searchParams.get('path') ?? '';
-  const w = Number(url.searchParams.get('w')) || 300;
-  const h = Number(url.searchParams.get('h')) || 450;
+  // Clamp to a sane poster range: an arbitrary w/h would mint a new cache file
+  // per distinct size (each is part of the cache key), letting an authed user
+  // fill DATA_DIR/cache/images.
+  const w = clampDim(Number(url.searchParams.get('w')) || 300, 1000);
+  const h = clampDim(Number(url.searchParams.get('h')) || 450, 1500);
   if (!path) return new Response('bad path', { status: 400 });
 
   const type = getMediaServerType();
@@ -42,10 +57,16 @@ export async function GET(req: Request) {
   if (!upstream) return new Response('bad path', { status: 400 });
 
   try {
-    const res = await fetch(upstream);
+    const res = await fetch(upstream, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return new Response('upstream error', { status: 502 });
     const buf = Buffer.from(await res.arrayBuffer());
-    const contentType = res.headers.get('Content-Type') ?? 'image/jpeg';
+    // Only ever serve images: a misbehaving/misconfigured upstream returning
+    // e.g. text/html could otherwise be served same-origin. isSafeImagePath +
+    // the fixed transcode/Images endpoints already make this improbable.
+    const upstreamType = (res.headers.get('Content-Type') ?? '').toLowerCase();
+    const contentType = upstreamType.startsWith('image/')
+      ? upstreamType
+      : 'image/jpeg';
     writeImageCache(cacheKey, buf, contentType); // populate the disk cache
     return new Response(new Uint8Array(buf), {
       headers: {
@@ -57,6 +78,12 @@ export async function GET(req: Request) {
   } catch {
     return new Response('fetch failed', { status: 502 });
   }
+}
+
+/** Clamp a requested poster dimension to [1, max] (defends the on-disk cache). */
+function clampDim(n: number, max: number): number {
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(Math.floor(n), max);
 }
 
 function buildUpstreamUrl(

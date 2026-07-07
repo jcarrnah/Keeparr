@@ -7,12 +7,28 @@
  */
 export async function fetchJson<T = unknown>(
   url: string,
-  opts: { headers?: Record<string, string>; label: string; method?: string }
+  opts: {
+    headers?: Record<string, string>;
+    label: string;
+    method?: string;
+    /** Abort the request after this many ms (default 15s) so a hung upstream
+     *  can't stall a page/job indefinitely. */
+    timeoutMs?: number;
+  }
 ): Promise<T> {
-  const res = await fetch(url, {
-    method: opts.method ?? 'GET',
-    headers: { Accept: 'application/json', ...(opts.headers ?? {}) },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method ?? 'GET',
+      headers: { Accept: 'application/json', ...(opts.headers ?? {}) },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      throw new Error(`${opts.label} timed out`);
+    }
+    throw e;
+  }
   if (!res.ok) throw new Error(`${opts.label} → HTTP ${res.status}`);
   const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
   if (!contentType.includes('json')) {

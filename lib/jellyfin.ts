@@ -74,6 +74,7 @@ export async function authenticateByName(
       Accept: 'application/json',
     },
     body: JSON.stringify({ Username: username, Pw: password }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (res.status === 401) throw new Error('Invalid username or password.');
   if (!res.ok) throw new Error(`Jellyfin auth → HTTP ${res.status}`);

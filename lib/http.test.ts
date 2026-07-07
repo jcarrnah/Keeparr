@@ -51,6 +51,26 @@ describe('fetchJson', () => {
     );
   });
 
+  it('maps an abort/timeout to a clear "timed out" error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new DOMException('The operation timed out.', 'TimeoutError')
+    );
+    await expect(
+      fetchJson('http://x', { label: 'Plex ping', timeoutMs: 5 })
+    ).rejects.toThrow(/Plex ping timed out/);
+  });
+
+  it('passes an AbortSignal for the timeout', async () => {
+    const m = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeRes({ contentType: 'application/json', body: {} }));
+    await fetchJson('http://x', { label: 'X' });
+    expect(m).toHaveBeenCalledWith(
+      'http://x',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
   it('passes method + headers through', async () => {
     const m = vi
       .spyOn(globalThis, 'fetch')

@@ -165,11 +165,33 @@ export function setUserAdmin(plexUserId: string, isAdmin: boolean): void {
     .run(isAdmin ? 1 : 0, plexUserId);
 }
 
-/** Enable or block a user from signing in. */
+/** Enable or block a user from signing in. Blocking also invalidates any tokens
+ *  they already hold (bump the epoch) so a captured session dies immediately. */
 export function setUserEnabled(plexUserId: string, enabled: boolean): void {
+  const db = getDb();
+  if (enabled) {
+    db.prepare('UPDATE users SET enabled = 1 WHERE plex_user_id = ?').run(plexUserId);
+  } else {
+    db.prepare(
+      'UPDATE users SET enabled = 0, session_epoch = session_epoch + 1 WHERE plex_user_id = ?'
+    ).run(plexUserId);
+  }
+}
+
+/** The user's current session epoch (0 if unknown). Tokens carry the epoch at
+ *  mint time; a mismatch means the token was invalidated (logout-all / disable). */
+export function getUserEpoch(plexUserId: string): number {
+  const row = getDb()
+    .prepare('SELECT session_epoch FROM users WHERE plex_user_id = ?')
+    .get(plexUserId) as { session_epoch: number } | undefined;
+  return row?.session_epoch ?? 0;
+}
+
+/** Invalidate all of a user's outstanding session tokens (sign out everywhere). */
+export function bumpSessionEpoch(plexUserId: string): void {
   getDb()
-    .prepare('UPDATE users SET enabled = ? WHERE plex_user_id = ?')
-    .run(enabled ? 1 : 0, plexUserId);
+    .prepare('UPDATE users SET session_epoch = session_epoch + 1 WHERE plex_user_id = ?')
+    .run(plexUserId);
 }
 
 // ---------------------------------------------------------------------------

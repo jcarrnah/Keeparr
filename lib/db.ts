@@ -72,6 +72,7 @@ function applySchema(database: Database.Database): void {
       thumb        TEXT,
       is_admin     INTEGER NOT NULL DEFAULT 0,
       enabled      INTEGER NOT NULL DEFAULT 1,  -- can this account sign in?
+      session_epoch INTEGER NOT NULL DEFAULT 0, -- bump to invalidate this user's tokens
       created_at   INTEGER NOT NULL,
       last_login   INTEGER
     );
@@ -193,6 +194,11 @@ function migrate(database: Database.Database): void {
   if (!cols.some((c) => c.name === 'enabled')) {
     database.exec(
       `ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`
+    );
+  }
+  if (!cols.some((c) => c.name === 'session_epoch')) {
+    database.exec(
+      `ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0`
     );
   }
 

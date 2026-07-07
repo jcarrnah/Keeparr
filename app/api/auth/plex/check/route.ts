@@ -13,8 +13,14 @@ import {
   writeSetting,
 } from '@/lib/settings';
 import { setSessionCookie } from '@/lib/auth';
+import { clientIp, rateLimit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
+
+// Per-IP poll cap. The browser polls this every ~2s while the popup is open, so
+// keep it generous — it only exists to bound abuse of the plex.tv PIN lookup.
+const POLL_LIMIT = 120; // polls per 5 min per IP
+const POLL_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * Poll a Plex PIN. While unauthorized → { status: 'pending' }. Once the user
@@ -25,6 +31,17 @@ export const runtime = 'nodejs';
  * admin still has to connect a Plex server.
  */
 export async function GET(req: Request) {
+  const { limited, retryAfterMs } = rateLimit(
+    `pin-poll:${clientIp(req)}`,
+    POLL_LIMIT,
+    POLL_WINDOW_MS
+  );
+  if (limited) {
+    return NextResponse.json(
+      { error: 'rate_limited' },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) } }
+    );
+  }
   const id = Number(new URL(req.url).searchParams.get('id'));
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: 'bad_request' }, { status: 400 });

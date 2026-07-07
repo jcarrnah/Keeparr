@@ -29,15 +29,21 @@ export async function middleware(req: NextRequest) {
   if (isPublic(pathname)) return NextResponse.next();
 
   const token = req.cookies.get(SESSION_COOKIE)?.value;
-  const userId = await verifySessionToken(token, Date.now());
-  if (userId) return NextResponse.next();
+  // Edge can't read the DB, so this only checks signature + expiry; the epoch is
+  // enforced by getSessionUser in the Node layer (like the enabled check).
+  const session = await verifySessionToken(token, Date.now());
+  if (session) return NextResponse.next();
 
   // Local demo mode: auto-mint a dev session so you browse with no Plex/login.
-  // Off unless KEEPARR_DEV_LOGIN=1 — inert (and absent) in production. Requires
+  // Off unless KEEPARR_DEV_LOGIN=1 AND not a production build — this auth bypass
+  // can never activate in production even if the env var leaks in. Requires
   // `npm run seed` first so the dev user + data exist. The cookie is set on the
   // forwarded request (so this same render is authenticated) and the response.
-  if (process.env.KEEPARR_DEV_LOGIN === '1') {
-    const devToken = await createSessionToken(DEV_USER_ID, Date.now());
+  if (
+    process.env.KEEPARR_DEV_LOGIN === '1' &&
+    process.env.NODE_ENV !== 'production'
+  ) {
+    const devToken = await createSessionToken(DEV_USER_ID, 0, Date.now());
     req.cookies.set(SESSION_COOKIE, devToken);
     const res = NextResponse.next({ request: { headers: req.headers } });
     res.cookies.set(SESSION_COOKIE, devToken, {
@@ -49,8 +55,10 @@ export async function middleware(req: NextRequest) {
     return res;
   }
 
-  // Let API requests bearing an X-Api-Key header through; the Node route
-  // validates the key against the DB (the Edge runtime can't read it).
+  // Let API requests bearing an X-Api-Key header through. This only DEFERS auth
+  // to the Node route — the Edge runtime can't read the DB to validate the key.
+  // Every /api route MUST therefore call a require* helper itself (a bare header
+  // presence is NOT authentication); this passthrough alone protects nothing.
   if (pathname.startsWith('/api/') && req.headers.get('x-api-key')) {
     return NextResponse.next();
   }

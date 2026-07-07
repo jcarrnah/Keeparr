@@ -239,8 +239,20 @@ Notes for every install method:
   AND encrypts the stored media-server / Tautulli / Seerr / *arr tokens at
   rest, and it travels with your appdata. Set the `SESSION_SECRET` env var
   only if you want to manage it yourself, and **never change it once in
-  use** (stored tokens would need re-entering).
+  use** (stored tokens would need re-entering). If you do set it, use a
+  **high-entropy** value — `openssl rand -hex 32`. A weak secret is dangerous
+  (it derives the encryption key too); in production Keeparr refuses to boot on
+  the insecure default and warns on a secret under 32 characters.
 - Persist `/data` (the SQLite database + poster cache + backups + secret).
+- **File ownership (`PUID`/`PGID`).** The container starts as root only to fix
+  ownership of the `/data` mount, then drops to `PUID:PGID` (default `1001:1001`)
+  before running the app. On Unraid set `PUID=99` and `PGID=100` (`nobody:users`)
+  to match your appdata; the Community Applications template exposes both. If you
+  hit a permission error on a pre-existing `/data`, set these to the owner of that
+  directory.
+- **Complete first-run setup on a trusted network.** The first account to sign in
+  becomes the admin/owner, so choose your server and log in as admin *before*
+  exposing Keeparr to the internet.
 - For the free-space header, mount media share(s) **read-only** (e.g.
   `/mnt/user/Movies:/media/movies:ro`) and map each library to its container
   path under **Settings → Connections**. Optional.
@@ -248,6 +260,9 @@ Notes for every install method:
 - **Plain HTTP vs HTTPS:** the session cookie is only marked `Secure` when the
   request arrives over HTTPS (via `x-forwarded-proto` from a TLS reverse
   proxy), so plain-HTTP LAN access works fine.
+- **Sessions** last 30 days. Normal **Log out** clears the current device; if you
+  suspect a session was stolen, use **Sign out all devices** in the user menu — it
+  invalidates every outstanding token for your account immediately.
 
 **Migrating from a source-built deploy** (the old `docker compose up --build`
 flow): stop the old container, copy its `data/` directory to the new `/data`

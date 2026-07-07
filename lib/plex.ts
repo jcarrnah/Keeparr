@@ -237,6 +237,7 @@ export async function getSharedUsers(
       'X-Plex-Client-Identifier': getClientId(),
       'X-Plex-Product': PLEX_PRODUCT,
     },
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Plex getSharedUsers failed: ${res.status}`);
   const shared = parseSharedUsers(await res.text());
@@ -261,6 +262,7 @@ export async function checkServerAccess(params: {
       'X-Plex-Client-Identifier': getClientId(),
       'X-Plex-Product': PLEX_PRODUCT,
     },
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Plex checkServerAccess failed: ${res.status}`);
   const xml = await res.text();

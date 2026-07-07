@@ -40,6 +40,21 @@ export async function POST(req: Request) {
     if (!trimmed) {
       return NextResponse.json({ error: 'url_required' }, { status: 400 });
     }
+    // Restrict the pre-auth probe to http(s). This endpoint is unauthenticated
+    // during first-run, so before fetching an operator-supplied URL we reject
+    // non-HTTP schemes (file:, gopher:, etc.) that could be used to probe the
+    // host. We deliberately do NOT block private/loopback ranges — the legitimate
+    // target is a LAN media server on a private IP. (Complete first-run setup on a
+    // trusted network before exposing Keeparr; see README.)
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return NextResponse.json({ error: 'bad_url' }, { status: 400 });
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return NextResponse.json({ error: 'bad_url' }, { status: 400 });
+    }
     let info;
     try {
       info = await getPublicServerInfo(trimmed);

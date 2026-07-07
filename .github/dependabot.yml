@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions fresh (pins are for supply-chain safety;
+  # Dependabot bumps them + the trailing "# vX" comment when a new release lands).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+
+  # Keep the digest-pinned base image current.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # npm dependencies (security + minor bumps).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -41,6 +41,18 @@ export function rateLimit(
   return { limited: false, retryAfterMs: 0 };
 }
 
+/**
+ * Best-effort client IP from proxy headers. The App-Router `Request` exposes no
+ * reliable socket IP (Next 15 removed `request.ip`), and X-Forwarded-For is
+ * client-controllable when Keeparr isn't behind a trusted proxy — so callers
+ * must NOT rely on this as the sole limiter key for anything brute-forceable.
+ */
+export function clientIp(req: Request): string {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) return xff.split(',')[0].trim();
+  return req.headers.get('x-real-ip') ?? 'unknown';
+}
+
 /** Test helper: clear all windows. */
 export function __resetRateLimits(): void {
   buckets.clear();

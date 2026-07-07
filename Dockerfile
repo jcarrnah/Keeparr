@@ -3,7 +3,7 @@
 # ---- Build stage ---------------------------------------------------------
 # Alpine so the native module (better-sqlite3) is compiled against the same
 # musl libc the runner uses.
-FROM node:22-alpine AS builder
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS builder
 WORKDIR /app
 
 # Build tools for better-sqlite3's native addon.
@@ -20,7 +20,7 @@ COPY . .
 RUN npm run build
 
 # ---- Runtime stage -------------------------------------------------------
-FROM node:22-alpine AS runner
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runner
 WORKDIR /app
 
 # Image metadata + Unraid Docker UI hints (icon + WebUI button).
@@ -36,8 +36,13 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 # SQLite db lives here; mount a volume at /data.
 ENV DATA_DIR=/data
+# Runtime UID/GID the app drops to (entrypoint runs as root, chowns /data, then
+# drops via su-exec). Override to match your host — Unraid uses 99:100.
+ENV PUID=1001
+ENV PGID=1001
 
-RUN apk add --no-cache libc6-compat \
+# su-exec lets the entrypoint drop root → PUID:PGID after fixing volume ownership.
+RUN apk add --no-cache libc6-compat su-exec \
   && addgroup -g 1001 -S nodejs \
   && adduser -u 1001 -S nextjs -G nodejs \
   && mkdir -p /data \
@@ -52,21 +57,25 @@ RUN apk add --no-cache libc6-compat \
 # Standalone server bundle + static assets (traced native modules included).
 # public/ must be copied explicitly — Next's standalone output does NOT
 # include it (PWA icons + any static asset 404 without this).
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# No --chown: app files stay root-owned (world-readable, so the su-exec'd PUID
+# can read them) but NOT writable by the app process — only /data is writable.
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 
 # Entrypoint auto-generates SESSION_SECRET into /data on first boot when the
-# env var isn't provided (no required secrets at install — the Seerr pattern).
+# env var isn't provided (no required secrets at install — the Seerr pattern),
+# fixes /data ownership to PUID:PGID, then drops root → that user via su-exec.
+# It intentionally starts as root (no USER line) so it can chown the bind mount.
 COPY --chmod=755 docker-entrypoint.sh /docker-entrypoint.sh
 
-USER nextjs
 EXPOSE 3000
 VOLUME ["/data"]
 
 # Health check (works in the Unraid Docker UI too, not just compose).
+# Uses $PORT so overriding it doesn't leave the container perpetually unhealthy.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["node", "server.js"]

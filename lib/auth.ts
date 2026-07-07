@@ -6,7 +6,7 @@ import {
   safeEqual,
   verifySessionToken,
 } from './session';
-import { getUser } from './queries';
+import { getUser, getUserEpoch } from './queries';
 import { getApiKey, getOwnerId } from './settings';
 import type { SessionUser } from './types';
 
@@ -26,9 +26,14 @@ async function isHttpsRequest(): Promise<boolean> {
   }
 }
 
-/** Set the signed session cookie for a logged-in Plex user. */
+/** Set the signed session cookie for a logged-in user (stamped with their
+ *  current session epoch, so a later epoch bump invalidates this token). */
 export async function setSessionCookie(plexUserId: string): Promise<void> {
-  const token = await createSessionToken(plexUserId, Date.now());
+  const token = await createSessionToken(
+    plexUserId,
+    getUserEpoch(plexUserId),
+    Date.now()
+  );
   const store = await cookies();
   store.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -48,12 +53,14 @@ export async function clearSessionCookie(): Promise<void> {
 export async function getSessionUser(): Promise<SessionUser | null> {
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
-  const plexUserId = await verifySessionToken(token, Date.now());
-  if (!plexUserId) return null;
-  const user = getUser(plexUserId);
+  const session = await verifySessionToken(token, Date.now());
+  if (!session) return null;
+  const user = getUser(session.userId);
   if (!user) return null;
   // A blocked account is treated as logged-out (the Owner can't be blocked).
-  if (!user.enabled && plexUserId !== getOwnerId()) return null;
+  if (!user.enabled && session.userId !== getOwnerId()) return null;
+  // Reject tokens minted before a logout-everywhere / disable bumped the epoch.
+  if (session.epoch !== getUserEpoch(session.userId)) return null;
   return user;
 }
 

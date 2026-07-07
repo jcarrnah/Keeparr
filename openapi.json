@@ -107,7 +107,14 @@
     "/api/auth/logout": {
       "post": {
         "tags": ["auth"],
-        "summary": "Clear the session cookie",
+        "summary": "Clear the session cookie (this device)",
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/auth/logout-all": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Sign out all devices: bump the user's session epoch (invalidate every token) and clear this cookie",
         "responses": { "200": { "description": "OK" } }
       }
     },

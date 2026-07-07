@@ -5,7 +5,7 @@ data
 .git
 .github
 .playwright-mcp
-.env
+.env*
 *.md
 !README.md
 .claude

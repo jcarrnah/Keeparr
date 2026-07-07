@@ -123,6 +123,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     router.refresh();
   }
 
+  async function logoutAllDevices() {
+    await fetch('/api/auth/logout-all', { method: 'POST' });
+    router.push('/login');
+    router.refresh();
+  }
+
   const onLibrary = pathname.startsWith('/library');
   const selected = new Set(
     onLibrary ? (searchParams.get('sections') || '').split(',').filter(Boolean) : []
@@ -293,6 +299,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   className="mt-2 w-full rounded-md border border-slate-700 px-3 py-1.5 text-left hover:border-slate-500"
                 >
                   Log out
+                </button>
+                <button
+                  onClick={logoutAllDevices}
+                  title="Invalidate every session for your account (use if you think a session was stolen)."
+                  className="mt-1.5 w-full rounded-md px-3 py-1.5 text-left text-[11px] text-slate-500 hover:text-slate-300"
+                >
+                  Sign out all devices
                 </button>
               </div>
             )}
