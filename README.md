@@ -200,51 +200,66 @@ KEEPARR_DEV_LOGIN=1 npm run dev
 ```bash
 npm test          # vitest
 npm run build     # production build
-npm run verify    # test + build (the same checks the Docker image gates on)
+npm run verify    # test + build (the same checks CI runs before publishing an image)
 ```
 
-## Deploy to Unraid (Docker)
+## Install (Docker)
 
-`docker compose` reads `SESSION_SECRET` from a `.env` file in the repo, so set it **once**
-and never pass it inline (regenerating it on every run would rotate the key and invalidate
-your stored tokens + sessions).
+Prebuilt multi-arch images (amd64 + arm64) are published to
+**`ghcr.io/drohack/keeparr`** on every release: `latest` (stable channel) plus
+immutable version tags (`0.3.1`, `0.3`). A `develop` tag tracks the main
+branch.
+
+**Unraid**: install **Keeparr** from Community Applications (search "Keeparr")
+— the template preconfigures the port, `/data` appdata path, and
+`SESSION_SECRET`. Updates appear in the Docker tab like any other container
+(pair with the *CA Auto Update Applications* plugin for hands-off updates).
+
+**Docker run** (any host):
 
 ```bash
-# First time only — on the server, from the repo:
+docker run -d --name keeparr \
+  -p 8767:3000 \
+  -v /path/to/appdata/keeparr:/data \
+  -e SESSION_SECRET=$(openssl rand -hex 32) \
+  ghcr.io/drohack/keeparr:latest
+```
+
+…but persist `SESSION_SECRET` somewhere (an env file) rather than generating
+it inline like that, or every recreate rotates it.
+
+**Docker compose**: use the repo's `docker-compose.yml` with the published
+image (or build from source for development):
+
+```bash
 cp .env.example .env
-# edit .env and set SESSION_SECRET, e.g.:
-#   echo "SESSION_SECRET=$(openssl rand -hex 32)" >> .env   (then remove the change-me line)
-docker compose up -d --build
+# set SESSION_SECRET once, e.g.: echo "SESSION_SECRET=$(openssl rand -hex 32)" >> .env
+docker compose up -d          # pulls ghcr.io/drohack/keeparr:latest
+docker compose pull && docker compose up -d   # to update
 ```
 
-```bash
-# Every update afterwards — pull the new code and rebuild/recreate the container:
-git pull
-docker compose up -d --build
-```
+Notes for every install method:
 
-`--build` rebuilds the image from the pulled source; `-d` runs it detached. The `.env`
-secret is reused, so your data and stored tokens carry over untouched.
-
-- Published on host port **8767** (`8767:3000`) — change in `docker-compose.yml`
-  or put behind your reverse proxy.
-- Persist the database by mounting `./data` → `/mnt/user/appdata/keeparr/data`.
-- For the free-space header, mount your media share(s) **read-only** into the
-  container (e.g. `/mnt/user/Movies:/media/movies:ro`) and map each library to its
-  container path under **Settings → Connections** (Storage / free space). See the commented examples in
-  `docker-compose.yml`. Without this, the storage header just prompts to configure.
-- `SESSION_SECRET` is **required** (compose fails without it). It also encrypts
-  the stored media-server / Tautulli / Seerr / *arr tokens at rest — rotating it means
-  re-entering them.
+- **`SESSION_SECRET` is required** — set it **once and never rotate it**: it
+  signs sessions AND encrypts the stored media-server / Tautulli / Seerr /
+  *arr tokens at rest. Rotating it means re-entering all of them.
+- Persist `/data` (the SQLite database + poster cache + backups).
+- For the free-space header, mount media share(s) **read-only** (e.g.
+  `/mnt/user/Movies:/media/movies:ro`) and map each library to its container
+  path under **Settings → Connections**. Optional.
 - Optional `APP_URL` sets the Plex auth `forwardUrl` for redirect-style logins.
 - **Plain HTTP vs HTTPS:** the session cookie is only marked `Secure` when the
-  request arrives over HTTPS (detected via `x-forwarded-proto` from a TLS reverse
-  proxy). Accessing directly over `http://<host>:<port>` on your LAN works — the
-  cookie isn't forced Secure, so it isn't dropped. Behind a TLS proxy it's set
-  Secure automatically.
+  request arrives over HTTPS (via `x-forwarded-proto` from a TLS reverse
+  proxy), so plain-HTTP LAN access works fine.
 
-The image build runs the test suite as a gate (`RUN npm test`), so a failing
-test blocks the image.
+**Migrating from a source-built deploy** (the old `docker compose up --build`
+flow): stop the old container, copy its `data/` directory to the new `/data`
+mount location (e.g. `/mnt/user/appdata/keeparr`), and set `SESSION_SECRET`
+to the **same value** from your old `.env` — with those two carried over,
+everything (keeps, users, connections) survives intact.
+
+CI runs the full test suite before any image is built or pushed, so a failing
+test never ships.
 
 ## Reverse proxy
 

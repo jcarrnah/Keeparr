@@ -464,10 +464,20 @@ A fuller source-verified reference is in the planning doc
   at a local HH:MM, or weekly on a local weekday at HH:MM). Defaults in `config.ts` (`DEFAULT_JOB_SCHEDULES`): recentlyAdded
   5 min; library 03:00; watch 04:00; requests 05:00; sizes 06:00; arr 07:00;
   backup 08:00.
-- **Releases**: the update check compares `package.json` version to the newest
-  GitHub Release. Shipping a release = bump `package.json` version → commit →
-  tag `v<version>` → `gh release create v<version>` with notes. Do this only
-  when the user explicitly asks to ship/release.
+- **Releases + images**: the update check compares `package.json` version to
+  the newest GitHub Release. Shipping a release = bump `package.json` version
+  → commit → tag `v<version>` → `gh release create v<version>` with notes —
+  do this only when the user explicitly asks to ship/release. Publishing the
+  release triggers `.github/workflows/release.yml`, which (after a
+  tag==package.json guard + tests) builds the multi-arch image natively
+  (amd64 + arm64 runners, no QEMU) and pushes
+  `ghcr.io/drohack/keeparr:{latest,X.Y.Z,X.Y}`. `ci.yml` runs tests on every
+  PR/push and publishes a `develop` image on pushes to main. Tests are NOT in
+  the Dockerfile (hoisted to CI); the Dockerfile must copy `public/`
+  explicitly (standalone output omits it). Unraid users install via the
+  Community Applications template (github.com/drohack/unraid-templates,
+  `keeparr.xml`) — keep its port/paths/vars in sync with the Dockerfile when
+  they change.
 - ROADMAP.md tracks the researched platform-feature tiers: Tiers 1 (health/
   update/backups/API docs, v0.2.0) and 2 (themes/toasts/logs/PWA/shortcuts,
   v0.3.0) are done; Tier 3 is deliberately parked — don't build those without

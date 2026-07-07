@@ -10,13 +10,12 @@ WORKDIR /app
 RUN apk add --no-cache python3 make g++ libc6-compat
 
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 
-# Deploy gate: the full test suite must pass before an image is produced.
-RUN npm test
-
+# Tests run in CI (once, natively) before any image is built/pushed — see
+# .github/workflows. Building here only compiles.
 # Next.js standalone output (see next.config.js: output: 'standalone').
 RUN npm run build
 
@@ -45,8 +44,11 @@ RUN apk add --no-cache libc6-compat \
   && chown -R nextjs:nodejs /data
 
 # Standalone server bundle + static assets (traced native modules included).
+# public/ must be copied explicitly — Next's standalone output does NOT
+# include it (PWA icons + any static asset 404 without this).
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 USER nextjs
 EXPOSE 3000

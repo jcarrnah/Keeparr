@@ -1,0 +1,11 @@
+# Keep the build context small and the dev database out of images.
+node_modules
+.next
+data
+.git
+.github
+.playwright-mcp
+.env
+*.md
+!README.md
+.claude

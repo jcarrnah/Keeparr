@@ -58,10 +58,24 @@ needed for how Keeparr is used today; revisit on real demand.
   (Authelia/Authentik). Loudest open auth wish across all three peer projects;
   Keeparr's media-server login sidesteps most of the need.
 - **Prometheus `/metrics` endpoint** — niche but rising expectation.
+- **Maintainerr integration** — Keeparr collects the human decisions;
+  [Maintainerr](https://github.com/jorenn92/Maintainerr) executes deletions
+  (rules → collections → grace period → delete/unmonitor/clear-request).
+  Hooking them together closes the loop while preserving Keeparr's
+  never-deletes stance: Keeparr marks what's safe to reclaim, Maintainerr does
+  the maintenance. Candidate mechanisms (research when un-parked): Keeparr
+  applies a **Plex label/collection** (e.g. `keeparr-release`) to titles that
+  are OK-to-delete + kept by nobody, which a Maintainerr rule can match; or
+  push via Maintainerr's API if it grows an external-source rule input. Needs
+  care: the label must be REMOVED the moment anyone keeps the title (keeps are
+  protective), and this would be Keeparr's first write to the media server —
+  gate it behind an explicit opt-in setting.
 
 Of these, **notifications** delivers the most day-to-day value if ever
-un-parked (a weekly reclaimable digest fits Keeparr's purpose), and
-**read-only guest** is the cheapest to build.
+un-parked (a weekly reclaimable digest fits Keeparr's purpose),
+**read-only guest** is the cheapest to build, and **Maintainerr integration**
+is the most strategically interesting (turns Keeparr's report into automated
+maintenance without Keeparr itself ever deleting).
 
 ## Explicitly not doing
 

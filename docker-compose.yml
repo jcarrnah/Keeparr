@@ -1,7 +1,9 @@
 services:
   keeparr:
-    build: .
-    image: keeparr:latest
+    # Prebuilt multi-arch image, published on every release. To build from
+    # source instead (development), comment `image:` and uncomment `build:`.
+    image: ghcr.io/drohack/keeparr:latest
+    # build: .
     container_name: keeparr
     restart: unless-stopped
     ports:
