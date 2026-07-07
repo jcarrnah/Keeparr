@@ -347,7 +347,19 @@ export function seedDevData(opts: { reset?: boolean } = {}): SeedResult {
     // Seerr requests per user — the gate for "OK to delete". Spread across
     // people so the by-anyone view + attribution have variety. dev-300 is
     // requested by both friend and kid so it ends up with multiple markers.
-    replaceSeerrRequests(DEV_USER_ID, ['dev-2', 'dev-12', 'dev-30', 'dev-50', 'dev-160', 'dev-205']);
+    // Also request a few of the VERY largest titles, spaced so the "Largest"
+    // feed shows an "OK to delete" card in every visible row (~7/row at 1080,
+    // ~11/row at 4K → these positions cover rows 1–3 at both widths).
+    const bySize = [...mediaItems].sort((a, b) => b.sizeBytes - a.sizeBytes);
+    const largestDemoRequests = [0, 5, 9, 13, 18, 24, 30]
+      .map((i) => bySize[i]?.ratingKey)
+      .filter((rk): rk is string => !!rk);
+    replaceSeerrRequests(DEV_USER_ID, [
+      ...new Set([
+        'dev-2', 'dev-12', 'dev-30', 'dev-50', 'dev-160', 'dev-205',
+        ...largestDemoRequests,
+      ]),
+    ]);
     replaceSeerrRequests('dev-friend', ['dev-50', 'dev-106', 'dev-300']);
     replaceSeerrRequests('dev-kid', ['dev-300']);
 
