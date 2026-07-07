@@ -499,15 +499,19 @@ A fuller source-verified reference is in the planning doc
   at a local HH:MM, or weekly on a local weekday at HH:MM). Defaults in `config.ts` (`DEFAULT_JOB_SCHEDULES`): recentlyAdded
   5 min; library 03:00; watch 04:00; requests 05:00; sizes 06:00; arr 07:00;
   backup 08:00.
-- **Releases + images**: the update check compares `package.json` version to
-  the newest GitHub Release. Shipping a release = bump `package.json` version
-  → commit → tag `v<version>` → `gh release create v<version>` with notes —
-  do this only when the user explicitly asks to ship/release. Publishing the
-  release triggers `.github/workflows/release.yml`, which (after a
-  tag==package.json guard + tests) builds the multi-arch image natively
-  (amd64 + arm64 runners, no QEMU) and pushes
-  `ghcr.io/drohack/keeparr:{latest,X.Y.Z,X.Y}`. `ci.yml` runs tests on every
-  PR/push and publishes a `develop` image on pushes to main. Tests are NOT in
+- **Releases + images (continuous delivery)**: every push to `main` ships one
+  release via `.github/workflows/release.yml`: test (tsc + vitest + `next
+  build`) → **version** → build (native amd64 + arm64, no QEMU) → publish
+  `ghcr.io/drohack/keeparr:{latest,X.Y.Z,X.Y}` + a GitHub release. The
+  **version** job auto-increments the PATCH unless you bumped `package.json`
+  yourself: if `v<package.json version>` is already a tag it bumps (patch by
+  default; minor/major via the `workflow_dispatch` `bump` input), else it uses
+  your version as-is (manual override). Any bump is written back to main as a
+  `[skip ci]` commit; GITHUB_TOKEN commits don't retrigger, so no loop. So: to
+  cut a normal release just push to main; for a minor/major, bump
+  `package.json` in your commit (or run the workflow manually with a bump
+  level). `ci.yml` only validates PRs now (no image). The update check compares
+  `package.json` to the newest GitHub Release. Tests are NOT in
   the Dockerfile (hoisted to CI); the Dockerfile must copy `public/`
   explicitly (standalone output omits it). `docker-entrypoint.sh`
   auto-generates SESSION_SECRET into `$DATA_DIR/.session-secret` when the env

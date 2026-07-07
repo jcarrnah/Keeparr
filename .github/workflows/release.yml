@@ -1,61 +1,104 @@
-# Release: when a GitHub release is published (tag vX.Y.Z), build and push
-# the versioned multi-arch image to ghcr.io/drohack/keeparr as
-# `latest` + `X.Y.Z` + `X.Y`.
+# Continuous delivery: every push to main ships one release.
 #
-# The verify-version guard keeps the image, the git tag, and the in-app
-# update checker (package.json vs latest GitHub release) in lockstep: a
-# release whose tag doesn't match package.json never ships an image.
+#   test → version → build (per-arch, native) → publish (image + GitHub release)
+#
+# Versioning: auto-increments the PATCH unless you bumped package.json yourself.
+# The `version` job checks whether the current package.json version is already
+# released (a `v<version>` tag exists): if so it auto-bumps (patch by default;
+# minor/major via the workflow_dispatch input); if not, it uses your version
+# as-is (manual override). Any change is written back to main as a
+# `[skip ci]` commit — and commits pushed with GITHUB_TOKEN don't retrigger
+# workflows, so there's no release loop.
+#
+# One image build per push: images are built ONLY here (PRs just run CI).
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump when auto-incrementing'
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write # push the version-bump commit + create the tag/release
+  packages: write # push the image to ghcr
 
 jobs:
-  verify-version:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - name: Tag must match package.json version
-        run: |
-          PKG=$(node -p "require('./package.json').version")
-          TAG="${GITHUB_REF_NAME#v}"
-          if [ "$PKG" != "$TAG" ]; then
-            echo "::error::package.json ($PKG) != release tag ($GITHUB_REF_NAME)"
-            exit 1
-          fi
-
   test:
-    needs: verify-version
+    # GITHUB_TOKEN commits don't retrigger, but guard anyway as defense in depth.
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npx tsc --noEmit
       - run: npm test
+      - run: npm run build # catch Next build breakage before we tag/release
+
+  version:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Decide version (auto-patch unless manually bumped)
+        id: v
+        env:
+          BUMP: ${{ github.event.inputs.bump || 'patch' }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          PKG=$(node -p "require('./package.json').version")
+          if git ls-remote --exit-code --tags origin "refs/tags/v$PKG" >/dev/null 2>&1; then
+            echo "v$PKG is already released → auto-bump ($BUMP)"
+            npm version "$BUMP" --no-git-tag-version >/dev/null
+            NEW=$(node -p "require('./package.json').version")
+          else
+            echo "v$PKG has no tag yet → using it (manual override)"
+            NEW="$PKG"
+          fi
+          # Keep the OpenAPI doc's version in lockstep.
+          sed -i -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$NEW\"/" openapi.json
+          if ! git diff --quiet; then
+            git add -A
+            git commit -m "Release v$NEW [skip ci]"
+            git push origin HEAD:main
+          fi
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build ${{ matrix.platform }}
-    needs: test
+    needs: version
     strategy:
       matrix:
         include:
           - runner: ubuntu-24.04
             platform: linux/amd64
-          - runner: ubuntu-24.04-arm # free on public repos
+          - runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-      - name: Build natively into the scoped cache
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Build natively into the scoped cache (no push)
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -65,30 +108,28 @@ jobs:
           provenance: false
 
   publish:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }} # lowercased automatically
-          # Release event → GITHUB_REF is refs/tags/vX.Y.Z, so semver
-          # resolves; `latest` is added automatically (skipped on prereleases).
+          images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=semver,pattern={{version}},value=v${{ needs.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.version.outputs.version }}
       - name: Build & push (assembled from the per-arch caches)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -99,3 +140,11 @@ jobs:
             type=gha,scope=linux/amd64
             type=gha,scope=linux/arm64
           provenance: false
+      - name: GitHub release (tag created at the built commit only after the image is pushed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ needs.version.outputs.version }}" \
+            --target "${{ needs.version.outputs.sha }}" \
+            --title "v${{ needs.version.outputs.version }}" \
+            --generate-notes

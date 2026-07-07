@@ -203,19 +203,25 @@ npm run build     # production build
 npm run verify    # test + build (the same checks CI runs before publishing an image)
 ```
 
-## Install (Docker)
+## Install
 
 Prebuilt multi-arch images (amd64 + arm64) are published to
-**`ghcr.io/drohack/keeparr`** on every release: `latest` (stable channel) plus
-immutable version tags (`0.3.1`, `0.3`). A `develop` tag tracks the main
-branch.
+**`ghcr.io/drohack/keeparr`** on every push to main: `latest` (the stable
+channel) plus immutable version tags (`0.3`, `0.3.6`, …).
 
-**Unraid**: install **Keeparr** from Community Applications (search "Keeparr")
-— just pick the port and appdata path; there are no required secrets (see
-below). Updates appear in the Docker tab like any other container (pair with
-the *CA Auto Update Applications* plugin for hands-off updates).
+### Unraid — Community Applications (recommended)
 
-**Docker run** (any host):
+The easiest way to run Keeparr. Open **Apps** (Community Applications), search
+**Keeparr**, and Install — or browse the listing at
+[ca.unraid.net/apps/keeparr](https://ca.unraid.net/apps/keeparr). Pick a WebUI
+port and an appdata path, hit Apply, and you're done; there are no required
+secrets (see Notes below). Updates appear in the **Docker** tab like any other
+container — pair with the *CA Auto Update Applications* plugin for hands-off
+updates.
+
+### Docker (any host)
+
+Not on Unraid? Run the same published image directly:
 
 ```bash
 docker run -d --name keeparr \
@@ -224,13 +230,27 @@ docker run -d --name keeparr \
   ghcr.io/drohack/keeparr:latest
 ```
 
-**Docker compose**: use the repo's `docker-compose.yml` with the published
-image (or build from source for development):
+…or with the repo's `docker-compose.yml`:
 
 ```bash
-docker compose up -d          # pulls ghcr.io/drohack/keeparr:latest
+docker compose up -d                          # pulls ghcr.io/drohack/keeparr:latest
 docker compose pull && docker compose up -d   # to update
 ```
+
+### Build from source
+
+To build the image yourself — for development, or a platform the published
+image doesn't cover — clone the repo and build with the bundled Dockerfile
+(`docker-compose.yml` has a commented `build: .` line for exactly this):
+
+```bash
+git clone https://github.com/drohack/Keeparr.git && cd Keeparr
+docker build -t keeparr:local .
+docker run -d --name keeparr -p 8767:3000 -v "$PWD/data:/data" keeparr:local
+```
+
+For iterating on the code without Docker, see
+[Local development](#local-development).
 
 Notes for every install method:
 
