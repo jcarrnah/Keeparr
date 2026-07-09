@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MediaCardData } from '@/lib/types';
 import { formatSize } from '@/lib/format';
 import { RES_ORDER, resolutionBucket } from '@/lib/quality';
+import { useToast } from './Toaster';
 import {
   StackedBar,
   LegendRow,
@@ -50,21 +51,33 @@ export default function StatsView() {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const toast = useToast();
+  // Guards against out-of-order responses: only the latest request may commit
+  // state (a slow old response must not clobber a newer one).
+  const fetchSeq = useRef(0);
 
   const load = useCallback(
     async (v: View, reset: boolean) => {
+      const seq = ++fetchSeq.current;
       setLoading(true);
       const off = reset ? 0 : offset;
-      const data = await fetch(`/api/stats?view=${v}&offset=${off}`).then((r) => r.json());
-      // An error response has no `items`/`summary` — guard against a crash.
-      const list = Array.isArray(data.items) ? data.items : [];
-      if (data.summary) setSummary(data.summary);
-      setHasMore(!!data.hasMore);
-      if (typeof data.nextOffset === 'number') setOffset(data.nextOffset);
-      setItems((prev) => (reset ? list : [...prev, ...list]));
-      setLoading(false);
+      try {
+        const data = await fetch(`/api/stats?view=${v}&offset=${off}`).then((r) => r.json());
+        if (seq !== fetchSeq.current) return; // superseded — drop it
+        // An error response has no `items`/`summary` — guard against a crash.
+        const list = Array.isArray(data.items) ? data.items : [];
+        if (data.summary) setSummary(data.summary);
+        setHasMore(!!data.hasMore);
+        if (typeof data.nextOffset === 'number') setOffset(data.nextOffset);
+        setItems((prev) => (reset ? list : [...prev, ...list]));
+      } catch {
+        if (seq !== fetchSeq.current) return; // superseded — don't toast for it
+        toast("Couldn't load the stats — is the server reachable?", 'error');
+      } finally {
+        if (seq === fetchSeq.current) setLoading(false);
+      }
     },
-    [offset]
+    [offset, toast]
   );
 
   useEffect(() => {

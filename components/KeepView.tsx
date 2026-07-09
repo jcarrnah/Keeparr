@@ -146,21 +146,29 @@ export default function KeepView({ libraries }: { libraries: Library[] }) {
   const visible = dims.cols * dims.rows;
   const shown = items.slice(0, visible);
 
+  // Guards against out-of-order responses: only the latest request may commit
+  // state (a slow old response must not clobber a newer one — worse here than
+  // elsewhere, since a stale batch would be silently mass-skipped by "Next →").
+  const feedSeq = useRef(0);
+
   const loadFeed = useCallback(async () => {
+    const seq = ++feedSeq.current;
     setLoading(true);
     const params = new URLSearchParams({ limit: String(FETCH_LIMIT) });
     if (selection === 'largest') params.set('largest', '1');
     else if (selection !== 'all') params.set('section', selection);
     try {
       const data = await fetch(`/api/feed/random?${params}`).then((r) => r.json());
+      if (seq !== feedSeq.current) return; // superseded — drop it
       setItems(data.items ?? []);
       setRemaining(data.remaining ?? null);
       setKept(new Set());
       setDeleted(new Set());
     } catch {
+      if (seq !== feedSeq.current) return; // superseded — don't toast for it
       toast("Couldn't load the feed — is the server reachable?", 'error');
     } finally {
-      setLoading(false);
+      if (seq === feedSeq.current) setLoading(false);
     }
   }, [selection, toast]);
 
@@ -193,11 +201,19 @@ export default function KeepView({ libraries }: { libraries: Library[] }) {
       .map((i) => i.ratingKey)
       .filter((rk) => !kept.has(rk) && !deleted.has(rk));
     setLoading(true);
-    await fetch('/api/skip-batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ratingKeys: toSkip }),
-    }).catch(() => {});
+    try {
+      const res = await fetch('/api/skip-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ratingKeys: toSkip }),
+      });
+      if (!res.ok) throw new Error('failed');
+    } catch {
+      // Stay on the current batch — advancing would silently drop the marks.
+      toast("Couldn't save this batch — nothing was marked.", 'error');
+      setLoading(false);
+      return;
+    }
     await loadFeed();
     loadOverview();
   }

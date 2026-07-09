@@ -59,6 +59,14 @@ export async function syncLibrary(): Promise<JobResult> {
   const syncStart = nowSec();
 
   const sections = await backend.listSections();
+  // A 200 with no sections is a server hiccup (e.g. PMS mid-restart), not an
+  // empty install — proceeding would overwrite the stored sections (and their
+  // paths[] used for storage mapping) and tombstone the entire library.
+  if (sections.length === 0) {
+    throw new Error(
+      'Backend returned no library sections; aborting sync to protect existing data.'
+    );
+  }
   // Persist every discovered section so the admin can choose which to manage…
   setPlexSections(
     sections.map((s) => ({ id: s.id, title: s.title, type: s.kind, paths: s.paths }))
@@ -71,9 +79,17 @@ export async function syncLibrary(): Promise<JobResult> {
 
   const knownSizes = existingShowSizes();
   let itemsSynced = 0;
+  // Sections that answered with zero items get no removal sweep below — an
+  // empty-but-200 response (backend hiccup) must not tombstone a whole library.
+  // Cost: a genuinely emptied library keeps its rows until it has items again.
+  const emptySections: string[] = [];
 
   for (const section of scanned) {
     const items = await backend.listSectionItems(section.id, section.kind);
+    if (items.length === 0) {
+      emptySections.push(section.id);
+      continue;
+    }
 
     if (section.kind === 'movie') {
       const batch = items.map((m) => toInput(m, section.id, 'movie'));
@@ -96,10 +112,13 @@ export async function syncLibrary(): Promise<JobResult> {
     }
   }
 
-  const removed = tombstoneStale(syncStart);
+  const removed = tombstoneStale(syncStart, emptySections);
+  const emptyNote = emptySections.length
+    ? `; ${emptySections.length} section(s) returned no items (removal check skipped)`
+    : '';
   return {
     result: itemsSynced,
-    message: `Synced ${itemsSynced} items${removed ? `, removed ${removed}` : ''}.`,
+    message: `Synced ${itemsSynced} items${removed ? `, removed ${removed}` : ''}${emptyNote}.`,
   };
 }
 
@@ -282,6 +301,7 @@ export async function syncArr(): Promise<JobResult> {
         if (r.sizeOnDisk > 0) {
           unmatchedRecs.push({
             source: r.source,
+            instanceId: r.instanceId,
             instanceName: r.instanceName,
             title: r.title,
             extKind: r.source === 'sonarr' ? 'tvdb' : 'tmdb',
@@ -298,12 +318,16 @@ export async function syncArr(): Promise<JobResult> {
   };
 
   const instanceCount = getSonarrInstances().length + getRadarrInstances().length;
+  // Instances that errored this run keep their cached rows in the replace below
+  // — their fresh data is missing from this run, not gone from the arr.
+  const failedInstanceIds: string[] = [];
   for (const inst of getSonarrInstances()) {
     try {
       ingest(await fetchSonarr(inst), tvdbMap);
       ok++;
     } catch {
       errors++;
+      failedInstanceIds.push(inst.id);
     }
   }
   for (const inst of getRadarrInstances()) {
@@ -312,6 +336,7 @@ export async function syncArr(): Promise<JobResult> {
       ok++;
     } catch {
       errors++;
+      failedInstanceIds.push(inst.id);
     }
   }
 
@@ -324,10 +349,12 @@ export async function syncArr(): Promise<JobResult> {
     };
   }
 
-  replaceArrItems(matched);
-  replaceArrUnmatched(unmatchedRecs);
+  replaceArrItems(matched, failedInstanceIds);
+  replaceArrUnmatched(unmatchedRecs, failedInstanceIds);
   const unmatched = unmatchedRecs.length;
-  const errNote = errors ? ` (${errors} instance error(s))` : '';
+  const errNote = errors
+    ? ` (${errors} instance error(s); their cached data kept)`
+    : '';
   return {
     result: matched.length,
     message: `Matched ${matched.length} of ${total} titles (${unmatched} downloaded but not in Plex)${errNote}.`,

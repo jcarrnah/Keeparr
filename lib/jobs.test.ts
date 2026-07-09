@@ -1,6 +1,6 @@
 import { beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { __setTestDbToMemory, __closeDb } from './db';
-import { getJobState, setJobState } from './queries';
+import { getJobState, setJobState, resetInterruptedJobs } from './queries';
 import { setJobSchedules } from './settings';
 import { runWithState, dueJobs, isDue } from './jobs';
 import type { JobSchedule } from './config';
@@ -57,6 +57,15 @@ describe('runWithState', () => {
     });
     expect(ran).toBe(false);
     expect(called).toBe(false);
+  });
+
+  it('a stale running row (crash mid-job) is recoverable after the boot reset', async () => {
+    // Simulate a process killed mid-run: the persisted 'running' row survives.
+    setJobState('watch', { lastStatus: 'running' });
+    resetInterruptedJobs(); // what startScheduler() does at boot
+    const ran = await runWithState('watch', async () => ({ result: 1, message: 'ok' }));
+    expect(ran).toBe(true); // no longer permanently gated out
+    expect(getJobState('watch').lastStatus).toBe('ok');
   });
 });
 

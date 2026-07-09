@@ -39,6 +39,34 @@ async function seerrGet<T>(
   });
 }
 
+const PAGE_SIZE = 200;
+const MAX_PAGES = 50; // safety cap (10k rows) against a server that never ends
+
+/**
+ * Page through a Seerr list endpoint (`take`/`skip`, `{pageInfo, results}`
+ * envelope) until exhausted. A single `take=200` silently drops everything past
+ * the first page (users beyond 200, a heavy requester's older requests).
+ */
+async function seerrGetPaged<T>(
+  base: string,
+  apiKey: string,
+  path: string
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const data = await seerrGet<{
+      pageInfo?: { pages?: number; page?: number };
+      results?: T[];
+    }>(base, apiKey, `${path}?take=${PAGE_SIZE}&skip=${page * PAGE_SIZE}`);
+    const batch = data.results ?? [];
+    out.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+    const info = data.pageInfo;
+    if (info?.pages != null && info?.page != null && info.page >= info.pages) break;
+  }
+  return out;
+}
+
 export async function testSeerr(
   base: string,
   apiKey: string
@@ -60,12 +88,7 @@ async function findSeerrUserId(
   apiKey: string,
   match: { email: string | null; username: string | null }
 ): Promise<number | null> {
-  const data = await seerrGet<{ results?: SeerrUser[] }>(
-    base,
-    apiKey,
-    '/user?take=200'
-  );
-  const users = data.results ?? [];
+  const users = await seerrGetPaged<SeerrUser>(base, apiKey, '/user');
   const lcEmail = match.email?.toLowerCase();
   const lcUser = match.username?.toLowerCase();
   const found = users.find(
@@ -92,12 +115,11 @@ export async function requestedRatingKeysForUser(
 ): Promise<Set<string>> {
   const userId = await findSeerrUserId(base, apiKey, match);
   if (userId == null) return new Set();
-  const data = await seerrGet<{ results?: SeerrRequest[] }>(
+  const requests = await seerrGetPaged<SeerrRequest>(
     base,
     apiKey,
-    `/user/${userId}/requests?take=200`
+    `/user/${userId}/requests`
   );
-  const requests = data.results ?? [];
   const keys = new Set<string>();
 
   if (getMediaServerType() === 'plex') {

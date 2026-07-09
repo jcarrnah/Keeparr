@@ -18,18 +18,25 @@ export default function SearchBox() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement | null>(null);
+  // Guards against out-of-order responses: only the latest suggest request may
+  // commit (a slow response for an old prefix must not overwrite — or reopen
+  // the dropdown after — what the user typed since).
+  const suggestSeq = useRef(0);
 
   // Debounced typeahead.
   useEffect(() => {
     const term = q.trim();
     if (term.length < 2) {
+      suggestSeq.current++; // invalidate any in-flight suggest for cleared input
       setSuggestions([]);
       return;
     }
     const t = setTimeout(() => {
+      const seq = ++suggestSeq.current;
       fetch(`/api/search/suggest?q=${encodeURIComponent(term)}`)
         .then((r) => r.json())
         .then((d) => {
+          if (seq !== suggestSeq.current) return; // superseded — drop it
           setSuggestions(d.suggestions ?? []);
           setOpen(true);
         })

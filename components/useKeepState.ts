@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useToast } from './Toaster';
 
 /**
@@ -44,8 +44,16 @@ export function useKeepState(opts: {
   // No-op when no ToastProvider is mounted, so the hook stays test-safe.
   const toast = useToast();
 
+  // The three states are mutually exclusive, so ANY in-flight mutation blocks
+  // all three toggles — interleaved requests would race server-side and their
+  // failure-revert snapshots would clobber each other's optimistic state. A ref
+  // (not the busy states) so back-to-back clicks in one tick are blocked too —
+  // state updates only land on the next render.
+  const inFlight = useRef(false);
+
   async function toggleKeep() {
-    if (busy) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     // Snapshot all three so a failed request restores the FULL prior state, not
     // just the toggled flag (toggling one optimistically clears the others).
     const prev = { keptByMe, skipped, markedForDelete };
@@ -74,12 +82,14 @@ export function useKeepState(opts: {
       setMarkedForDelete(prev.markedForDelete);
       toast("Couldn't save the keep — change reverted.", 'error');
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
   async function toggleSkip() {
-    if (skipBusy) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     const prev = { keptByMe, skipped, markedForDelete };
     const next = !skipped;
     setSkipped(next); // optimistic
@@ -106,12 +116,14 @@ export function useKeepState(opts: {
       setMarkedForDelete(prev.markedForDelete);
       toast("Couldn't save \"don't care\" — change reverted.", 'error');
     } finally {
+      inFlight.current = false;
       setSkipBusy(false);
     }
   }
 
   async function toggleDelete() {
-    if (deleteBusy) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     const prev = { keptByMe, skipped, markedForDelete };
     const next = !markedForDelete;
     setMarkedForDelete(next); // optimistic
@@ -138,6 +150,7 @@ export function useKeepState(opts: {
       setMarkedForDelete(prev.markedForDelete);
       toast("Couldn't save \"OK to delete\" — change reverted.", 'error');
     } finally {
+      inFlight.current = false;
       setDeleteBusy(false);
     }
   }

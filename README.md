@@ -99,11 +99,11 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   each (and a "still kept" flag where someone else's keep still protects it).
 - **Size on disk** — series totals are summed across every episode; movies across
   all parts/versions. Shown as `x.xx GB` per card; aggregates auto-switch to TB.
-- **Scheduled refresh jobs** — admins set a schedule (every N minutes, or daily at a
-  set time) per job and run any on demand from **Settings → Jobs & Cache**: *Recently
-  Added* (cheap, every 5 min), *Plex Full Library Scan* (daily 3 AM), *Library size*
-  (the expensive per-show recompute, daily 6 AM), *Tautulli* (4 AM), *Seerr* (5 AM),
-  and *Backup* (8 AM).
+- **Scheduled refresh jobs** — admins set a schedule (every N minutes, daily, or
+  weekly at a set time) per job and run any on demand from **Settings → Jobs &
+  Cache**: *Recently Added* (cheap, every 5 min), *Plex Full Library Scan* (daily
+  3 AM), *Tautulli* (4 AM), *Seerr* (5 AM), *Library size* (the expensive per-show
+  recompute, daily 6 AM), *Sonarr / Radarr* (7 AM), and *Backup* (8 AM).
   Clear the poster / Seerr / watch caches from the same page, and view app events
   under **Settings → Logs**. A **Recent activity** list shows the last runs + errors.
 - **Sonarr / Radarr** (optional) — connect any number of Sonarr and Radarr instances
@@ -411,14 +411,16 @@ Jobs** (daily is plenty) so your keeps/settings are snapshotted automatically.
 
 ### Updating
 
-A newer release is out. Update the deployment:
+A newer release is out. Every push to `main` publishes a versioned image to
+`ghcr.io/drohack/keeparr` — pull it and restart:
 
 ```bash
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-Your data carries over (it lives in the mounted `data/` volume).
+(Unraid: update from the Community Applications / Docker tab as usual.) Your
+data carries over (it lives in the mounted `data/` volume).
 
 ## How "size on disk" is computed
 
@@ -428,10 +430,11 @@ per show and sums every episode's parts — counting each **physical file once**
 a multi-episode file (where Plex reports the full size on every episode it holds)
 isn't multiplied. Jellyfin/Emby work the same way via `MediaSources[].Size` (summed
 across a series' episodes, deduped by file path). Results are cached in SQLite, so
-pages read instantly. Because the per-show calls are the expensive part, the **Series
-sizes** job is separate from the cheap **Library data** job — schedule the size
-recompute less often (default every 12h) and the inventory refresh more often
-(default hourly), or run either on demand. Jobs are checked each minute and fire
+pages read instantly. Because the per-show calls are the expensive part, the **Library size**
+job is separate from the cheap **Library scan** job — schedule the size
+recompute less often (default daily at 6 AM) and the inventory refresh more often
+(default daily at 3 AM, with the cheap *Recently Added* scan filling the gap every
+5 minutes), or run either on demand. Jobs are checked each minute and fire
 when due.
 
 ## Media item IDs (one backend per instance)

@@ -1,5 +1,6 @@
 import { isServerConfigured } from './settings';
 import { dueJobs, runJob } from './jobs';
+import { logEvent, resetInterruptedJobs } from './queries';
 
 let started = false;
 
@@ -11,6 +12,17 @@ let started = false;
 export function startScheduler(): void {
   if (started) return;
   started = true;
+
+  // A job killed mid-run (restart/OOM) left its 'running' row behind, which
+  // gates it out of the scheduler AND manual runs forever — clear it now.
+  try {
+    const n = resetInterruptedJobs();
+    if (n > 0) {
+      logEvent('warn', 'scheduler', `Reset ${n} job(s) stuck in 'running' after restart.`);
+    }
+  } catch {
+    /* never block boot */
+  }
 
   const tick = () => {
     try {

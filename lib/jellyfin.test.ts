@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __setTestDbToMemory, __closeDb } from './db';
 import {
+  getSeriesSize,
   providerId,
   sumMediaSources,
   toBackendItem,
@@ -60,5 +62,55 @@ describe('jellyfin mapping (pure)', () => {
     const row = toBackendItem(it, false);
     expect(row.sizeBytes).toBe(0);
     expect(row.guidTvdb).toBe('81189');
+  });
+});
+
+function fakeRes(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get: (h: string) =>
+        h.toLowerCase() === 'content-type' ? 'application/json' : null,
+    },
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
+}
+
+describe('paged /Items reads (StartIndex/Limit)', () => {
+  beforeEach(() => {
+    __setTestDbToMemory(); // authHeaders reads the persisted device id
+  });
+  afterEach(() => vi.restoreAllMocks());
+  afterAll(() => __closeDb());
+
+  it('getSeriesSize pages until TotalRecordCount is exhausted', async () => {
+    const ep = (path: string, size: number): JfItem => ({
+      MediaSources: [{ Path: path, Size: size }],
+    });
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      // Server answers with fewer rows than asked — the loop must follow
+      // TotalRecordCount, not assume one page covers everything.
+      .mockResolvedValueOnce(
+        fakeRes({ Items: [ep('/a', 1 * GB), ep('/b', 2 * GB)], TotalRecordCount: 3 })
+      )
+      .mockResolvedValueOnce(
+        fakeRes({ Items: [ep('/c', 4 * GB)], TotalRecordCount: 3 })
+      );
+    const size = await getSeriesSize('http://jf:8096', 'tok', 'series1');
+    expect(size).toBe(7 * GB);
+    expect(spy).toHaveBeenCalledTimes(2);
+    // The second page picked up where the first left off.
+    expect(String(spy.mock.calls[1][0])).toContain('StartIndex=2');
+  });
+
+  it('stops immediately on an empty page', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeRes({ Items: [], TotalRecordCount: 0 }));
+    await expect(getSeriesSize('http://jf:8096', 'tok', 's')).resolves.toBe(0);
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });

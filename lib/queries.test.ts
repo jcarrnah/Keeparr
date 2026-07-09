@@ -48,6 +48,7 @@ import {
   setJobState,
   isJobRunning,
   getAllJobState,
+  resetInterruptedJobs,
   setUserEnabled,
   recordJobRun,
   recentJobRuns,
@@ -270,6 +271,18 @@ describe('job state', () => {
       'requests',
     ]);
   });
+
+  it('resetInterruptedJobs flips stuck running rows to error, others untouched', () => {
+    setJobState('sizes', { lastStatus: 'running', lastRun: 50, lastMessage: 'Running…' });
+    setJobState('library', { lastStatus: 'ok', lastRun: 99 });
+    expect(resetInterruptedJobs()).toBe(1);
+    const s = getJobState('sizes');
+    expect(s.lastStatus).toBe('error');
+    expect(s.lastMessage).toContain('Interrupted');
+    expect(s.lastRun).toBe(50); // preserved so the schedule re-fires normally
+    expect(isJobRunning('sizes')).toBe(false);
+    expect(getJobState('library').lastStatus).toBe('ok');
+  });
 });
 
 describe('seerr request cache', () => {
@@ -388,6 +401,18 @@ describe('media upsert + tombstone', () => {
     const removed = tombstoneStale(2000); // anything older than this sync
     expect(removed).toBe(1); // item 2 tombstoned
     expect(libraryStats().totalItems).toBe(1);
+  });
+
+  it('excluded sections are shielded from the tombstone sweep', () => {
+    upsertMediaBatch(
+      [media('1', { sectionId: '1' }), media('2', { sectionId: '2' })],
+      1000
+    );
+    // Neither item was re-touched, but section 2's scan came back empty-but-200
+    // — its rows must survive the sweep.
+    const removed = tombstoneStale(2000, ['2']);
+    expect(removed).toBe(1); // only section 1's stale item
+    expect(libraryStats().totalItems).toBe(1); // section 2's row survived
   });
 });
 
@@ -819,6 +844,16 @@ describe('arr_items (Sonarr/Radarr filters in queryLibrary)', () => {
     expect(keys({ sources: ['radarr'] })).toEqual([]);
     expect(keys({})).toEqual(['1', '2', '3']); // all media still there
   });
+
+  it('replaceArrItems preserves rows of instances that failed this run', () => {
+    // Radarr (r1) succeeded with a fresh row for item 3; Sonarr (s1) failed —
+    // its item-2 row must survive, r1's stale item-1 row must not.
+    replaceArrItems([arr({ ratingKey: '3', source: 'radarr' })], ['s1']);
+    const rows = queryLibrary({ plexUserId: 'u', limit: 100, offset: 0 });
+    expect(rows.find((r) => r.rating_key === '1')?.arr_source).toBeNull(); // wiped
+    expect(rows.find((r) => r.rating_key === '2')?.arr_source).toBe('sonarr'); // kept
+    expect(rows.find((r) => r.rating_key === '3')?.arr_source).toBe('radarr'); // fresh
+  });
 });
 
 describe('arr match health + quality summary', () => {
@@ -853,14 +888,28 @@ describe('arr match health + quality summary', () => {
 
   it('replaceArrUnmatched / getArrUnmatched / clearArrUnmatched round-trip (largest first)', () => {
     replaceArrUnmatched([
-      { source: 'sonarr', instanceName: 'S', title: 'Ghost', extKind: 'tvdb', extId: '999', sizeBytes: 1_000 },
-      { source: 'radarr', instanceName: 'R', title: 'Big Orphan', extKind: 'tmdb', extId: '42', sizeBytes: 9_000 },
+      { source: 'sonarr', instanceId: 's1', instanceName: 'S', title: 'Ghost', extKind: 'tvdb', extId: '999', sizeBytes: 1_000 },
+      { source: 'radarr', instanceId: 'r1', instanceName: 'R', title: 'Big Orphan', extKind: 'tmdb', extId: '42', sizeBytes: 9_000 },
     ]);
     const rows = getArrUnmatched();
     expect(rows.map((u) => u.title)).toEqual(['Big Orphan', 'Ghost']); // size DESC
     expect(rows[0].sizeBytes).toBe(9_000);
+    expect(rows[0].instanceId).toBe('r1');
     clearArrUnmatched();
     expect(getArrUnmatched()).toEqual([]);
+  });
+
+  it('replaceArrUnmatched preserves rows of instances that failed this run', () => {
+    replaceArrUnmatched([
+      { source: 'sonarr', instanceId: 's1', instanceName: 'S', title: 'Ghost', extKind: 'tvdb', extId: '999', sizeBytes: 1_000 },
+      { source: 'radarr', instanceId: 'r1', instanceName: 'R', title: 'Big Orphan', extKind: 'tmdb', extId: '42', sizeBytes: 9_000 },
+    ]);
+    // Sonarr (s1) failed the next run; Radarr (r1) succeeded with a new list.
+    replaceArrUnmatched(
+      [{ source: 'radarr', instanceId: 'r1', instanceName: 'R', title: 'Newcomer', extKind: 'tmdb', extId: '43', sizeBytes: 5_000 }],
+      ['s1']
+    );
+    expect(getArrUnmatched().map((u) => u.title).sort()).toEqual(['Ghost', 'Newcomer']);
   });
 
   it('mediaMissingExternalIds counts only null-guid media', () => {

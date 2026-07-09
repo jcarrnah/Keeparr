@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { LibrarySection, MediaCardData } from '@/lib/types';
 import { formatSize } from '@/lib/format';
@@ -156,6 +156,9 @@ export default function LibraryBrowser({
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [requested, setRequested] = useState<Set<string>>(new Set());
+  // Guards against out-of-order responses: only the latest request may commit
+  // state (a slow old response must not clobber a newer one).
+  const fetchSeq = useRef(0);
 
   const selectedIds = useMemo(
     () => new Set(selectedKey.split(',').filter(Boolean)),
@@ -245,6 +248,7 @@ export default function LibraryBrowser({
 
   const fetchPage = useCallback(
     async (reset: boolean) => {
+      const seq = ++fetchSeq.current;
       setLoading(true);
       const off = reset ? 0 : offset;
       const params = new URLSearchParams();
@@ -269,6 +273,7 @@ export default function LibraryBrowser({
       params.set('offset', String(off));
       try {
         const data = await fetch(`/api/library?${params}`).then((r) => r.json());
+        if (seq !== fetchSeq.current) return; // superseded — drop it
         // An error response (e.g. a 500) has no `items` — guard so the view
         // doesn't crash on a spread/map of undefined.
         const list = Array.isArray(data.items) ? data.items : [];
@@ -276,9 +281,10 @@ export default function LibraryBrowser({
         if (typeof data.nextOffset === 'number') setOffset(data.nextOffset);
         setItems((prev) => (reset ? list : [...prev, ...list]));
       } catch {
+        if (seq !== fetchSeq.current) return; // superseded — don't toast for it
         toast("Couldn't load the library — is the server reachable?", 'error');
       } finally {
-        setLoading(false);
+        if (seq === fetchSeq.current) setLoading(false);
       }
     },
     [selectedKey, debouncedQ, sort, dir, states, watch, tautulli, requestedByMe,

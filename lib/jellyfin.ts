@@ -286,6 +286,33 @@ export async function getItems(
 }
 
 /**
+ * Page through an /Items-style endpoint (StartIndex/Limit, TotalRecordCount
+ * envelope) until exhausted — same loop as getItems. A flat Limit silently
+ * truncates large result sets (episodes dominate watch history).
+ */
+async function fetchAllPages<T>(
+  urlWithoutPaging: string,
+  token: string,
+  label: string,
+  pageSize = 1000
+): Promise<T[]> {
+  const out: T[] = [];
+  let start = 0;
+  for (;;) {
+    const d = await fetchJson<{ Items?: T[]; TotalRecordCount?: number }>(
+      `${urlWithoutPaging}&StartIndex=${start}&Limit=${pageSize}`,
+      { headers: authHeaders(token), label }
+    );
+    const batch = d.Items ?? [];
+    out.push(...batch);
+    start += batch.length;
+    const total = d.TotalRecordCount ?? batch.length;
+    if (batch.length === 0 || start >= total) break;
+  }
+  return out;
+}
+
+/**
  * Native watch history across all server users. Movies key on their item id;
  * episodes roll up to their series (SeriesId) so a series counts as watched if
  * any episode is — mirroring how the Tautulli path aggregates to grandparent.
@@ -306,15 +333,14 @@ export async function getWatchHistory(
       IncludeItemTypes: 'Movie,Episode',
       IsPlayed: 'true',
       fields: 'UserData,SeriesId',
-      Limit: '10000',
     });
     let items: Record<string, unknown>[];
     try {
-      const d = await fetchJson<{ Items?: Record<string, unknown>[] }>(
+      items = await fetchAllPages<Record<string, unknown>>(
         `${base(baseUrl)}/Users/${u.id}/Items?${qs.toString()}`,
-        { headers: authHeaders(token), label: 'Jellyfin watched' }
+        token,
+        'Jellyfin watched'
       );
-      items = d.Items ?? [];
     } catch {
       continue; // skip a user we can't read
     }
@@ -357,11 +383,11 @@ export async function getSeriesSize(
     Recursive: 'true',
     IncludeItemTypes: 'Episode',
     fields: 'MediaSources',
-    Limit: '10000',
   });
-  const d = await fetchJson<{ Items?: JfItem[] }>(
+  const items = await fetchAllPages<JfItem>(
     `${base(baseUrl)}/Items?${qs.toString()}`,
-    { headers: authHeaders(token), label: 'Jellyfin episodes' }
+    token,
+    'Jellyfin episodes'
   );
-  return sumMediaSources(d.Items ?? []);
+  return sumMediaSources(items);
 }

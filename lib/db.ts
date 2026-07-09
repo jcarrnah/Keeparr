@@ -4,8 +4,9 @@ import { DB_PATH, DATA_DIR } from './config';
 
 let db: Database.Database | null = null;
 
-/** Create the schema on a freshly opened database. */
-function applySchema(database: Database.Database): void {
+/** Create the schema on a freshly opened database. Exported for tests only —
+ *  the app always goes through getDb(). */
+export function applySchema(database: Database.Database): void {
   database.pragma('foreign_keys = ON');
   database.exec(`
     -- One row per series (show) or movie. Episodes are NOT stored individually;
@@ -151,6 +152,7 @@ function applySchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS arr_unmatched (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       source        TEXT NOT NULL,              -- 'sonarr' | 'radarr'
+      instance_id   TEXT NOT NULL DEFAULT '',   -- scopes the per-instance replace
       instance_name TEXT NOT NULL,
       title         TEXT NOT NULL,
       ext_kind      TEXT NOT NULL,              -- 'tvdb' | 'tmdb'
@@ -212,6 +214,14 @@ function migrate(database: Database.Database): void {
       `ALTER TABLE arr_unmatched ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0`
     );
   }
+  // arr_unmatched gained instance_id (scopes the per-instance replace so one
+  // failed instance doesn't lose its cached rows). A '' row is never in a
+  // preserve list, so it's swept up by the next successful arr run.
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'instance_id')) {
+    database.exec(
+      `ALTER TABLE arr_unmatched ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''`
+    );
+  }
 
   // media_items gained guid_imdb (an extra arr-match axis). Backfilled to NULL;
   // the next library scan populates it. Additive, no data touched.
@@ -229,19 +239,28 @@ function migrate(database: Database.Database): void {
     .prepare(`PRAGMA table_info(keeps)`)
     .all() as { name: string }[];
   if (keepCols.length > 0 && !keepCols.some((c) => c.name === 'plex_user_id')) {
-    database.exec(`
-      CREATE TABLE keeps_new (
-        plex_user_id TEXT NOT NULL,
-        rating_key   TEXT NOT NULL REFERENCES media_items(rating_key) ON DELETE CASCADE,
-        kept_at      INTEGER NOT NULL,
-        PRIMARY KEY (plex_user_id, rating_key)
-      );
-      INSERT OR IGNORE INTO keeps_new (plex_user_id, rating_key, kept_at)
-        SELECT kept_by, rating_key, kept_at FROM keeps;
-      DROP TABLE keeps;
-      ALTER TABLE keeps_new RENAME TO keeps;
-      CREATE INDEX IF NOT EXISTS idx_keeps_item ON keeps(rating_key);
-    `);
+    // A leftover keeps_new can only be an orphaned partial copy from a crash
+    // mid-rebuild (this branch only runs while keeps is still legacy-shape) —
+    // drop it and redo, else CREATE TABLE below would fail and block boot.
+    database.exec('DROP TABLE IF EXISTS keeps_new');
+    // One transaction so a crash rolls back to the intact legacy table —
+    // autocommit-per-statement left windows that boot-looped or silently
+    // emptied keeps.
+    database.transaction(() => {
+      database.exec(`
+        CREATE TABLE keeps_new (
+          plex_user_id TEXT NOT NULL,
+          rating_key   TEXT NOT NULL REFERENCES media_items(rating_key) ON DELETE CASCADE,
+          kept_at      INTEGER NOT NULL,
+          PRIMARY KEY (plex_user_id, rating_key)
+        );
+        INSERT OR IGNORE INTO keeps_new (plex_user_id, rating_key, kept_at)
+          SELECT kept_by, rating_key, kept_at FROM keeps;
+        DROP TABLE keeps;
+        ALTER TABLE keeps_new RENAME TO keeps;
+        CREATE INDEX IF NOT EXISTS idx_keeps_item ON keeps(rating_key);
+      `);
+    })();
   }
 }
 

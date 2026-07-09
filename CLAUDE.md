@@ -81,9 +81,12 @@ lib/
                      backend directly.
   sync.ts            job runners (backend-agnostic via getBackend()): syncRecentlyAdded /
                      syncLibrary / syncSizes / syncWatchHistory / syncSeerrRequests / syncArr
-                     (+ syncSeerrRequestsForUser: warm one user's request cache on first login)
+                     (+ syncSeerrRequestsForUser: warm one user's request cache on first login).
+                     syncLibrary aborts on zero sections + skips tombstoning
+                     empty-but-200 sections; syncArr keeps a failed instance's cache
   jobs.ts            job registry + runJob/runWithState (single-flight) + isDue/dueJobs
-  scheduler.ts       per-job scheduler (interval or daily HH:MM); fires due jobs each minute
+  scheduler.ts       per-job scheduler (interval or daily HH:MM); fires due jobs each
+                     minute; resets stale 'running' job rows at boot (resetInterruptedJobs)
   cards.ts           MediaItem → MediaCardData (+ proxied poster URL)
   storage.ts         fs.statfs free/total per filesystem (Node-only); dedupes mounts
   cache.ts           on-disk poster cache (read/write/clear/stats) — Node-only
@@ -119,11 +122,16 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
 ## Database schema (`lib/db.ts`)
 
 - `media_items` — one row per **series or movie** (no episodes). `size_bytes` is
-  the summed total. Tombstoned with `removed=1` when gone from Plex.
+  the summed total. Tombstoned with `removed=1` when gone from Plex. The full
+  Library sweep aborts if the backend reports zero sections, and skips the
+  removal check for scanned sections that returned zero items — an empty-but-200
+  hiccup (e.g. PMS mid-restart) must not tombstone a whole library.
 - `keeps` — per-user keeps. PK `(plex_user_id, rating_key)`; index on
   `rating_key`. An item is protected if **any** row exists for it; each user
   manages only their own keep. (Was a single global row per item; `migrate()`
-  rebuilds the legacy table, carrying `kept_by` → `plex_user_id`.)
+  rebuilds the legacy table, carrying `kept_by` → `plex_user_id` — inside one
+  transaction, so a crash rolls back to the intact legacy table; an orphaned
+  `keeps_new` from an older crash is dropped and the rebuild redone.)
 - `user_skips` — `(plex_user_id, rating_key)`; per-user "don't care". Mutually
   exclusive with that user's keep + "OK to delete" (the keep/skip/mark-delete routes
   clear the others).
@@ -153,18 +161,25 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
 - `arr_items` — one row per matched media item with its Sonarr/Radarr metadata
   (`source`, `instance_id/name`, `arr_id`, `monitored`, `status`, `quality` +
   `quality_kind` file|profile, `root_folder`, `arr_size_bytes`, `tags` JSON). Keyed
-  by `rating_key`; replaced wholesale by the `arr` job. LEFT-JOINed by `queryLibrary`
+  by `rating_key`; replaced per-instance by the `arr` job — instances that failed
+  a run keep their cached rows; instances removed from settings drop out next
+  run. LEFT-JOINed by `queryLibrary`
   to power Browse's List view + quality/tag/monitored/status/size-mismatch filters.
 - `arr_unmatched` — Sonarr/Radarr titles that matched no Plex item. Only
   **downloaded** ones (`sizeOnDisk > 0`, stored as `size_bytes`) are recorded — they're
   media on disk Plex can't see (actionable); wanted-but-not-downloaded titles are skipped
-  (just missing media). Replaced by the `arr` job; surfaced in Settings → Match health
+  (just missing media). Replaced per-instance by the `arr` job (like
+  `arr_items`); surfaced in Settings → Match health
   largest-first with sizes + a total. (`mediaMissingExternalIds()` reports the inverse:
   Plex items with a null `guid_tvdb`/`guid_tmdb` that can never match.) Matched via
-  `media_items.guid_tvdb`/`guid_tmdb` (indexed). `size_bytes` added via guarded `ALTER`.
+  `media_items.guid_tvdb`/`guid_tmdb` (indexed). `size_bytes` + `instance_id`
+  (scopes the per-instance replace) added via guarded `ALTER`s.
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
-  `requests`/`arr`): last run/status/message/duration/result.
+  `requests`/`arr`): last run/status/message/duration/result. Rows stuck at
+  `running` (process killed mid-job) are flipped to `error` at boot by
+  `startScheduler()` → `resetInterruptedJobs()` — the persisted flag would
+  otherwise gate that job out of the scheduler AND manual runs forever.
 - `job_runs` — append-only run history (last ~100) for the admin activity log.
 - `logs` — app-event log (`ts,level,source,message`, pruned to ~1000) for Settings → Logs.
 - `sync_state` — legacy single row (id=1); superseded by `job_state`, no longer read.
@@ -428,7 +443,9 @@ backend-aware UI are clickable offline (default = Plex). All inert/absent in pro
   IncludeItemTypes=Movie|Series&ParentId=&fields=ProviderIds,MediaSources,DateCreated`
   (paged via StartIndex/Limit + TotalRecordCount). Series size = `GET
   /Items?ParentId={id}&Recursive=true&IncludeItemTypes=Episode&fields=MediaSources`,
-  summing `MediaSources[].Size` deduped by `Path` (multi-episode files). Size on disk =
+  summing `MediaSources[].Size` deduped by `Path` (multi-episode files). ALL
+  /Items reads page (watch history + episode reads too, via `fetchAllPages`) —
+  a flat `Limit` silently truncates large sets. Size on disk =
   `MediaSources[].Size`; ids = `ProviderIds.{Tmdb,Tvdb}` → `guid_tmdb/guid_tvdb`; added =
   `DateCreated`; poster = `GET /Items/{id}/Images/Primary?fillWidth=&fillHeight=&api_key=`.
   Emby is the same API (only the auth-header version string differs). Unverified against a
@@ -438,7 +455,9 @@ backend-aware UI are clickable offline (default = Plex). All inert/absent in pro
   `response.data.data[]` (object); aggregate by `grandparent_rating_key`
   (episodes) / `rating_key` (movies).
 - **Seerr**: base `/api/v1`, header `X-Api-Key`. Match the user to a Seerr user by
-  email / plex / jellyfin username, then read `/user/{id}/requests`. On Plex,
+  email / plex / jellyfin username, then read `/user/{id}/requests`. Both `/user`
+  and `/user/{id}/requests` are paged via `take`/`skip` (`seerrGetPaged`) — a
+  single `take=200` drops users/requests past the first page. On Plex,
   `media.ratingKey` IS the rating key (direct join); on Jellyfin/Emby that isn't our
   item id, so we match the request's `media.tmdbId` (movies) / `tvdbId` (tv) to
   `media_items.guid_tmdb`/`guid_tvdb` via `ratingKeysByGuid`.
@@ -473,8 +492,9 @@ A fuller source-verified reference is in the planning doc
 - **Toasts**: `components/Toaster.tsx` — `ToastProvider` mounts once in
   AppShell; `useToast()(msg, 'info'|'success'|'error')` anywhere below it
   (no-op fallback without a provider, so hooks stay test-safe). Used for
-  silent-failure paths (keep/skip/delete revert, feed/library load errors,
-  job/backup actions); settings panels keep their inline `msg` text.
+  silent-failure paths (keep/skip/delete revert, feed/library/search/stats load
+  errors + a failed Keep batch, job/backup actions); settings panels keep their
+  inline `msg` text (success shown only after `res.ok`).
 - **Dates in lists**: `formatRelative(unixSec)` from `lib/format.ts` as the
   visible text with the absolute `toLocaleString()` in `title` (hover).
 - `lib/clipboard.ts copyText()` for all copy-to-clipboard (has the
@@ -488,7 +508,13 @@ A fuller source-verified reference is in the planning doc
   `components/ShortcutsOverlay.tsx`.
 - Server components guard admin pages and pass to client components that fetch
   their own data.
-- Optimistic UI for keep toggles (revert on failure).
+- Optimistic UI for keep toggles (revert on failure; any in-flight
+  keep/skip/delete blocks the other two — the states are mutually exclusive, so
+  interleaved requests would desync UI from server).
+- **List fetchers guard against stale responses** with a per-component `useRef`
+  sequence counter: capture `++seq` at fetch start; once superseded, drop the
+  response (including its toast and `setLoading(false)`). See LibraryBrowser /
+  SearchResults / StatsView / KeepView / SearchBox — new fetchers follow suit.
 - Refresh work is split into scheduled jobs (`lib/jobs.ts`): `recentlyAdded` (cheap,
   newest items only), `library` (full inventory + movie sizes + new-show sizing),
   `sizes` (expensive per-series `getAllLeaves` recompute), `watch` (Tautulli),

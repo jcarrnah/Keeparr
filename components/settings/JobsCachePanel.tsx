@@ -139,12 +139,15 @@ export default function JobsCachePanel() {
     setSaving(true);
     setMsg('');
     try {
-      await fetch('/api/admin/settings', {
+      const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobSchedules: schedules }),
       });
+      if (!res.ok) throw new Error(String(res.status));
       setMsg('Saved.');
+    } catch {
+      setMsg("Couldn't save — schedules unchanged.");
     } finally {
       setSaving(false);
     }

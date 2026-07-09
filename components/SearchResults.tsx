@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MediaCardData } from '@/lib/types';
 import MediaCard, { CARD_GRID_CLASS } from './MediaCard';
+import { useToast } from './Toaster';
 
 export default function SearchResults({ query }: { query: string }) {
   const [items, setItems] = useState<MediaCardData[]>([]);
@@ -10,6 +11,10 @@ export default function SearchResults({ query }: { query: string }) {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [requested, setRequested] = useState<Set<string>>(new Set());
+  const toast = useToast();
+  // Guards against out-of-order responses: only the latest request may commit
+  // state (a slow old response must not clobber a newer one).
+  const fetchSeq = useRef(0);
 
   // Load Seerr requested keys once (for the "Requested" badge).
   useEffect(() => {
@@ -21,6 +26,7 @@ export default function SearchResults({ query }: { query: string }) {
 
   const fetchPage = useCallback(
     async (reset: boolean) => {
+      const seq = ++fetchSeq.current; // also invalidates in-flight fetches on clear
       if (!query.trim()) {
         setItems([]);
         setHasMore(false);
@@ -29,13 +35,23 @@ export default function SearchResults({ query }: { query: string }) {
       setLoading(true);
       const off = reset ? 0 : offset;
       const params = new URLSearchParams({ q: query, offset: String(off) });
-      const data = await fetch(`/api/search?${params}`).then((r) => r.json());
-      setHasMore(data.hasMore);
-      setOffset(data.nextOffset);
-      setItems((prev) => (reset ? data.items : [...prev, ...data.items]));
-      setLoading(false);
+      try {
+        const data = await fetch(`/api/search?${params}`).then((r) => r.json());
+        if (seq !== fetchSeq.current) return; // superseded — drop it
+        // An error response (e.g. a 500) has no `items` — guard so the view
+        // doesn't crash on a spread/map of undefined.
+        const list = Array.isArray(data.items) ? data.items : [];
+        setHasMore(!!data.hasMore);
+        if (typeof data.nextOffset === 'number') setOffset(data.nextOffset);
+        setItems((prev) => (reset ? list : [...prev, ...list]));
+      } catch {
+        if (seq !== fetchSeq.current) return; // superseded — don't toast for it
+        toast("Couldn't load search results — is the server reachable?", 'error');
+      } finally {
+        if (seq === fetchSeq.current) setLoading(false);
+      }
     },
-    [query, offset]
+    [query, offset, toast]
   );
 
   // Reset + reload when the query changes.

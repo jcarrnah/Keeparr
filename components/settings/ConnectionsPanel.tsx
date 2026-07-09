@@ -391,7 +391,7 @@ export default function ConnectionsPanel() {
           return;
         }
       }
-      await fetch('/api/admin/settings', {
+      const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -403,9 +403,13 @@ export default function ConnectionsPanel() {
           },
         }),
       });
+      if (!res.ok) throw new Error(String(res.status));
       setMsg(`Connected to ${srv.name}.`);
       setServers(null);
       await load();
+    } catch {
+      // Discovered-servers list stays visible for a retry click.
+      setMsg(`Couldn't connect to ${srv.name} — nothing was saved.`);
     } finally {
       setSaving(false);
     }
@@ -463,7 +467,7 @@ export default function ConnectionsPanel() {
       const storageMappings = Object.entries(storagePaths)
         .map(([sectionId, path]) => ({ sectionId, path: (path ?? '').trim() }))
         .filter((m) => m.path.length > 0);
-      await fetch('/api/admin/settings', {
+      const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -476,10 +480,15 @@ export default function ConnectionsPanel() {
           storageMappings,
         }),
       });
+      if (!res.ok) throw new Error(String(res.status));
+      // Only on success — a failed save must keep the typed API keys in their
+      // inputs so the admin can just hit Save again instead of re-typing them.
       setTautKey('');
       setSeerrKey('');
       setMsg('Saved.');
       await load();
+    } catch {
+      setMsg("Couldn't save — connections unchanged.");
     } finally {
       setSaving(false);
     }

@@ -261,14 +261,22 @@ export function upsertMediaBatch(
 /**
  * Tombstone any non-removed item whose last_synced is older than `before`.
  * Called at the end of a full sync (with that sync's timestamp) so items
- * deleted in Plex disappear here. Returns the number of items tombstoned.
+ * deleted in Plex disappear here. `excludeSectionIds` shields sections whose
+ * scan returned no items (an empty-but-200 backend hiccup must not tombstone
+ * a whole library). Returns the number of items tombstoned.
  */
-export function tombstoneStale(before: number): number {
+export function tombstoneStale(
+  before: number,
+  excludeSectionIds: string[] = []
+): number {
+  const notIn = excludeSectionIds.length
+    ? ` AND section_id NOT IN (${excludeSectionIds.map(() => '?').join(',')})`
+    : '';
   const info = getDb()
     .prepare(
-      'UPDATE media_items SET removed = 1 WHERE removed = 0 AND last_synced < ?'
+      `UPDATE media_items SET removed = 1 WHERE removed = 0 AND last_synced < ?${notIn}`
     )
-    .run(before);
+    .run(before, ...excludeSectionIds);
   return info.changes;
 }
 
@@ -1387,6 +1395,22 @@ export function isJobRunning(jobId: string): boolean {
   return getJobState(jobId).lastStatus === 'running';
 }
 
+/**
+ * Flip any job still marked 'running' to 'error' — called once at boot. A
+ * process killed mid-job leaves its persisted 'running' row behind, which
+ * would otherwise gate that job out of the scheduler AND manual runs forever.
+ * last_run is untouched so the schedule re-fires the job normally.
+ */
+export function resetInterruptedJobs(): number {
+  return getDb()
+    .prepare(
+      `UPDATE job_state SET last_status = 'error',
+         last_message = 'Interrupted by server restart'
+       WHERE last_status = 'running'`
+    )
+    .run().changes;
+}
+
 /** Append a finished run to the activity log, pruning to the most recent 100. */
 export function recordJobRun(run: {
   jobId: string;
@@ -1542,8 +1566,13 @@ export interface ArrItemInput {
   tags: string[];
 }
 
-/** Replace the whole arr_items cache atomically (small dataset; avoids stale). */
-export function replaceArrItems(rows: ArrItemInput[]): number {
+/** Replace the arr_items cache atomically (small dataset; avoids stale).
+ *  `preserveInstanceIds` keeps rows belonging to instances that failed this
+ *  run (their fresh data is missing from `rows`, not gone from the arr). */
+export function replaceArrItems(
+  rows: ArrItemInput[],
+  preserveInstanceIds: string[] = []
+): number {
   const db = getDb();
   const ins = db.prepare(
     `INSERT INTO arr_items
@@ -1559,9 +1588,16 @@ export function replaceArrItems(rows: ArrItemInput[]): number {
        arr_size_bytes=excluded.arr_size_bytes, tags=excluded.tags,
        last_synced=excluded.last_synced`
   );
+  const del = preserveInstanceIds.length
+    ? db.prepare(
+        `DELETE FROM arr_items WHERE instance_id NOT IN (${preserveInstanceIds
+          .map(() => '?')
+          .join(',')})`
+      )
+    : db.prepare('DELETE FROM arr_items');
   const ts = now();
   db.transaction(() => {
-    db.prepare('DELETE FROM arr_items').run();
+    del.run(...preserveInstanceIds);
     for (const r of rows) {
       ins.run({
         rating_key: r.ratingKey,
@@ -1664,6 +1700,7 @@ export function arrFacets(): {
 
 export interface ArrUnmatchedInput {
   source: string;
+  instanceId: string;
   instanceName: string;
   title: string;
   extKind: 'tvdb' | 'tmdb';
@@ -1675,16 +1712,27 @@ export interface ArrUnmatchedRow extends ArrUnmatchedInput {
   lastSynced: number;
 }
 
-/** Replace the whole unmatched-arr list atomically (rebuilt by the 'arr' job). */
-export function replaceArrUnmatched(rows: ArrUnmatchedInput[]): number {
+/** Replace the unmatched-arr list atomically (rebuilt by the 'arr' job).
+ *  `preserveInstanceIds` keeps rows of instances that failed this run. */
+export function replaceArrUnmatched(
+  rows: ArrUnmatchedInput[],
+  preserveInstanceIds: string[] = []
+): number {
   const db = getDb();
   const ins = db.prepare(
-    `INSERT INTO arr_unmatched (source, instance_name, title, ext_kind, ext_id, size_bytes, last_synced)
-     VALUES (@source, @instanceName, @title, @extKind, @extId, @sizeBytes, @ts)`
+    `INSERT INTO arr_unmatched (source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, last_synced)
+     VALUES (@source, @instanceId, @instanceName, @title, @extKind, @extId, @sizeBytes, @ts)`
   );
+  const del = preserveInstanceIds.length
+    ? db.prepare(
+        `DELETE FROM arr_unmatched WHERE instance_id NOT IN (${preserveInstanceIds
+          .map(() => '?')
+          .join(',')})`
+      )
+    : db.prepare('DELETE FROM arr_unmatched');
   const ts = now();
   db.transaction(() => {
-    db.prepare('DELETE FROM arr_unmatched').run();
+    del.run(...preserveInstanceIds);
     for (const r of rows) ins.run({ ...r, ts });
   })();
   return rows.length;
@@ -1698,11 +1746,12 @@ export function clearArrUnmatched(): number {
 export function getArrUnmatched(): ArrUnmatchedRow[] {
   const rows = getDb()
     .prepare(
-      `SELECT source, instance_name, title, ext_kind, ext_id, size_bytes, last_synced
+      `SELECT source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, last_synced
        FROM arr_unmatched ORDER BY size_bytes DESC, title COLLATE NOCASE`
     )
     .all() as {
     source: string;
+    instance_id: string;
     instance_name: string;
     title: string;
     ext_kind: 'tvdb' | 'tmdb';
@@ -1712,6 +1761,7 @@ export function getArrUnmatched(): ArrUnmatchedRow[] {
   }[];
   return rows.map((r) => ({
     source: r.source,
+    instanceId: r.instance_id,
     instanceName: r.instance_name,
     title: r.title,
     extKind: r.ext_kind,

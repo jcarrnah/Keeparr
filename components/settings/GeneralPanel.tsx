@@ -45,7 +45,7 @@ export default function GeneralPanel() {
     setSaving(true);
     setMsg('');
     try {
-      await fetch('/api/admin/settings', {
+      const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -54,8 +54,13 @@ export default function GeneralPanel() {
           ...(keyDirty ? { apiKey } : {}),
         }),
       });
+      if (!res.ok) throw new Error(String(res.status));
       setMsg('Saved.');
+      // Only on success: a failed PUT means a regenerated key is NOT active,
+      // so the "Save settings to activate it" warning must stay.
       setKeyDirty(false);
+    } catch {
+      setMsg("Couldn't save — settings unchanged.");
     } finally {
       setSaving(false);
     }
