@@ -1,7 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { getSetting, setSetting } from './queries';
 import { fetchJson } from './http';
-import type { MediaServerType } from './settings';
+import { getMediaDeviceId, type MediaServerType } from './settings';
 import type { LibraryKind } from './types';
 import type { BackendItem, BackendSection } from './mediaserver/types';
 
@@ -24,12 +22,7 @@ const VERSION = '1.0.0';
 
 /** Stable device id for the MediaBrowser auth header (persisted once). */
 export function getDeviceId(): string {
-  let id = getSetting('media_device_id');
-  if (!id) {
-    id = randomUUID();
-    setSetting('media_device_id', id);
-  }
-  return id;
+  return getMediaDeviceId();
 }
 
 /**

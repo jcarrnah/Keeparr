@@ -171,9 +171,12 @@
     "/api/keep": {
       "post": {
         "tags": ["media"],
-        "summary": "Keep a title (this user). Clears their don't-care + OK-to-delete.",
+        "summary": "Keep a title (this user). Clears their don't-care + OK-to-delete atomically.",
         "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" } }, "required": ["ratingKey"] } } } },
-        "responses": { "200": { "description": "OK" } }
+        "responses": {
+          "200": { "description": "OK" },
+          "404": { "description": "`{error:'unknown_item'}` — unknown or removed from the server" }
+        }
       },
       "delete": {
         "tags": ["media"],
@@ -185,9 +188,12 @@
     "/api/skip": {
       "post": {
         "tags": ["media"],
-        "summary": "Mark \"don't care\" (this user). Clears their keep + OK-to-delete.",
+        "summary": "Mark \"don't care\" (this user). Clears their keep + OK-to-delete atomically.",
         "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" } }, "required": ["ratingKey"] } } } },
-        "responses": { "200": { "description": "OK" } }
+        "responses": {
+          "200": { "description": "OK" },
+          "404": { "description": "`{error:'unknown_item'}` — unknown or removed from the server" }
+        }
       },
       "delete": {
         "tags": ["media"],
@@ -203,7 +209,8 @@
         "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" } }, "required": ["ratingKey"] } } } },
         "responses": {
           "200": { "description": "OK" },
-          "403": { "description": "`{error:'not_requested'}` — not this user's request" }
+          "403": { "description": "`{error:'not_requested'}` — not this user's request" },
+          "404": { "description": "`{error:'unknown_item'}` — unknown or removed from the server" }
         }
       },
       "delete": {
@@ -217,8 +224,12 @@
       "post": {
         "tags": ["media"],
         "summary": "Skip a batch (\"don't care\" all) and deal a fresh one",
-        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKeys": { "type": "array", "items": { "type": "string" } } } } } } },
-        "responses": { "200": { "description": "`{items: MediaCard[], remaining}`" } }
+        "description": "Skipping clears this user's keep / OK-to-delete on the batch (mutually exclusive). Unknown/tombstoned keys are ignored. Max 500 keys.",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKeys": { "type": "array", "items": { "type": "string" }, "maxItems": 500 } } } } } },
+        "responses": {
+          "200": { "description": "`{items: MediaCard[], remaining}`" },
+          "400": { "description": "`{error:'bad_request'}` (not an array) or `{error:'too_many_items'}` (over 500)" }
+        }
       }
     },
     "/api/library": {
@@ -286,7 +297,7 @@
         "tags": ["media"],
         "summary": "Top-8 typeahead",
         "parameters": [{ "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "`{items}`" } }
+        "responses": { "200": { "description": "`{suggestions: [{ratingKey,title,year,thumbUrl,kept,skipped}]}`" } }
       }
     },
     "/api/sections": {
@@ -325,8 +336,8 @@
     "/api/storage": {
       "get": {
         "tags": ["insights"],
-        "summary": "Per-filesystem free/total",
-        "responses": { "200": { "description": "`{configured, filesystems[]}`" } }
+        "summary": "Per-filesystem free/total + managed sections",
+        "responses": { "200": { "description": "`{report: {configured, filesystems[]}, sections: [{id,title}]}`" } }
       }
     },
     "/api/stats": {

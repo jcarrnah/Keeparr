@@ -2,12 +2,10 @@ import { NextResponse } from 'next/server';
 import { requireUser } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
 import {
-  addDelete,
-  getMediaItem,
+  applyDelete,
+  getActiveMediaItem,
   isRequestedByUser,
   removeDelete,
-  removeKeep,
-  removeSkip,
 } from '@/lib/queries';
 
 export const runtime = 'nodejs';
@@ -21,16 +19,15 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser();
     const { ratingKey } = (await req.json()) as { ratingKey?: string };
-    if (!ratingKey || !getMediaItem(ratingKey)) {
+    if (!ratingKey || !getActiveMediaItem(ratingKey)) {
       return NextResponse.json({ error: 'unknown_item' }, { status: 404 });
     }
     // Gate: you can only release something you requested on Seerr.
     if (!isRequestedByUser(user.plexUserId, ratingKey)) {
       return NextResponse.json({ error: 'not_requested' }, { status: 403 });
     }
-    const changed = addDelete(user.plexUserId, ratingKey);
-    removeKeep(user.plexUserId, ratingKey);
-    removeSkip(user.plexUserId, ratingKey);
+    // Exclusive with keep and "don't care" (cleared atomically).
+    const changed = applyDelete(user.plexUserId, ratingKey);
     return NextResponse.json({ markedForDelete: true, changed });
   } catch (e) {
     return errorResponse(e);

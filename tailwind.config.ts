@@ -48,6 +48,9 @@ const config: Config = {
         red: ladder('red', [300, 400, 500, 950]),
         rose: ladder('rose', [100, 200, 300, 400, 500, 600, 700, 800, 900, 950]),
         sky: ladder('sky', [600]),
+        // Categorical "by library" palette (breakdown.tsx LIB_BAR/LIB_STROKE).
+        violet: ladder('violet', [300, 400, 500, 700]),
+        teal: ladder('teal', [300, 400, 500, 600]),
       },
     },
   },

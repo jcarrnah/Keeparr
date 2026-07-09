@@ -1,9 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { getSetting, setSetting } from './queries';
 import { decryptSecret, encryptSecret } from './crypto';
 import {
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_JOB_SCHEDULES,
-  DEFAULT_SYNC_INTERVAL_MINUTES,
   type JobSchedule,
 } from './config';
 
@@ -176,10 +176,25 @@ export function setRadarrInstances(instances: ArrInstance[]): void {
 export const isArrConfigured = () =>
   getSonarrInstances().length > 0 || getRadarrInstances().length > 0;
 
-// --- Sync ---
-export function getSyncIntervalMinutes(): number {
-  const v = Number(readSetting('sync_interval_minutes'));
-  return Number.isFinite(v) && v > 0 ? v : DEFAULT_SYNC_INTERVAL_MINUTES;
+// --- Stable per-install client/device ids (generated once, then persisted) ---
+
+/** Stable X-Plex-Client-Identifier for the plex.tv PIN flow. */
+export function getPlexClientId(): string {
+  return getOrCreateId('plex_client_id');
+}
+
+/** Stable device id for the Jellyfin/Emby MediaBrowser auth header. */
+export function getMediaDeviceId(): string {
+  return getOrCreateId('media_device_id');
+}
+
+function getOrCreateId(key: string): string {
+  let id = readSetting(key);
+  if (!id) {
+    id = randomUUID();
+    writeSetting(key, id);
+  }
+  return id;
 }
 
 // --- Scheduled job schedules (per job: interval minutes or daily HH:MM) ---

@@ -2,7 +2,12 @@ import { beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { __setTestDbToMemory, __closeDb } from './db';
 import {
   addKeep,
-  addSkips,
+  applySkipBatch,
+  applyKeep,
+  applySkip,
+  applyDelete,
+  getActiveMediaItem,
+  getMediaItem,
   addSkip,
   removeSkip,
   isSkipped,
@@ -459,7 +464,7 @@ describe('feed excludes kept + per-user skipped', () => {
   });
 
   it('skips are per-user only', () => {
-    addSkips('userA', ['2', '3']);
+    applySkipBatch('userA', ['2', '3']);
     const feedA = getFeed('userA', 10).map((m) => m.rating_key).sort();
     const feedB = getFeed('userB', 10).map((m) => m.rating_key).sort();
     expect(feedA).toEqual(['1', '4']); // A skipped 2 & 3
@@ -468,7 +473,7 @@ describe('feed excludes kept + per-user skipped', () => {
 
   it('countFeedRemaining reflects keeps + skips', () => {
     addKeep('userA', '1');
-    addSkips('userA', ['2']);
+    applySkipBatch('userA', ['2']);
     expect(countFeedRemaining('userA')).toBe(2); // 3 & 4 remain
     expect(countFeedRemaining('userB')).toBe(3); // only keep removes 1
   });
@@ -1038,6 +1043,95 @@ describe('queryLibrary combinable Status buckets (stateBuckets, OR)', () => {
     expect(q(['keptByMe', 'undecided'])).toEqual(['1', '5', '6']);
     expect(q(['keptByMe', 'keptOther'])).toEqual(['1', '2']);
     expect(q(['dontcare', 'okDeleteMine', 'undecided'])).toEqual(['3', '4', '5', '6']);
+  });
+});
+
+describe('apply* exclusive mutations (atomic keep/skip/delete)', () => {
+  beforeEach(() => {
+    upsertMediaBatch([media('1'), media('2')]);
+  });
+
+  it('applyKeep sets the keep and clears skip + delete', () => {
+    addSkip('userA', '1');
+    addDelete('userA', '1');
+    expect(applyKeep('userA', '1')).toBe(true);
+    expect(isKeptByUser('userA', '1')).toBe(true);
+    expect(isSkipped('userA', '1')).toBe(false);
+    expect(isMarkedForDelete('userA', '1')).toBe(false);
+  });
+
+  it('applySkip sets the skip and clears keep + delete', () => {
+    addKeep('userA', '1');
+    addDelete('userA', '1');
+    expect(applySkip('userA', '1')).toBe(true);
+    expect(isSkipped('userA', '1')).toBe(true);
+    expect(isKeptByUser('userA', '1')).toBe(false);
+    expect(isMarkedForDelete('userA', '1')).toBe(false);
+  });
+
+  it('applyDelete sets the mark and clears keep + skip', () => {
+    addKeep('userA', '1');
+    addSkip('userA', '1');
+    expect(applyDelete('userA', '1')).toBe(true);
+    expect(isMarkedForDelete('userA', '1')).toBe(true);
+    expect(isKeptByUser('userA', '1')).toBe(false);
+    expect(isSkipped('userA', '1')).toBe(false);
+  });
+
+  it('returns false when already set but still clears the others', () => {
+    applyKeep('userA', '1');
+    addSkip('userA', '1'); // simulate a torn state
+    expect(applyKeep('userA', '1')).toBe(false); // not newly kept
+    expect(isSkipped('userA', '1')).toBe(false); // but exclusivity restored
+  });
+
+  it('only touches this user', () => {
+    addKeep('userB', '1');
+    applySkip('userA', '1');
+    expect(isKeptByUser('userB', '1')).toBe(true);
+  });
+});
+
+describe('applySkipBatch (batch skip with exclusivity + existence filter)', () => {
+  beforeEach(() => {
+    upsertMediaBatch([media('1'), media('2'), media('3')], 1000);
+  });
+
+  it('skips only existing keys and clears keeps/deletes for them', () => {
+    addKeep('userA', '1');
+    addDelete('userA', '2');
+    const n = applySkipBatch('userA', ['1', '2', 'ghost']);
+    expect(n).toBe(2); // ghost dropped
+    expect(isSkipped('userA', '1')).toBe(true);
+    expect(isSkipped('userA', '2')).toBe(true);
+    expect(isSkipped('userA', 'ghost')).toBe(false);
+    expect(isKeptByUser('userA', '1')).toBe(false);
+    expect(isMarkedForDelete('userA', '2')).toBe(false);
+  });
+
+  it('ignores tombstoned items', () => {
+    upsertMediaBatch([media('1'), media('2')], 2000);
+    tombstoneStale(2000); // item 3 tombstoned
+    expect(applySkipBatch('userA', ['3'])).toBe(0);
+    expect(isSkipped('userA', '3')).toBe(false);
+  });
+
+  it('counts only newly skipped; other users untouched', () => {
+    addKeep('userB', '1');
+    expect(applySkipBatch('userA', ['1', '2'])).toBe(2);
+    expect(applySkipBatch('userA', ['1', '2'])).toBe(0); // re-skip
+    expect(isKeptByUser('userB', '1')).toBe(true);
+  });
+});
+
+describe('getActiveMediaItem (tombstone-filtered existence gate)', () => {
+  it('returns live items and null for tombstoned ones', () => {
+    upsertMediaBatch([media('1'), media('2')], 1000);
+    upsertMediaBatch([media('1')], 2000);
+    tombstoneStale(2000); // item 2 tombstoned
+    expect(getActiveMediaItem('1')?.rating_key).toBe('1');
+    expect(getActiveMediaItem('2')).toBeNull();
+    expect(getMediaItem('2')?.removed).toBe(1); // unfiltered getter still sees it
   });
 });
 

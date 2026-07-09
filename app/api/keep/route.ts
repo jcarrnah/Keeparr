@@ -1,13 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireUser } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
-import {
-  addKeep,
-  getMediaItem,
-  removeDelete,
-  removeKeep,
-  removeSkip,
-} from '@/lib/queries';
+import { applyKeep, getActiveMediaItem, removeKeep } from '@/lib/queries';
 
 export const runtime = 'nodejs';
 
@@ -16,13 +10,11 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser();
     const { ratingKey } = (await req.json()) as { ratingKey?: string };
-    if (!ratingKey || !getMediaItem(ratingKey)) {
+    if (!ratingKey || !getActiveMediaItem(ratingKey)) {
       return NextResponse.json({ error: 'unknown_item' }, { status: 404 });
     }
-    const newlyKept = addKeep(user.plexUserId, ratingKey);
-    // Keep is exclusive with "don't care" and "OK to delete".
-    removeSkip(user.plexUserId, ratingKey);
-    removeDelete(user.plexUserId, ratingKey);
+    // Keep is exclusive with "don't care" and "OK to delete" (cleared atomically).
+    const newlyKept = applyKeep(user.plexUserId, ratingKey);
     return NextResponse.json({ kept: true, newlyKept });
   } catch (e) {
     return errorResponse(e);

@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { getSetting, setSetting } from './queries';
 import { fetchJson } from './http';
+import { getPlexClientId } from './settings';
 
 /**
  * Plex client: the plex.tv PIN OAuth flow (login + identity + server-access
@@ -16,12 +15,7 @@ const PLEX_TV = 'https://plex.tv';
 
 /** Stable X-Plex-Client-Identifier, generated once and persisted in settings. */
 export function getClientId(): string {
-  let id = getSetting('plex_client_id');
-  if (!id) {
-    id = randomUUID();
-    setSetting('plex_client_id', id);
-  }
-  return id;
+  return getPlexClientId();
 }
 
 function plexHeaders(extra: Record<string, string> = {}): Record<string, string> {

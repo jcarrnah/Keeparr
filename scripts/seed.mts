@@ -17,17 +17,15 @@ if (fs.existsSync('.env')) {
   }
 }
 
-const { getDb, __closeDb } = await import('../lib/db');
+const { __closeDb } = await import('../lib/db');
+const { resetAllData } = await import('../lib/queries');
 const { seedDevData } = await import('../lib/dev-seed');
 const { formatSize } = await import('../lib/format');
 
 const reset = process.argv.includes('--reset');
 
 if (reset) {
-  const db = getDb();
-  for (const t of ['seerr_requests', 'watch_history', 'user_skips', 'user_deletes', 'keeps', 'arr_items', 'arr_unmatched', 'job_runs', 'media_items']) {
-    db.prepare(`DELETE FROM ${t}`).run();
-  }
+  resetAllData();
   console.log('Cleared media + keep/skip/watch/seerr tables.');
 }
 

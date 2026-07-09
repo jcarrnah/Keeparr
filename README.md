@@ -101,9 +101,9 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   all parts/versions. Shown as `x.xx GB` per card; aggregates auto-switch to TB.
 - **Scheduled refresh jobs** — admins set a schedule (every N minutes, daily, or
   weekly at a set time) per job and run any on demand from **Settings → Jobs &
-  Cache**: *Recently Added* (cheap, every 5 min), *Plex Full Library Scan* (daily
-  3 AM), *Tautulli* (4 AM), *Seerr* (5 AM), *Library size* (the expensive per-show
-  recompute, daily 6 AM), *Sonarr / Radarr* (7 AM), and *Backup* (8 AM).
+  Cache**: *Recently added scan* (cheap, every 5 min), *Full library scan* (daily
+  3 AM), *Watch history* (4 AM), *Requests* (5 AM), *Library size* (the expensive
+  per-show recompute, daily 6 AM), *Sonarr / Radarr* (7 AM), and *Backup* (8 AM).
   Clear the poster / Seerr / watch caches from the same page, and view app events
   under **Settings → Logs**. A **Recent activity** list shows the last runs + errors.
 - **Sonarr / Radarr** (optional) — connect any number of Sonarr and Radarr instances
@@ -431,7 +431,7 @@ a multi-episode file (where Plex reports the full size on every episode it holds
 isn't multiplied. Jellyfin/Emby work the same way via `MediaSources[].Size` (summed
 across a series' episodes, deduped by file path). Results are cached in SQLite, so
 pages read instantly. Because the per-show calls are the expensive part, the **Library size**
-job is separate from the cheap **Library scan** job — schedule the size
+job is separate from the cheap **Full library scan** job — schedule the size
 recompute less often (default daily at 6 AM) and the inventory refresh more often
 (default daily at 3 AM, with the cheap *Recently Added* scan filling the gap every
 5 minutes), or run either on demand. Jobs are checked each minute and fire

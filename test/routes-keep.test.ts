@@ -17,15 +17,18 @@ vi.mock('next/headers', () => ({
 
 import { __setTestDbToMemory, __closeDb } from '@/lib/db';
 import {
+  addDelete,
   isKept,
   isKeptByUser,
   isMarkedForDelete,
   isSkipped,
   replaceSeerrRequests,
+  tombstoneStale,
   upsertMediaBatch,
   upsertUser,
   type UpsertMediaInput,
 } from '@/lib/queries';
+import { errorResponse } from '@/lib/route-helpers';
 import { setSessionCookie } from '@/lib/auth';
 import { POST as keepPost, DELETE as keepDelete } from '@/app/api/keep/route';
 import { POST as skipPost } from '@/app/api/skip/route';
@@ -97,6 +100,29 @@ describe('keep route (global)', () => {
     await loginAs('userA');
     const res = await keepPost(jsonReq({ ratingKey: 'nope' }));
     expect(res.status).toBe(404);
+  });
+
+  it('404 for a tombstoned item (gone from the server)', async () => {
+    upsertMediaBatch([media('1'), media('2')], 1000);
+    upsertMediaBatch([media('1')], 2000);
+    tombstoneStale(2000); // item 2 removed
+    await loginAs('userA');
+    const res = await keepPost(jsonReq({ ratingKey: '2' }));
+    expect(res.status).toBe(404);
+    expect(isKept('2')).toBe(false);
+  });
+
+  it('400 invalid_json for a malformed body', async () => {
+    await loginAs('userA');
+    const res = await keepPost(
+      new Request('http://localhost/x', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: 'not json',
+      })
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_json');
   });
 
   it('DELETE removes the keep', async () => {
@@ -183,6 +209,43 @@ describe('feed + skip-batch', () => {
     expect(body.remaining).toBe(3);
   });
 
+  it('skip-batch clears my keep + OK-to-delete on the skipped keys (exclusive)', async () => {
+    await loginAs('userA');
+    await keepPost(jsonReq({ ratingKey: '2' }));
+    addDelete('userA', '3');
+    const res = await skipBatch(jsonReq({ ratingKeys: ['2', '3'] }));
+    expect(res.status).toBe(200);
+    expect(isSkipped('userA', '2')).toBe(true);
+    expect(isKeptByUser('userA', '2')).toBe(false);
+    expect(isMarkedForDelete('userA', '3')).toBe(false);
+  });
+
+  it('skip-batch ignores unknown and tombstoned keys', async () => {
+    upsertMediaBatch([media('4')], 1000); // re-stamp 4 as stale…
+    tombstoneStale(1001); // …and tombstone only it
+    await loginAs('userA');
+    const res = await skipBatch(jsonReq({ ratingKeys: ['4', 'ghost', '2'] }));
+    expect(res.status).toBe(200);
+    expect(isSkipped('userA', '2')).toBe(true);
+    expect(isSkipped('userA', '4')).toBe(false);
+    expect(isSkipped('userA', 'ghost')).toBe(false);
+  });
+
+  it('skip-batch rejects a non-array body with 400', async () => {
+    await loginAs('userA');
+    const res = await skipBatch(jsonReq({ ratingKeys: 'x' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('bad_request');
+  });
+
+  it('skip-batch rejects an oversized batch with 400', async () => {
+    await loginAs('userA');
+    const keys = Array.from({ length: 501 }, (_, i) => String(i));
+    const res = await skipBatch(jsonReq({ ratingKeys: keys }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('too_many_items');
+  });
+
   it('skip-batch hides items for this user and returns a fresh batch', async () => {
     await loginAs('userA');
     const res = await skipBatch(jsonReq({ ratingKeys: ['2', '3'] }));
@@ -211,5 +274,20 @@ describe('feed + skip-batch', () => {
     const keys = body.items.map((i: { ratingKey: string }) => i.ratingKey);
     expect(keys).toContain('1'); // kept items still appear in "largest"
     expect(body.remaining).toBeNull();
+  });
+});
+
+describe('errorResponse shapes', () => {
+  it('500 body never echoes the exception text', async () => {
+    const res = errorResponse(new Error('secret /internal/path leaked'));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'internal_error' }); // no message field
+  });
+
+  it('SyntaxError (malformed request body) → 400 invalid_json', async () => {
+    const res = errorResponse(new SyntaxError('Unexpected token'));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_json');
   });
 });

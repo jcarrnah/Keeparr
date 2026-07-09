@@ -6,7 +6,10 @@ import {
   libraryStats,
   replaceArrItems,
   replaceArrUnmatched,
+  seerrRequestKeys,
   upsertMediaBatch,
+  upsertUser,
+  watchedRatingKeys,
   queryLibrary,
   type UpsertMediaInput,
 } from './queries';
@@ -20,7 +23,15 @@ import {
 } from './settings';
 import type { BackendItem, BackendSection, MediaBackend } from './mediaserver';
 import { fetchSonarr, fetchRadarr, type ArrRecord } from './arr';
-import { syncArr, syncLibrary } from './sync';
+import { requestedRatingKeysForUser } from './seerr';
+import {
+  syncArr,
+  syncLibrary,
+  syncRecentlyAdded,
+  syncSeerrRequests,
+  syncSizes,
+  syncWatchHistory,
+} from './sync';
 
 // The sync engine reads through getBackend() (the seam, not storage) — swap in
 // a per-test fake. The factory closure reads `fakeBackend` lazily at run time.
@@ -29,6 +40,7 @@ vi.mock('./mediaserver', () => ({ getBackend: () => fakeBackend }));
 
 // Network clients are mocked (never storage); everything below them is real.
 vi.mock('./arr', () => ({ fetchSonarr: vi.fn(), fetchRadarr: vi.fn() }));
+vi.mock('./seerr', () => ({ requestedRatingKeysForUser: vi.fn() }));
 
 const GB = 1024 ** 3;
 
@@ -88,6 +100,7 @@ beforeEach(() => {
   writeSetting('plex_server_token', 't');
   vi.mocked(fetchSonarr).mockReset();
   vi.mocked(fetchRadarr).mockReset();
+  vi.mocked(requestedRatingKeysForUser).mockReset();
 });
 
 afterAll(() => {
@@ -208,5 +221,110 @@ describe('syncArr per-instance replace', () => {
     expect(arrSource('m1')).toBe('radarr');
     expect(arrSource('sh1')).toBeNull(); // Sonarr reported nothing → row dropped
     expect(getArrUnmatched()).toEqual([]); // stale orphan swept
+  });
+});
+
+describe('syncRecentlyAdded', () => {
+  it('upserts recent items per managed section, sizing new shows; never tombstones', async () => {
+    setPlexSections([
+      { id: '1', title: 'Movies', type: 'movie', paths: [] },
+      { id: '2', title: 'TV', type: 'show', paths: [] },
+    ]);
+    upsertMediaBatch([media('old', { sectionId: '1' })], 1000); // pre-existing, not re-touched
+    fakeBackend = {
+      ...backendWith([], {}),
+      recentItems: async (sectionId) =>
+        sectionId === '1'
+          ? [backendItem('m-new')]
+          : [backendItem('sh-new', { sizeBytes: 0 })],
+      showSize: async () => 7 * GB,
+    };
+    const res = await syncRecentlyAdded();
+    expect(res.result).toBe(2);
+    expect(getMediaItem('m-new')?.removed).toBe(0);
+    expect(getMediaItem('sh-new')?.size_bytes).toBe(7 * GB); // new show sized inline
+    expect(getMediaItem('old')?.removed).toBe(0); // no tombstoning here, ever
+  });
+
+  it('a failing section is skipped, the rest still sync', async () => {
+    setPlexSections([
+      { id: '1', title: 'Movies', type: 'movie', paths: [] },
+      { id: '2', title: 'TV', type: 'show', paths: [] },
+    ]);
+    fakeBackend = {
+      ...backendWith([], {}),
+      recentItems: async (sectionId) => {
+        if (sectionId === '1') throw new Error('boom');
+        return [backendItem('sh-new', { sizeBytes: 0 })];
+      },
+      showSize: async () => 1 * GB,
+    };
+    const res = await syncRecentlyAdded();
+    expect(res.result).toBe(1);
+    expect(getMediaItem('sh-new')).not.toBeNull();
+  });
+});
+
+describe('syncSizes', () => {
+  it('recomputes every show size; one failing show does not abort', async () => {
+    upsertMediaBatch([
+      media('sh1', { libraryKind: 'show', sizeBytes: 1 * GB }),
+      media('sh2', { libraryKind: 'show', sizeBytes: 1 * GB }),
+      media('mv', { libraryKind: 'movie', sizeBytes: 1 * GB }),
+    ]);
+    fakeBackend = {
+      ...backendWith([], {}),
+      showSize: async (rk) => {
+        if (rk === 'sh1') throw new Error('boom');
+        return 9 * GB;
+      },
+    };
+    const res = await syncSizes();
+    expect(res.result).toBe(1); // only sh2 updated
+    expect(getMediaItem('sh2')?.size_bytes).toBe(9 * GB);
+    expect(getMediaItem('sh1')?.size_bytes).toBe(1 * GB); // unchanged
+    expect(getMediaItem('mv')?.size_bytes).toBe(1 * GB); // movies untouched
+  });
+});
+
+describe('syncWatchHistory', () => {
+  it('uses native backend watch data when available', async () => {
+    fakeBackend = {
+      ...backendWith([], {}),
+      getWatchData: async () => [
+        { plexUserId: 'u1', ratingKey: '1', plays: 3, lastWatched: 500 },
+      ],
+    };
+    const res = await syncWatchHistory();
+    expect(res.result).toBe(1);
+    expect(res.message).toContain('native');
+    expect(watchedRatingKeys('u1').has('1')).toBe(true);
+  });
+
+  it('reports no source when the backend has none and Tautulli is unconfigured', async () => {
+    fakeBackend = backendWith([], {}); // getWatchData → null (the Plex case)
+    const res = await syncWatchHistory();
+    expect(res.result).toBe(0);
+    expect(res.message).toContain('No watch source');
+  });
+});
+
+describe('syncSeerrRequests', () => {
+  beforeEach(() => {
+    writeSetting('seerr_url', 'http://seerr');
+    writeSetting('seerr_api_key', 'k');
+    upsertUser({ plexUserId: 'u1', username: 'one', email: 'one@x.com', thumb: null, isAdmin: false });
+    upsertUser({ plexUserId: 'u2', username: 'two', email: 'two@x.com', thumb: null, isAdmin: false });
+  });
+
+  it('caches each user; one failing user does not abort the rest', async () => {
+    vi.mocked(requestedRatingKeysForUser).mockImplementation(async (_b, _k, match) => {
+      if (match.username === 'two') throw new Error('boom');
+      return new Set(['42']);
+    });
+    const res = await syncSeerrRequests();
+    expect(res.result).toBe(1); // only u1 cached
+    expect(seerrRequestKeys('u1')).toEqual(['42']);
+    expect(seerrRequestKeys('u2')).toEqual([]);
   });
 });

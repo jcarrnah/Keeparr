@@ -288,6 +288,16 @@ export function getMediaItem(ratingKey: string): MediaItem | null {
   );
 }
 
+/** Like getMediaItem but excludes tombstoned rows — the existence gate for
+ *  mutations (keeping/skipping an item that's gone from the server is a 404). */
+export function getActiveMediaItem(ratingKey: string): MediaItem | null {
+  return (
+    (getDb()
+      .prepare('SELECT * FROM media_items WHERE rating_key = ? AND removed = 0')
+      .get(ratingKey) as MediaItem | undefined) ?? null
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Keeps (per-user; an item is "protected" if ANYONE keeps it)
 // ---------------------------------------------------------------------------
@@ -327,23 +337,64 @@ export function removeKeep(plexUserId: string, ratingKey: string): boolean {
   return info.changes > 0;
 }
 
+/**
+ * Set this user's keep AND clear their "don't care" / "OK to delete" for the
+ * item, atomically (the three states are mutually exclusive; separate
+ * autocommit statements could be torn by a crash). True if newly kept.
+ */
+export function applyKeep(plexUserId: string, ratingKey: string): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO keeps (plex_user_id, rating_key, kept_at) VALUES (?, ?, ?)
+         ON CONFLICT(plex_user_id, rating_key) DO NOTHING`
+      )
+      .run(plexUserId, ratingKey, now());
+    db.prepare('DELETE FROM user_skips WHERE plex_user_id = ? AND rating_key = ?').run(
+      plexUserId,
+      ratingKey
+    );
+    db.prepare('DELETE FROM user_deletes WHERE plex_user_id = ? AND rating_key = ?').run(
+      plexUserId,
+      ratingKey
+    );
+    return info.changes > 0;
+  })();
+}
+
 // ---------------------------------------------------------------------------
 // Per-user skips ("don't care about the rest")
 // ---------------------------------------------------------------------------
 
-/** Record that a user doesn't care about these items. Returns count inserted. */
-export function addSkips(plexUserId: string, ratingKeys: string[]): number {
+/**
+ * Batch "don't care": skip every EXISTING, non-tombstoned key and clear this
+ * user's keep / "OK to delete" marks for them, all in one transaction (same
+ * exclusivity as the single-item routes — the old insert-only version let a
+ * crafted batch leave an item both kept and skipped). Unknown/tombstoned keys
+ * are silently dropped. Returns the number of newly skipped items.
+ */
+export function applySkipBatch(plexUserId: string, ratingKeys: string[]): number {
+  if (ratingKeys.length === 0) return 0;
   const db = getDb();
-  const stmt = db.prepare(
-    `INSERT INTO user_skips (plex_user_id, rating_key, skipped_at) VALUES (?, ?, ?)
-     ON CONFLICT(plex_user_id, rating_key) DO NOTHING`
-  );
-  const ts = now();
-  const run = db.transaction((keys: string[]) => {
-    for (const k of keys) stmt.run(plexUserId, k, ts);
-  });
-  run(ratingKeys);
-  return ratingKeys.length;
+  const ph = ratingKeys.map(() => '?').join(',');
+  return db.transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO user_skips (plex_user_id, rating_key, skipped_at)
+         SELECT ?, rating_key, ? FROM media_items
+         WHERE removed = 0 AND rating_key IN (${ph})
+         ON CONFLICT(plex_user_id, rating_key) DO NOTHING`
+      )
+      .run(plexUserId, now(), ...ratingKeys);
+    db.prepare(
+      `DELETE FROM keeps WHERE plex_user_id = ? AND rating_key IN (${ph})`
+    ).run(plexUserId, ...ratingKeys);
+    db.prepare(
+      `DELETE FROM user_deletes WHERE plex_user_id = ? AND rating_key IN (${ph})`
+    ).run(plexUserId, ...ratingKeys);
+    return info.changes;
+  })();
 }
 
 /** Mark a single item "don't care" for this user. True if newly inserted. */
@@ -365,6 +416,31 @@ export function removeSkip(plexUserId: string, ratingKey: string): boolean {
     )
     .run(plexUserId, ratingKey);
   return info.changes > 0;
+}
+
+/**
+ * Set this user's "don't care" AND clear their keep / "OK to delete" for the
+ * item, atomically. True if newly skipped.
+ */
+export function applySkip(plexUserId: string, ratingKey: string): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO user_skips (plex_user_id, rating_key, skipped_at) VALUES (?, ?, ?)
+         ON CONFLICT(plex_user_id, rating_key) DO NOTHING`
+      )
+      .run(plexUserId, ratingKey, now());
+    db.prepare('DELETE FROM keeps WHERE plex_user_id = ? AND rating_key = ?').run(
+      plexUserId,
+      ratingKey
+    );
+    db.prepare('DELETE FROM user_deletes WHERE plex_user_id = ? AND rating_key = ?').run(
+      plexUserId,
+      ratingKey
+    );
+    return info.changes > 0;
+  })();
 }
 
 /** Whether this user has marked an item "don't care". */
@@ -413,6 +489,32 @@ export function removeDelete(plexUserId: string, ratingKey: string): boolean {
     )
     .run(plexUserId, ratingKey);
   return info.changes > 0;
+}
+
+/**
+ * Set this user's "OK to delete" AND clear their keep / "don't care" for the
+ * item, atomically. The isRequestedByUser gate belongs to the route, before
+ * this runs. True if newly marked.
+ */
+export function applyDelete(plexUserId: string, ratingKey: string): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO user_deletes (plex_user_id, rating_key, marked_at) VALUES (?, ?, ?)
+         ON CONFLICT(plex_user_id, rating_key) DO NOTHING`
+      )
+      .run(plexUserId, ratingKey, now());
+    db.prepare('DELETE FROM keeps WHERE plex_user_id = ? AND rating_key = ?').run(
+      plexUserId,
+      ratingKey
+    );
+    db.prepare('DELETE FROM user_skips WHERE plex_user_id = ? AND rating_key = ?').run(
+      plexUserId,
+      ratingKey
+    );
+    return info.changes > 0;
+  })();
 }
 
 /** Whether this user has marked an item "OK to delete". */
@@ -1487,6 +1589,31 @@ export function clearSeerrRequests(): number {
 /** Clear cached watch history (rebuilt by the Tautulli job). */
 export function clearWatchHistory(): number {
   return getDb().prepare('DELETE FROM watch_history').run().changes;
+}
+
+/**
+ * Wipe all media + user-decision + cache data for a fresh reseed (dev seed's
+ * `--reset`; children before media_items for FK order). Settings, users, logs,
+ * and job_state survive. One transaction — a partial wipe would be worse than
+ * none.
+ */
+export function resetAllData(): void {
+  const db = getDb();
+  db.transaction(() => {
+    for (const t of [
+      'seerr_requests',
+      'watch_history',
+      'user_skips',
+      'user_deletes',
+      'keeps',
+      'arr_items',
+      'arr_unmatched',
+      'job_runs',
+      'media_items',
+    ]) {
+      db.prepare(`DELETE FROM ${t}`).run();
+    }
+  })();
 }
 
 /** Most recent job runs across all jobs (for the admin activity log). */

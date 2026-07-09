@@ -33,9 +33,16 @@ interface HealthIssue {
 const shellCache: {
   user: SessionUser | null;
   appTitle: string;
+  serverType: string;
   libraries: Library[];
   health: HealthIssue[];
-} = { user: null, appTitle: 'Keeparr', libraries: [], health: [] };
+} = { user: null, appTitle: 'Keeparr', serverType: 'plex', libraries: [], health: [] };
+
+const SERVER_LABEL: Record<string, string> = {
+  plex: 'Plex',
+  jellyfin: 'Jellyfin',
+  emby: 'Emby',
+};
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -44,6 +51,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const [user, setUser] = useState<SessionUser | null>(shellCache.user);
   const [appTitle, setAppTitle] = useState(shellCache.appTitle);
+  const [serverType, setServerType] = useState(shellCache.serverType);
   const [libraries, setLibraries] = useState<Library[]>(shellCache.libraries);
   const [health, setHealth] = useState<HealthIssue[]>(shellCache.health);
   const [browseOpen, setBrowseOpen] = useState(pathname.startsWith('/library'));
@@ -60,6 +68,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         if (d.appTitle) {
           setAppTitle(d.appTitle);
           shellCache.appTitle = d.appTitle;
+        }
+        if (d.serverType) {
+          setServerType(d.serverType);
+          shellCache.serverType = d.serverType;
         }
         // Admins get the standing health warnings chip in the top bar.
         if (d.user?.isAdmin) {
@@ -292,7 +304,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 )}
                 <ThemeMenu />
                 <p className="mt-2 text-[11px] text-slate-500">
-                  Profile is managed by your Plex account.
+                  Profile is managed by your {SERVER_LABEL[serverType] ?? 'media server'} account.
                 </p>
                 <button
                   onClick={logout}

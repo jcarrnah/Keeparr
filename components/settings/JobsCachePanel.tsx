@@ -345,14 +345,14 @@ export default function JobsCachePanel() {
           </div>
           <div className="flex items-center gap-3">
             <span className="w-40">Seerr requests</span>
-            <span className="text-slate-500">rebuilt by the Seerr job</span>
+            <span className="text-slate-500">rebuilt by the Requests job</span>
             <button onClick={() => clearCache('requests')} className={`${btnGhost} ml-auto`}>
               Clear
             </button>
           </div>
           <div className="flex items-center gap-3">
             <span className="w-40">Watch history</span>
-            <span className="text-slate-500">rebuilt by the Tautulli job</span>
+            <span className="text-slate-500">rebuilt by the Watch history job</span>
             <button onClick={() => clearCache('watch')} className={`${btnGhost} ml-auto`}>
               Clear
             </button>

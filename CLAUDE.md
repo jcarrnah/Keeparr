@@ -25,8 +25,10 @@ per-user. See README.md for the feature overview.
   (movie/show) is Plex's own section type and may be used internally (e.g. to seed
   some movies into the mixed feed), but it is not a user-facing taxonomy.
 - All SQL lives in `lib/queries.ts`. Don't write SQL elsewhere.
-- All external HTTP lives in `lib/plex.ts`, `lib/tautulli.ts`, `lib/seerr.ts`,
-  `lib/arr.ts` (all built on `lib/http.ts` `fetchJson`).
+- All external HTTP lives in `lib/plex.ts`, `lib/jellyfin.ts`, `lib/tautulli.ts`,
+  `lib/seerr.ts`, `lib/arr.ts` (all built on `lib/http.ts` `fetchJson`). One
+  deliberate exception: the poster proxy (`app/api/image/route.ts`) streams the
+  upstream image bytes itself (fetchJson is JSON-only).
 - All settings access goes through `lib/settings.ts` (typed getters; secrets are
   encrypted via `lib/crypto.ts`). Never read raw setting keys in routes.
 - Route handlers are thin: auth-guard → call lib → return JSON. Use
@@ -37,7 +39,9 @@ per-user. See README.md for the feature overview.
 - `lib/session.ts` must stay Edge-safe (Web Crypto only) — it's used by
   `middleware.ts`. No `node:` imports there.
 - Tests use a real in-memory SQLite (`__setTestDbToMemory()`), never mocks for
-  storage. Route tests mock only `next/headers` (the cookie jar).
+  storage. Route tests mock only `next/headers` (the cookie jar) plus, where a
+  test would otherwise hit the network or the real data dir, the
+  network-facing lib clients (plex/jellyfin) or path config — never storage.
 - The size unit on cards is `x.xx GB` via `formatGB` in `lib/format.ts`. Library/
   storage aggregates (sidebar sizes, the storage header) use `formatSize`, which
   auto-switches GB↔TB at 2 decimals.
@@ -222,15 +226,20 @@ when it has no tvdb/tmdb **and** no imdb.
   `largest=1` = biggest titles regardless of library/keep-eligibility
   (`remaining` is null). Categories are real Plex libraries — never hardcoded.
 - `POST/DELETE /api/keep` `{ratingKey}` — toggle **this user's** keep. POST also
-  clears their "don't care" + "OK to delete"; DELETE removes only their own keep
-  (others' keeps stay, item remains protected).
+  clears their "don't care" + "OK to delete" (one transaction — the keep/skip/
+  mark-delete POSTs each use an atomic `apply*` query, and all three 404 on an
+  unknown OR tombstoned item via `getActiveMediaItem`); DELETE removes only
+  their own keep (others' keeps stay, item remains protected).
 - `POST/DELETE /api/skip` `{ratingKey}` — per-user single-item "don't care"
   toggle. POST also clears this user's keep + "OK to delete" (mutually exclusive).
 - `POST/DELETE /api/mark-delete` `{ratingKey}` — per-user "OK to delete" toggle.
   POST is **gated** by `isRequestedByUser` (403 `not_requested` otherwise) and clears
   this user's keep + "don't care". Does not touch others' keeps.
 - `POST /api/skip-batch` `{ratingKeys[]}` — per-user skip + fresh batch (keep-loop).
-- `GET /api/library?sections=<id,id,…>&q=&sort=size|title|added|year&dir=asc|desc&state=keptByMe,keptOther,dontcare,okDeleteMine,okDeleteAny,undecided&kept=all|kept|unkept&keptByMe=1&skip=all|skipped|unskipped&deleted=all|deletedByMe|deletedAny&watch=all|watched|unwatched|unwatchedAny|recent30|recent60|recent90|stale90&source=sonarr|radarr&instance=&tag=&quality=&monitored=all|monitored|unmonitored&requestedByMe=1&hideKept=&offset=`
+  Enforces the same exclusivity server-side (`applySkipBatch` clears the user's
+  keep/OK-to-delete on the batch, drops unknown/tombstoned keys); non-array →
+  400 `bad_request`, >500 keys → 400 `too_many_items`.
+- `GET /api/library?sections=<id,id,…>&q=&sort=size|title|added|year|library|quality|tags|status|watched&dir=asc|desc&state=keptByMe,keptOther,dontcare,okDeleteMine,okDeleteAny,undecided&kept=all|kept|unkept&keptByMe=1&skip=all|skipped|unskipped&deleted=all|deletedByMe|deletedAny&watch=all|watched|unwatched|unwatchedAny|recent30|recent60|recent90|stale90&source=sonarr|radarr&instance=&tag=&quality=&monitored=monitored,unmonitored&requestedByMe=1&hideKept=&offset=`
   — browse/search; `sections` is a comma list of Plex library ids (omit = all,
   multi-select in the sidebar). Returns `kept` (anyone), per-user `keptByMe`,
   per-user `skipped`, per-user `watched`, per-user `requestedByMe` +
@@ -250,7 +259,8 @@ when it has no tvdb/tmdb **and** no imdb.
   drives `state`.) Also a **Grid/List** view toggle (remembered in
   `localStorage`; List adds
   click-to-sort column headers — all columns, sort persisted — and a poster column),
-  — **only when Tautulli is connected** — a **Watched** filter (`watch=`):
+  — **only when watch data is available** (`isWatchAvailable()`: Tautulli for
+  Plex, native for Jellyfin/Emby) — a **Watched** filter (`watch=`):
   watched/not-watched **by you**, **not watched by anyone** (`unwatchedAny`,
   server-wide), recency windows, `stale90`; — **only when Sonarr/Radarr is
   connected** — **multi-select** `source`/`instance`/`tag`/`quality`/`status`/
@@ -293,8 +303,9 @@ when it has no tvdb/tmdb **and** no imdb.
   `openapi.json`; keep it in sync when routes change). Rendered at `/api-docs`.
 - `GET /api/stats?view=largest|reclaimable|unwatched|markedForDelete&offset=` — big
   picture + summary. `unwatched` = largest titles nobody has watched
-  (`neverWatchedItems`; the "Never watched" drill-down, shown only when Tautulli is
-  connected). `markedForDelete` = titles anyone marked "OK to delete", largest first,
+  (`neverWatchedItems`; the "Never watched" drill-down, shown only when watch data
+  is available — Tautulli for Plex, native for Jellyfin/Emby).
+  `markedForDelete` = titles anyone marked "OK to delete", largest first,
   each with its marker name(s) + a `keptByAnyone` flag (`markedForDeleteItems`; the
   drill-down shown only when Seerr is connected — the one place marker identity is
   shown). Accepts a session user **or** the API key (`X-Api-Key`).
@@ -306,7 +317,7 @@ when it has no tvdb/tmdb **and** no imdb.
 - Admin (require `is_admin`): `GET/PUT /api/admin/settings` (PUT accepts
   `storageMappings`, `managedSectionIds`, `appTitle`, `appUrl`, `apiKey`, `plexBaseUrl`,
   `jobSchedules`, `plexServer`, `tautulli`, `seerr`, `sonarrInstances`,
-  `radarrInstances` — GET returns instances as `[{id,name,url,hasKey}]`, never their
+  `radarrInstances`, `backupRetention` — GET returns instances as `[{id,name,url,hasKey}]`, never their
   apiKeys; the automation `apiKey` IS returned so the UI can show a masked
   copy-able field, Servarr-style),
   `GET /api/admin/plex-servers`, `POST /api/admin/test-connection` (services
@@ -347,8 +358,8 @@ includes each section's `paths[]`; reused for all backends), `tautulli_url`, `ta
 `seerr_url`, `seerr_api_key`*, `sonarr_instances`*, `radarr_instances`* (json
 arrays of `{id,name,url,apiKey}` — N instances each; the whole blob is encrypted),
 `job_schedules` (json per job: `{type:'interval',minutes}`,
-`{type:'daily',hour,minute}`, or `{type:'weekly',weekday,hour,minute}`; replaces
-the old `job_intervals`),
+`{type:'daily',hour,minute}`, or `{type:'weekly',weekday,hour,minute}`; replaced
+the legacy single `sync_interval_minutes`, which is no longer read),
 `storage_mappings` (json `{sectionId,path}[]` — container paths for free-space
 measurement), `managed_section_ids` (json; which libraries Keeparr tracks, empty =
 all), `open_signin` (`'true'`/`'false'`), `api_key`* (automation), `app_title`,
@@ -357,7 +368,7 @@ all), `open_signin` (`'true'`/`'false'`), `api_key`* (automation), `app_title`,
 `dev_storage_total` (demo-only synthetic capacity, set by the seed). `*` = encrypted
 at rest.
 
-**Local demo mode**: `npm run seed` (`lib/dev-seed.ts` + `scripts/seed.ts`) fills
+**Local demo mode**: `npm run seed` (`lib/dev-seed.ts` + `scripts/seed.mts`) fills
 `./data` with fake libraries; `KEEPARR_DEV_LOGIN=1` makes `middleware.ts` auto-mint a
 dev session (no Plex/login). `KEEPARR_DEV_SERVER=jellyfin|emby npm run seed` configures
 the demo as that backend (fake connection) instead of Plex, so the setup/login branch +
@@ -402,6 +413,9 @@ backend-aware UI are clickable offline (default = Plex). All inert/absent in pro
   session tokens carry a per-user `session_epoch` so "sign out all devices" /
   admin-disable revoke outstanding tokens; all outbound `fetch`es have a 15s timeout;
   the API-key and session-signature compares are constant-time (`safeEqual`);
+  `errorResponse` 500 bodies are bare `{error:'internal_error'}` (the raw
+  exception text is logged, never sent — it can leak paths/hosts) and a
+  malformed JSON body returns 400 `invalid_json`, not a 500;
   `instrumentation.ts` **fails closed** (throws) on a production boot with a missing/
   default `SESSION_SECRET` and warns on a short one. The Docker image runs the app as a
   non-root `PUID:PGID` (root only chowns `/data`, then drops via `su-exec`), strips

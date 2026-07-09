@@ -28,9 +28,6 @@ export const APP_URL = process.env.APP_URL ?? '';
 /** How many cards the home keep-loop serves per batch. */
 export const FEED_BATCH_SIZE = 12;
 
-/** Default minutes between automatic background syncs. */
-export const DEFAULT_SYNC_INTERVAL_MINUTES = 360;
-
 /**
  * A job runs either on a fixed interval or once daily at a local clock time.
  * `interval` minutes of 0 = manual-only.

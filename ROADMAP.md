@@ -5,10 +5,11 @@ Sonarr/Radarr (Servarr) and Overseerr/Jellyseerr/Seerr (July 2026 research pass)
 Core keep/reclaim functionality is considered complete; these are the "edge"
 features self-hosters expect.
 
-**Status (July 2026):** Tiers 1 and 2 are implemented and merged to `main`
-(package versions 0.2.0 / 0.3.0 — GitHub release tags pending the first
-"ship"). Tier 3 is deliberately parked — decided July 2026 that none of it is
-needed for how Keeparr is used today; revisit on real demand.
+**Status (July 2026):** Tiers 1 and 2 are implemented, merged to `main`, and
+shipping — continuous delivery tags a release + publishes a ghcr image on every
+push (v0.2.x–v0.3.x are live). Tier 3 is deliberately parked — decided July
+2026 that none of it is needed for how Keeparr is used today; revisit on real
+demand.
 
 ## Tier 1 — done (v0.2.0)
 

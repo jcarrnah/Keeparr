@@ -61,20 +61,36 @@ export interface HistoryRow {
 
 /**
  * Aggregate watch history into per-user plays keyed by the SERIES rating key
- * (for episodes) or the movie rating key. Pulls up to `length` recent rows.
+ * (for episodes) or the movie rating key. Pages through get_history via
+ * `start`/`length` until exhausted (a single flat pull silently dropped
+ * everything past the first `length` grouped rows — older watches vanished
+ * from the never-watched metric). History can shift between pages (new plays
+ * arrive mid-loop, newest-first sort), so a boundary row may repeat and
+ * slightly overcount plays — harmless for this use, so no dedupe.
+ * A mid-loop error envelope throws (partial data must not report success).
  */
 export async function aggregatedWatchHistory(
   base: string,
   apiKey: string,
-  length = 10000
+  pageLen = 1000,
+  maxPages = 100
 ): Promise<
   { plexUserId: string; ratingKey: string; plays: number; lastWatched: number }[]
 > {
-  const data = await call<{ data?: HistoryRow[] }>(base, apiKey, 'get_history', {
-    length,
-    grouping: 1,
-  });
-  const rows = data.data ?? [];
+  const rows: HistoryRow[] = [];
+  for (let page = 0; page < maxPages; page++) {
+    const data = await call<{ data?: HistoryRow[]; recordsFiltered?: number }>(
+      base,
+      apiKey,
+      'get_history',
+      { start: page * pageLen, length: pageLen, grouping: 1 }
+    );
+    const batch = data.data ?? [];
+    rows.push(...batch);
+    if (batch.length < pageLen) break;
+    const total = Number(data.recordsFiltered);
+    if (Number.isFinite(total) && rows.length >= total) break;
+  }
   const acc = new Map<
     string,
     { plexUserId: string; ratingKey: string; plays: number; lastWatched: number }

@@ -35,13 +35,15 @@ export interface JobDef {
   run: () => Promise<JobResult>;
 }
 
-/** The schedulable refresh jobs, in display order. */
+/** The schedulable refresh jobs, in display order. Labels are backend-neutral —
+ *  the sync engine serves Plex/Jellyfin/Emby alike (watch = Tautulli on Plex,
+ *  native data on Jellyfin/Emby). */
 export const JOBS: JobDef[] = [
-  { id: 'recentlyAdded', label: 'Plex Recently Added Scan', run: syncRecentlyAdded },
-  { id: 'library', label: 'Plex Full Library Scan', run: syncLibrary },
+  { id: 'recentlyAdded', label: 'Recently added scan', run: syncRecentlyAdded },
+  { id: 'library', label: 'Full library scan', run: syncLibrary },
   { id: 'sizes', label: 'Library size', run: syncSizes },
-  { id: 'watch', label: 'Tautulli', run: syncWatchHistory },
-  { id: 'requests', label: 'Seerr', run: syncSeerrRequests },
+  { id: 'watch', label: 'Watch history', run: syncWatchHistory },
+  { id: 'requests', label: 'Requests', run: syncSeerrRequests },
   { id: 'arr', label: 'Sonarr / Radarr', run: syncArr },
   { id: 'backup', label: 'Backup', run: runBackup },
 ];

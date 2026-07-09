@@ -66,6 +66,18 @@
 
   --c-sky-600: 2 132 199;
 
+  /* Categorical "by library" palette (breakdown.tsx). Not remapped in
+     color-impaired mode: library identity comes from labels/position, the
+     hues aren't meaning-bearing. */
+  --c-violet-300: 196 181 253;
+  --c-violet-400: 167 139 250;
+  --c-violet-500: 139 92 246;
+  --c-violet-700: 109 40 217;
+  --c-teal-300: 94 234 212;
+  --c-teal-400: 45 212 191;
+  --c-teal-500: 20 184 166;
+  --c-teal-600: 13 148 136;
+
   --scrollbar-thumb: #334155; /* slate-700 */
 }
 
@@ -112,6 +124,12 @@
   --c-rose-800: 253 164 175; /* ← rose-300 (muted accents) */
   --c-rose-900: 254 205 211; /* ← rose-200 (tint backgrounds) */
   --c-rose-950: 255 228 230; /* ← rose-100 (tint backgrounds) */
+
+  /* Library palette: only the lightest shades darken for contrast on white;
+     the vivid shades stay put. Remapped to shades NOT already in the ladder
+     (violet-600 / teal-700) so no two bars collapse to one color. */
+  --c-violet-300: 124 58 237; /* ← violet-600 */
+  --c-teal-300: 15 118 110; /* ← teal-700 */
 
   --scrollbar-thumb: #cbd5e1; /* slate-300 */
 }
