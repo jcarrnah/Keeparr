@@ -21,6 +21,31 @@ export const FEED_WATCH_MODES: FeedWatchMode[] = [
   'my_unwatched',
 ];
 
+/**
+ * FORK: one condition row of a deletion rule (rows are AND'd together). Fixed
+ * vocabulary — the rule engine turns each into a SQL fragment; kept items and
+ * already-tagged items are always excluded on top of these.
+ */
+export type RuleCondition =
+  /** No one on the server has watched it within N days (includes never-played). */
+  | { field: 'last_watched_any'; op: 'olderThanDays'; value: number }
+  /** Added to the library more than N days ago. */
+  | { field: 'added_at'; op: 'olderThanDays'; value: number }
+  /** Size on disk above/below N GB. */
+  | { field: 'size'; op: 'gtGB' | 'ltGB'; value: number }
+  /** In one of these libraries (section ids). */
+  | { field: 'library'; op: 'in'; value: string[] }
+  /** Whether ANY user requested it via Seerr. */
+  | { field: 'requested'; op: 'eq'; value: boolean };
+
+export const RULE_FIELDS = [
+  'last_watched_any',
+  'added_at',
+  'size',
+  'library',
+  'requested',
+] as const;
+
 /** A row from media_items as stored. */
 export interface MediaItem {
   rating_key: string;

@@ -8,11 +8,12 @@ import type {
   LibraryKind,
   LogRow,
   MediaItem,
+  RuleCondition,
   SessionUser,
   SyncStatus,
 } from './types';
 
-export type { FeedWatchMode };
+export type { FeedWatchMode, RuleCondition };
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -2255,4 +2256,146 @@ export function arrMatchForItem(
     | { source: string; instance_id: string; instance_name: string; arr_id: number | null }
     | undefined;
   return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// FORK: deletion rules (rule-based auto-tagging feeding scheduled_deletions).
+// ---------------------------------------------------------------------------
+
+export interface DeletionRuleRow {
+  id: number;
+  name: string;
+  enabled: number;
+  conditions: string; // JSON RuleCondition[] (validated by lib/rules.ts)
+  grace_days: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export function listDeletionRules(): DeletionRuleRow[] {
+  return getDb()
+    .prepare('SELECT * FROM deletion_rules ORDER BY id ASC')
+    .all() as DeletionRuleRow[];
+}
+
+export function createDeletionRule(input: {
+  name: string;
+  conditions: string;
+  enabled: boolean;
+  graceDays: number | null;
+}): number {
+  const t = now();
+  const info = getDb()
+    .prepare(
+      `INSERT INTO deletion_rules (name, enabled, conditions, grace_days, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(input.name, input.enabled ? 1 : 0, input.conditions, input.graceDays, t, t);
+  return Number(info.lastInsertRowid);
+}
+
+export function updateDeletionRule(
+  id: number,
+  input: { name: string; conditions: string; enabled: boolean; graceDays: number | null }
+): boolean {
+  const info = getDb()
+    .prepare(
+      `UPDATE deletion_rules
+       SET name = ?, enabled = ?, conditions = ?, grace_days = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(input.name, input.enabled ? 1 : 0, input.conditions, input.graceDays, now(), id);
+  return info.changes > 0;
+}
+
+export function deleteDeletionRule(id: number): boolean {
+  const info = getDb().prepare('DELETE FROM deletion_rules WHERE id = ?').run(id);
+  return info.changes > 0;
+}
+
+/**
+ * Items a rule's conditions would tag RIGHT NOW: conditions AND'd on top of the
+ * non-negotiable baseline — present, not kept by anyone, and no existing
+ * scheduled_deletions row of ANY status (a manual tag, a cancelled tag, or a
+ * past purge outcome is never overwritten). Mirrors the filter-builder style of
+ * queryLibrary. Conditions must be pre-validated (lib/rules.ts).
+ */
+export function ratingKeysMatchingRule(
+  conditions: RuleCondition[],
+  nowSec: number = now()
+): { rating_key: string; title: string; size_bytes: number }[] {
+  const where: string[] = [
+    'm.removed = 0',
+    'NOT EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = m.rating_key)',
+    'NOT EXISTS (SELECT 1 FROM scheduled_deletions sd WHERE sd.rating_key = m.rating_key)',
+  ];
+  const params: Record<string, unknown> = {};
+
+  conditions.forEach((c, i) => {
+    const p = `c${i}`;
+    switch (c.field) {
+      case 'last_watched_any':
+        // No watch by ANYONE within the window (never-played matches too).
+        params[p] = nowSec - c.value * 86400;
+        where.push(
+          `NOT EXISTS (SELECT 1 FROM watch_history w
+             WHERE w.rating_key = m.rating_key AND w.last_watched >= @${p})`
+        );
+        break;
+      case 'added_at':
+        params[p] = nowSec - c.value * 86400;
+        where.push(`m.added_at IS NOT NULL AND m.added_at <= @${p}`);
+        break;
+      case 'size':
+        params[p] = c.value * 1024 ** 3;
+        where.push(`m.size_bytes ${c.op === 'gtGB' ? '>' : '<'} @${p}`);
+        break;
+      case 'library': {
+        const named = c.value.map((_, j) => `@${p}_${j}`);
+        c.value.forEach((id, j) => (params[`${p}_${j}`] = id));
+        where.push(
+          named.length ? `m.section_id IN (${named.join(', ')})` : '1 = 0'
+        );
+        break;
+      }
+      case 'requested': {
+        const exists =
+          'EXISTS (SELECT 1 FROM seerr_requests r WHERE r.rating_key = m.rating_key)';
+        where.push(c.value ? exists : `NOT ${exists}`);
+        break;
+      }
+    }
+  });
+
+  return getDb()
+    .prepare(
+      `SELECT m.rating_key, m.title, m.size_bytes FROM media_items m
+       WHERE ${where.join(' AND ')}
+       ORDER BY m.size_bytes DESC`
+    )
+    .all(params) as { rating_key: string; title: string; size_bytes: number }[];
+}
+
+/**
+ * Tag rule matches, skipping any key that gained a scheduled_deletions row in
+ * the meantime (INSERT OR IGNORE — never overwrites). Returns how many were
+ * newly tagged.
+ */
+export function insertRuleTags(
+  ratingKeys: string[],
+  taggedBy: string,
+  deleteAfter: number
+): number {
+  const db = getDb();
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO scheduled_deletions
+       (rating_key, tagged_by, tagged_at, delete_after, status, status_at)
+     VALUES (?, ?, ?, ?, 'pending', ?)`
+  );
+  const t = now();
+  return db.transaction(() => {
+    let n = 0;
+    for (const rk of ratingKeys) n += ins.run(rk, taggedBy, t, deleteAfter, t).changes;
+    return n;
+  })();
 }

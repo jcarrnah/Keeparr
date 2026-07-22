@@ -187,6 +187,15 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   `refreshDeletionHolds()` (run at the start of each purge) reconciles both
   directions; `dueDeletions()` re-checks `NOT EXISTS keep`. Unmatched items are
   reported, never deleted. Master toggle default OFF, dry-run default ON.
+- `deletion_rules` — **FORK-ONLY**: auto-tag rules (`name`, `enabled`,
+  `conditions` JSON `RuleCondition[]` from `lib/types.ts`, `grace_days`
+  override). The nightly `rules` job (02:00, `lib/rules.ts`) evaluates enabled
+  rules via `ratingKeysMatchingRule()` — condition vocabulary:
+  `last_watched_any`/`added_at` (olderThanDays), `size` (gt/ltGB), `library`
+  (in), `requested` (eq) — AND'd on a fixed baseline that excludes kept items
+  and ANY existing `scheduled_deletions` row (manual tags / cancelled /
+  purge outcomes are never overwritten). Matches are INSERT-OR-IGNOREd as
+  `pending`, `tagged_by = 'rule:<id>'`. Inert unless `deletion_enabled`.
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
   `requests`/`arr`): last run/status/message/duration/result. Rows stuck at
@@ -361,6 +370,12 @@ when it has no tvdb/tmdb **and** no imdb.
   audit). Browse's Status filter gains a `scheduledDeletion` bucket (shown only
   when the Deletion toggle is on) and library rows carry
   `scheduledDeleteAfter`/`scheduledDeleteHeld` → the card badge.
+  **FORK:** `GET/POST/PUT/DELETE /api/admin/deletion-rules` (rule CRUD;
+  conditions validated by `parseRuleConditions`) +
+  `POST /api/admin/deletion-rules/preview` `{conditions}` →
+  `{count, totalBytes, sample[]}` (what tonight's run would tag). UI: the
+  "Deletion rules" card (`components/settings/DeletionRulesCard.tsx`) in
+  Settings → General.
 
 ## Settings keys (all via `lib/settings.ts`)
 
@@ -560,8 +575,9 @@ A fuller source-verified reference is in the planning doc
   `lib/scheduler.ts` on its `job_schedules` entry (`isDue`: every N minutes/hours, daily
   at a local HH:MM, or weekly on a local weekday at HH:MM). Defaults in `config.ts` (`DEFAULT_JOB_SCHEDULES`): recentlyAdded
   5 min; library 03:00; watch 04:00; requests 05:00; sizes 06:00; arr 07:00;
-  backup 08:00; **FORK:** purge 02:30 (before the library scan so it reflects
-  deletions; inert unless `deletion_enabled`; body in `lib/purge.ts`).
+  backup 08:00; **FORK:** rules 02:00 then purge 02:30 (before the library
+  scan so it reflects deletions; both inert unless `deletion_enabled`; bodies
+  in `lib/rules.ts` / `lib/purge.ts`).
 - **Releases + images (continuous delivery)**: every push to `main` ships one
   release via `.github/workflows/release.yml`: test (tsc + vitest + `next
   build`) → **version** → build (native amd64 + arm64, no QEMU) → publish

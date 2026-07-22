@@ -191,6 +191,21 @@ export function applySchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_scheddel_due ON scheduled_deletions(status, delete_after);
 
+    -- FORK: rule-based auto-tagging (Maintainerr-style). Conditions are a JSON
+    -- array of {field, op, value} AND'd together; the nightly 'rules' job
+    -- evaluates enabled rules and INSERTs into scheduled_deletions (INSERT OR
+    -- IGNORE — it never overwrites an existing tag of any status, and the
+    -- match query itself excludes kept items).
+    CREATE TABLE IF NOT EXISTS deletion_rules (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      name        TEXT NOT NULL,
+      enabled     INTEGER NOT NULL DEFAULT 0,
+      conditions  TEXT NOT NULL,              -- JSON RuleCondition[]
+      grace_days  INTEGER,                    -- NULL = use the global default
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+
     -- App event log (shown on the Settings → Logs page).
     CREATE TABLE IF NOT EXISTS logs (
       id      INTEGER PRIMARY KEY AUTOINCREMENT,

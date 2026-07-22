@@ -487,6 +487,38 @@
         "responses": { "200": { "description": "`{ok}`" }, "404": { "description": "No live tag on that item" } }
       }
     },
+    "/api/admin/deletion-rules": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "FORK: list auto-tag rules",
+        "responses": { "200": { "description": "`{rules[]}` — id, name, enabled, conditions[], graceDays" } }
+      },
+      "post": {
+        "tags": ["admin"],
+        "summary": "FORK: create a rule",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "conditions": { "type": "array", "description": "RuleCondition[]: {field: last_watched_any|added_at|size|library|requested, op, value} AND'd together" }, "enabled": { "type": "boolean" }, "graceDays": { "type": "integer", "nullable": true } }, "required": ["name", "conditions"] } } } },
+        "responses": { "200": { "description": "`{ok, id}`" }, "400": { "description": "Invalid name/conditions" } }
+      },
+      "put": {
+        "tags": ["admin"],
+        "summary": "FORK: update a rule (full replace; body adds {id})",
+        "responses": { "200": { "description": "`{ok}`" } }
+      },
+      "delete": {
+        "tags": ["admin"],
+        "summary": "FORK: delete a rule",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "integer" } }, "required": ["id"] } } } },
+        "responses": { "200": { "description": "`{ok}`" } }
+      }
+    },
+    "/api/admin/deletion-rules/preview": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "FORK: preview what a rule's conditions would tag right now",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "conditions": { "type": "array" } }, "required": ["conditions"] } } } },
+        "responses": { "200": { "description": "`{count, totalBytes, sample[]}`" } }
+      }
+    },
     "/api/admin/cache": {
       "get": {
         "tags": ["admin"],

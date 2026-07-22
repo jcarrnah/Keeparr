@@ -1,6 +1,7 @@
 import { JOBS, type JobId } from './jobs';
 import { getJobState } from './queries';
 import {
+  getDeletionEnabled,
   getJobSchedules,
   getManagedSections,
   getStorageMappings,
@@ -38,6 +39,10 @@ function jobRelevant(id: JobId): boolean {
       return isArrConfigured();
     case 'backup':
       return true;
+    // FORK: the deletion jobs only matter while the master toggle is on.
+    case 'purge':
+    case 'rules':
+      return getDeletionEnabled();
     default:
       // recentlyAdded / library / sizes need the media server.
       return isServerConfigured();

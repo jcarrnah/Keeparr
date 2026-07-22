@@ -102,6 +102,7 @@ describe('GET /api/admin/jobs', () => {
       'purge',
       'recentlyAdded',
       'requests',
+      'rules',
       'sizes',
       'watch',
     ]);

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { copyText } from '@/lib/clipboard';
 import { Card, CardColumns, btnCls, btnGhost, inputCls } from './ui';
+import DeletionRulesCard from './DeletionRulesCard';
 
 export default function GeneralPanel() {
   const [appTitle, setAppTitle] = useState('');
@@ -196,6 +197,9 @@ export default function GeneralPanel() {
           </p>
         )}
       </Card>
+
+      {/* FORK: rule builder (auto-tagging into scheduled_deletions). */}
+      <DeletionRulesCard />
       </CardColumns>
 
       <div className="flex items-center gap-3">
