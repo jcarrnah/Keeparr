@@ -188,9 +188,32 @@ export default function MediaCard({
           Kept
         </div>
       ) : null}
-      {requested && (
-        <div className="absolute left-2 top-2 rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold text-paper">
-          Requested
+      {/* Left-top badge stack: Requested + (FORK) scheduled-deletion notice. */}
+      {(requested || item.scheduledDeleteAfter != null) && (
+        <div className="absolute left-2 top-2 flex flex-col items-start gap-1">
+          {requested && (
+            <div className="rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold text-paper">
+              Requested
+            </div>
+          )}
+          {item.scheduledDeleteAfter != null && (
+            <div
+              title={
+                item.scheduledDeleteHeld
+                  ? 'Scheduled for deletion, but paused — someone keeps it. The countdown resumes if all keeps are removed.'
+                  : `Scheduled for deletion after ${new Date(item.scheduledDeleteAfter * 1000).toLocaleDateString()}. Keeping this pauses the deletion.`
+              }
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                item.scheduledDeleteHeld
+                  ? 'bg-slate-700/90 text-slate-200'
+                  : 'bg-red-500/90 text-paper'
+              }`}
+            >
+              {item.scheduledDeleteHeld
+                ? '⏸ Deletion paused'
+                : `⌛ Leaving ${new Date(item.scheduledDeleteAfter * 1000).toLocaleDateString()}`}
+            </div>
+          )}
         </div>
       )}
 

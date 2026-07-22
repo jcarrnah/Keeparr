@@ -174,6 +174,23 @@ export function applySchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_job_runs_time ON job_runs(started_at DESC);
 
+    -- FORK: scheduled deletions — admin tags an item "delete after date"; the
+    -- nightly 'purge' job deletes eligible items via Sonarr/Radarr. Fork-only
+    -- (crosses upstream's "never deletes" line), default OFF and dry-run ON.
+    -- Protective keeps always win: an item with ANY active keep is never purged
+    -- (status flips to 'held' until the keep goes away).
+    CREATE TABLE IF NOT EXISTS scheduled_deletions (
+      rating_key    TEXT PRIMARY KEY REFERENCES media_items(rating_key) ON DELETE CASCADE,
+      tagged_by     TEXT NOT NULL,          -- plex_user_id of the tagging admin
+      tagged_at     INTEGER NOT NULL,
+      delete_after  INTEGER NOT NULL,       -- epoch seconds; tagged_at + grace
+      status        TEXT NOT NULL DEFAULT 'pending',
+                    -- pending | held (keep exists) | deleted | failed | cancelled
+      status_at     INTEGER,
+      status_detail TEXT                    -- arr response / error / who cancelled
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheddel_due ON scheduled_deletions(status, delete_after);
+
     -- App event log (shown on the Settings → Logs page).
     CREATE TABLE IF NOT EXISTS logs (
       id      INTEGER PRIMARY KEY AUTOINCREMENT,

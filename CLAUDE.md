@@ -178,6 +178,15 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   Plex items with a null `guid_tvdb`/`guid_tmdb` that can never match.) Matched via
   `media_items.guid_tvdb`/`guid_tmdb` (indexed). `size_bytes` + `instance_id`
   (scopes the per-instance replace) added via guarded `ALTER`s.
+- `scheduled_deletions` — **FORK-ONLY** (crosses upstream's "never deletes"
+  line): one row per tagged item (`rating_key` PK), `tagged_by`/`tagged_at`,
+  `delete_after` (epoch), `status` (`pending`|`held`|`deleted`|`failed`|
+  `cancelled`) + `status_at`/`status_detail`. The nightly `purge` job deletes
+  eligible items **via Sonarr/Radarr only** (never the filesystem). Protective
+  keeps always win: `applyKeep` flips a pending tag to `held`;
+  `refreshDeletionHolds()` (run at the start of each purge) reconciles both
+  directions; `dueDeletions()` re-checks `NOT EXISTS keep`. Unmatched items are
+  reported, never deleted. Master toggle default OFF, dry-run default ON.
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
   `requests`/`arr`): last run/status/message/duration/result. Rows stuck at
@@ -345,7 +354,13 @@ when it has no tvdb/tmdb **and** no imdb.
   `sizeBytes`, largest-first),
   `GET/PUT /api/admin/users` (list + grant/revoke admin + enable/disable + the
   `openSignin` toggle; Owner can't be demoted or disabled),
-  `POST /api/admin/users/import` (import the Plex shared-user list).
+  `POST /api/admin/users/import` (import the Plex shared-user list),
+  **FORK:** `GET/POST/DELETE /api/admin/scheduled-deletions` (list / tag
+  `{ratingKey, graceDays?}` / cancel `{ratingKey}` — POST tags `held` when
+  anyone currently keeps the item; DELETE keeps the row as `cancelled` for
+  audit). Browse's Status filter gains a `scheduledDeletion` bucket (shown only
+  when the Deletion toggle is on) and library rows carry
+  `scheduledDeleteAfter`/`scheduledDeleteHeld` → the card badge.
 
 ## Settings keys (all via `lib/settings.ts`)
 
@@ -369,6 +384,9 @@ measurement), `managed_section_ids` (json; which libraries Keeparr tracks, empty
 all), `open_signin` (`'true'`/`'false'`), `api_key`* (automation), `app_title`,
 `app_url` (Plex sign-in forwardUrl; overrides the `APP_URL` env var),
 `backup_retention` (how many backup files to keep; default 14),
+**FORK:** `deletion_enabled` (default `'false'` — master switch for the purge
+job), `deletion_grace_days` (default 30), `deletion_dry_run` (default `'true'`
+— purge only logs; all three edited via the Settings → General "Deletion" card),
 `dev_storage_total` (demo-only synthetic capacity, set by the seed). `*` = encrypted
 at rest.
 
@@ -542,7 +560,8 @@ A fuller source-verified reference is in the planning doc
   `lib/scheduler.ts` on its `job_schedules` entry (`isDue`: every N minutes/hours, daily
   at a local HH:MM, or weekly on a local weekday at HH:MM). Defaults in `config.ts` (`DEFAULT_JOB_SCHEDULES`): recentlyAdded
   5 min; library 03:00; watch 04:00; requests 05:00; sizes 06:00; arr 07:00;
-  backup 08:00.
+  backup 08:00; **FORK:** purge 02:30 (before the library scan so it reflects
+  deletions; inert unless `deletion_enabled`; body in `lib/purge.ts`).
 - **Releases + images (continuous delivery)**: every push to `main` ships one
   release via `.github/workflows/release.yml`: test (tsc + vitest + `next
   build`) → **version** → build (native amd64 + arm64, no QEMU) → publish

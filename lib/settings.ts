@@ -322,6 +322,32 @@ export function setBackupRetention(n: number): void {
   writeSetting('backup_retention', String(Math.max(1, Math.floor(n))));
 }
 
+// --- FORK: scheduled deletions (default OFF; dry-run defaults ON) ---
+/** Master switch for the purge job. Nothing is ever deleted while this is off. */
+export function getDeletionEnabled(): boolean {
+  return readSetting('deletion_enabled') === 'true'; // default: OFF
+}
+export function setDeletionEnabled(on: boolean): void {
+  writeSetting('deletion_enabled', on ? 'true' : 'false');
+}
+
+/** Days between tagging an item and it becoming purge-eligible. */
+export function getDeletionGraceDays(): number {
+  const n = Number(readSetting('deletion_grace_days'));
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 30;
+}
+export function setDeletionGraceDays(n: number): void {
+  writeSetting('deletion_grace_days', String(Math.max(0, Math.floor(n))));
+}
+
+/** Dry run: the purge job only LOGS what it would delete. Defaults ON. */
+export function getDeletionDryRun(): boolean {
+  return readSetting('deletion_dry_run') !== 'false'; // default: ON
+}
+export function setDeletionDryRun(on: boolean): void {
+  writeSetting('deletion_dry_run', on ? 'true' : 'false');
+}
+
 // --- Local demo (set only by the dev seed; synthetic storage capacity) ---
 export function getDevStorageTotal(): number | null {
   const v = Number(readSetting('dev_storage_total'));

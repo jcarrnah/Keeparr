@@ -243,7 +243,7 @@
           { "name": "q", "in": "query", "schema": { "type": "string" } },
           { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["size", "title", "added", "year", "library", "quality", "tags", "status", "watched"] } },
           { "name": "dir", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"] } },
-          { "name": "state", "in": "query", "schema": { "type": "string" }, "description": "Comma list of: keptByMe, keptOther, dontcare, okDeleteMine, okDeleteAny, undecided" },
+          { "name": "state", "in": "query", "schema": { "type": "string" }, "description": "Comma list of: keptByMe, keptOther, dontcare, okDeleteMine, okDeleteAny, undecided, scheduledDeletion (FORK)" },
           { "name": "watch", "in": "query", "schema": { "type": "string", "enum": ["all", "watched", "unwatched", "unwatchedAny", "recent30", "recent60", "recent90", "stale90"] } },
           { "name": "source", "in": "query", "schema": { "type": "string" } },
           { "name": "instance", "in": "query", "schema": { "type": "string" } },
@@ -466,6 +466,25 @@
         "tags": ["admin"],
         "summary": "Clear the event log",
         "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/admin/scheduled-deletions": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "FORK: list scheduled-deletion tags (live first, soonest first)",
+        "responses": { "200": { "description": "`{items[], enabled}` — each item: ratingKey, title, sizeBytes, taggedBy(+Name), taggedAt, deleteAfter, status (pending|held|deleted|failed|cancelled), statusDetail, kept" } }
+      },
+      "post": {
+        "tags": ["admin"],
+        "summary": "FORK: tag an item \"delete after date\" (held immediately if anyone keeps it)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" }, "graceDays": { "type": "integer", "description": "Override the configured grace period for this tag" } }, "required": ["ratingKey"] } } } },
+        "responses": { "200": { "description": "`{ok, deleteAfter}`" }, "404": { "description": "Unknown or tombstoned item" } }
+      },
+      "delete": {
+        "tags": ["admin"],
+        "summary": "FORK: cancel a live tag (row kept for audit)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" } }, "required": ["ratingKey"] } } } },
+        "responses": { "200": { "description": "`{ok}`" }, "404": { "description": "No live tag on that item" } }
       }
     },
     "/api/admin/cache": {

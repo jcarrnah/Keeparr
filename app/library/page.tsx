@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { getSessionUser } from '@/lib/auth';
 import {
+  getDeletionEnabled,
   getManagedSections,
   isArrConfigured,
   isSeerrConfigured,
@@ -40,6 +41,7 @@ export default async function LibraryPage() {
           tautulli={isWatchAvailable()}
           arr={isArrConfigured()}
           seerr={isSeerrConfigured()}
+          deletion={getDeletionEnabled()}
         />
       )}
     </AppShell>

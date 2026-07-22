@@ -48,6 +48,10 @@ export const DEFAULT_JOB_SCHEDULES: Record<string, JobSchedule> = {
   arr: { type: 'daily', hour: 7, minute: 0 },
   // After the overnight refresh cycle, snapshot the database.
   backup: { type: 'daily', hour: 8, minute: 0 },
+  // FORK: purge scheduled deletions nightly, BEFORE the 03:00 library scan so
+  // the scan immediately reflects what was removed. Inert unless the Deletion
+  // master toggle is on (default OFF).
+  purge: { type: 'daily', hour: 2, minute: 30 },
 };
 
 /** How many backup files to keep (oldest pruned first). Overridable in Settings. */

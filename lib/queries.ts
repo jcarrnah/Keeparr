@@ -362,6 +362,13 @@ export function applyKeep(plexUserId: string, ratingKey: string): boolean {
       plexUserId,
       ratingKey
     );
+    // FORK: a keep pauses any pending scheduled deletion immediately (the purge
+    // job re-checks keeps anyway, but the Browse badge should update right away).
+    db.prepare(
+      `UPDATE scheduled_deletions
+       SET status = 'held', status_at = ?, status_detail = 'keep added'
+       WHERE rating_key = ? AND status = 'pending'`
+    ).run(now(), ratingKey);
     return info.changes > 0;
   })();
 }
@@ -764,7 +771,9 @@ export type StateBucket =
   | 'dontcare'
   | 'okDeleteMine'
   | 'okDeleteAny'
-  | 'undecided';
+  | 'undecided'
+  // FORK: items with a live (pending/held) scheduled-deletion tag.
+  | 'scheduledDeletion';
 /** Per-user "have you watched it" filter (recency windows use last_watched). */
 export type WatchFilter =
   | 'all'
@@ -855,6 +864,9 @@ export interface LibraryRow extends MediaWithKeep {
   arr_quality_kind: string | null;
   arr_tags: string | null; // JSON array string, or null
   arr_size_bytes: number | null;
+  // FORK: live scheduled-deletion tag (null when not tagged / tag not live).
+  scheduled_delete_after: number | null;
+  scheduled_delete_status: string | null; // 'pending' | 'held'
 }
 
 export function queryLibrary(q: LibraryQuery): LibraryRow[] {
@@ -909,6 +921,7 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
       okDeleteMine: 'ud.rating_key IS NOT NULL',
       okDeleteAny: deletedAnyExists,
       undecided: `NOT (${keptExists}) AND s.rating_key IS NULL AND ud.rating_key IS NULL`,
+      scheduledDeletion: 'sd.rating_key IS NOT NULL',
     };
     const parts = q.stateBuckets
       .filter((b) => cond[b])
@@ -995,7 +1008,9 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
               a.source AS arr_source, a.instance_name AS arr_instance_name,
               a.monitored AS arr_monitored, a.status AS arr_status,
               a.quality AS arr_quality, a.quality_kind AS arr_quality_kind,
-              a.tags AS arr_tags, a.arr_size_bytes AS arr_size_bytes
+              a.tags AS arr_tags, a.arr_size_bytes AS arr_size_bytes,
+              sd.delete_after AS scheduled_delete_after,
+              sd.status AS scheduled_delete_status
        FROM media_items m
        LEFT JOIN keeps km
          ON km.rating_key = m.rating_key AND km.plex_user_id = @uid
@@ -1008,6 +1023,8 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
        LEFT JOIN watch_history wh
          ON wh.rating_key = m.rating_key AND wh.plex_user_id = @uid
        LEFT JOIN arr_items a ON a.rating_key = m.rating_key
+       LEFT JOIN scheduled_deletions sd
+         ON sd.rating_key = m.rating_key AND sd.status IN ('pending', 'held')
        WHERE ${where.join(' AND ')}
        ORDER BY ${order}
        LIMIT @limit OFFSET @offset`
@@ -2060,4 +2077,182 @@ export function updateItemSize(ratingKey: string, sizeBytes: number): void {
   getDb()
     .prepare('UPDATE media_items SET size_bytes = ? WHERE rating_key = ?')
     .run(sizeBytes, ratingKey);
+}
+
+// ---------------------------------------------------------------------------
+// FORK: scheduled deletions (tag now, purge via Sonarr/Radarr after a grace
+// period). Protective keeps always win — a kept item is never purge-eligible.
+// ---------------------------------------------------------------------------
+
+export type ScheduledDeletionStatus =
+  | 'pending'
+  | 'held'
+  | 'deleted'
+  | 'failed'
+  | 'cancelled';
+
+/** A scheduled_deletions row joined with its item + protection state. */
+export interface ScheduledDeletionRow {
+  rating_key: string;
+  tagged_by: string;
+  tagged_at: number;
+  delete_after: number;
+  status: ScheduledDeletionStatus;
+  status_at: number | null;
+  status_detail: string | null;
+  title: string;
+  size_bytes: number;
+  section_id: string;
+  removed: number;
+  kept: number; // anyone keeps it right now (protected)
+  tagged_by_name: string | null;
+}
+
+/**
+ * Tag an item for deletion (admin action). Re-tagging an existing row —
+ * including a cancelled/failed one — restarts it as 'pending' with the new
+ * dates ('held' immediately when someone currently keeps it). False when the
+ * item doesn't exist or is tombstoned.
+ */
+export function tagForDeletion(
+  ratingKey: string,
+  taggedBy: string,
+  deleteAfter: number
+): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const item = db
+      .prepare('SELECT 1 FROM media_items WHERE rating_key = ? AND removed = 0')
+      .get(ratingKey);
+    if (!item) return false;
+    const kept = db
+      .prepare('SELECT 1 FROM keeps WHERE rating_key = ? LIMIT 1')
+      .get(ratingKey);
+    db.prepare(
+      `INSERT INTO scheduled_deletions
+         (rating_key, tagged_by, tagged_at, delete_after, status, status_at, status_detail)
+       VALUES (@rk, @by, @at, @after, @status, @at, NULL)
+       ON CONFLICT(rating_key) DO UPDATE SET
+         tagged_by = excluded.tagged_by,
+         tagged_at = excluded.tagged_at,
+         delete_after = excluded.delete_after,
+         status = excluded.status,
+         status_at = excluded.status_at,
+         status_detail = NULL`
+    ).run({
+      rk: ratingKey,
+      by: taggedBy,
+      at: now(),
+      after: deleteAfter,
+      status: kept ? 'held' : 'pending',
+    });
+    return true;
+  })();
+}
+
+/** Cancel a tag (admin action). Keeps the row for audit. True if it was live. */
+export function cancelDeletion(ratingKey: string, cancelledBy: string): boolean {
+  const info = getDb()
+    .prepare(
+      `UPDATE scheduled_deletions
+       SET status = 'cancelled', status_at = ?, status_detail = ?
+       WHERE rating_key = ? AND status IN ('pending', 'held')`
+    )
+    .run(now(), `cancelled by ${cancelledBy}`, ratingKey);
+  return info.changes > 0;
+}
+
+/** All scheduled-deletion rows with item info, live tags first, soonest first. */
+export function listScheduledDeletions(): ScheduledDeletionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT sd.*, m.title, m.size_bytes, m.section_id, m.removed,
+              EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = sd.rating_key) AS kept,
+              u.username AS tagged_by_name
+       FROM scheduled_deletions sd
+       JOIN media_items m ON m.rating_key = sd.rating_key
+       LEFT JOIN users u ON u.plex_user_id = sd.tagged_by
+       ORDER BY CASE WHEN sd.status IN ('pending', 'held') THEN 0 ELSE 1 END,
+                sd.delete_after ASC, m.title COLLATE NOCASE ASC`
+    )
+    .all() as ScheduledDeletionRow[];
+}
+
+/**
+ * Reconcile 'pending'/'held' with the CURRENT keep state: pending items someone
+ * now keeps flip to held; held items nobody keeps anymore flip back to pending
+ * (the countdown resumes — delete_after is untouched). Run at the start of each
+ * purge pass. Returns {held, released} counts.
+ */
+export function refreshDeletionHolds(): { held: number; released: number } {
+  const db = getDb();
+  return db.transaction(() => {
+    const t = now();
+    const held = db
+      .prepare(
+        `UPDATE scheduled_deletions
+         SET status = 'held', status_at = ?, status_detail = 'keep exists'
+         WHERE status = 'pending'
+           AND EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = scheduled_deletions.rating_key)`
+      )
+      .run(t).changes;
+    const released = db
+      .prepare(
+        `UPDATE scheduled_deletions
+         SET status = 'pending', status_at = ?, status_detail = 'keep removed'
+         WHERE status = 'held'
+           AND NOT EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = scheduled_deletions.rating_key)`
+      )
+      .run(t).changes;
+    return { held, released };
+  })();
+}
+
+/**
+ * Items eligible for the purge right now: pending, past their delete_after,
+ * item still present, and — belt and braces — not kept by anyone.
+ */
+export function dueDeletions(nowSec: number = now()): ScheduledDeletionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT sd.*, m.title, m.size_bytes, m.section_id, m.removed,
+              0 AS kept, NULL AS tagged_by_name
+       FROM scheduled_deletions sd
+       JOIN media_items m ON m.rating_key = sd.rating_key
+       WHERE sd.status = 'pending' AND sd.delete_after <= ?
+         AND m.removed = 0
+         AND NOT EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = sd.rating_key)
+       ORDER BY sd.delete_after ASC`
+    )
+    .all(nowSec) as ScheduledDeletionRow[];
+}
+
+/** Record the purge outcome for one item. */
+export function setDeletionResult(
+  ratingKey: string,
+  status: 'deleted' | 'failed',
+  detail: string
+): void {
+  getDb()
+    .prepare(
+      `UPDATE scheduled_deletions
+       SET status = ?, status_at = ?, status_detail = ?
+       WHERE rating_key = ?`
+    )
+    .run(status, now(), detail, ratingKey);
+}
+
+/** The arr match for one item (to target the DELETE at the right instance). */
+export function arrMatchForItem(
+  ratingKey: string
+): { source: string; instance_id: string; instance_name: string; arr_id: number | null } | null {
+  const row = getDb()
+    .prepare(
+      `SELECT source, instance_id, instance_name, arr_id
+       FROM arr_items WHERE rating_key = ?`
+    )
+    .get(ratingKey) as
+    | { source: string; instance_id: string; instance_name: string; arr_id: number | null }
+    | undefined;
+  return row ?? null;
 }

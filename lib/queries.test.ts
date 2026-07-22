@@ -70,6 +70,13 @@ import {
   updateItemSize,
   type UpsertMediaInput,
   type FeedWatchMode,
+  tagForDeletion,
+  cancelDeletion,
+  listScheduledDeletions,
+  refreshDeletionHolds,
+  dueDeletions,
+  setDeletionResult,
+  arrMatchForItem,
 } from './queries';
 
 const GB = 1024 ** 3;
@@ -1300,5 +1307,135 @@ describe('OK to delete (user_deletes)', () => {
     expect(rows[1].keptByAnyone).toBe(false);
 
     expect(markedForDeleteSummary()).toEqual({ titles: 2, bytes: 51 * GB });
+  });
+});
+
+describe('FORK: scheduled deletions', () => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const past = nowSec - 100;
+  const future = nowSec + 30 * 86400;
+
+  beforeEach(() => {
+    upsertMediaBatch([media('1'), media('2'), media('3', { sizeBytes: 5 * GB })]);
+  });
+
+  it('tagForDeletion inserts pending; re-tag restarts a cancelled row', () => {
+    expect(tagForDeletion('1', 'admin', future)).toBe(true);
+    let [row] = listScheduledDeletions();
+    expect(row.status).toBe('pending');
+    expect(row.delete_after).toBe(future);
+
+    cancelDeletion('1', 'admin');
+    [row] = listScheduledDeletions();
+    expect(row.status).toBe('cancelled');
+
+    expect(tagForDeletion('1', 'admin', future + 1)).toBe(true);
+    [row] = listScheduledDeletions();
+    expect(row.status).toBe('pending');
+    expect(row.delete_after).toBe(future + 1);
+  });
+
+  it('tagging rejects unknown + tombstoned items', () => {
+    expect(tagForDeletion('nope', 'admin', future)).toBe(false);
+    upsertMediaBatch([media('1')], 2000);
+    upsertMediaBatch([media('2'), media('3')], 3000);
+    tombstoneStale(3000); // '1' tombstoned
+    expect(tagForDeletion('1', 'admin', future)).toBe(false);
+  });
+
+  it('tagging a currently-kept item starts it as held', () => {
+    addKeep('userA', '1');
+    tagForDeletion('1', 'admin', past);
+    const [row] = listScheduledDeletions();
+    expect(row.status).toBe('held');
+    expect(row.kept).toBe(1);
+    expect(dueDeletions(nowSec)).toHaveLength(0);
+  });
+
+  it('a new keep pauses a pending deletion (applyKeep flips it to held)', () => {
+    tagForDeletion('1', 'admin', past);
+    expect(dueDeletions(nowSec).map((r) => r.rating_key)).toEqual(['1']);
+    applyKeep('userA', '1');
+    const [row] = listScheduledDeletions();
+    expect(row.status).toBe('held');
+    expect(dueDeletions(nowSec)).toHaveLength(0);
+  });
+
+  it('refreshDeletionHolds resumes the countdown when the keep goes away', () => {
+    tagForDeletion('1', 'admin', past);
+    applyKeep('userA', '1'); // → held
+    removeKeep('userA', '1');
+    const { held, released } = refreshDeletionHolds();
+    expect(held).toBe(0);
+    expect(released).toBe(1);
+    expect(dueDeletions(nowSec).map((r) => r.rating_key)).toEqual(['1']);
+  });
+
+  it('refreshDeletionHolds parks pending items someone keeps (e.g. raw addKeep)', () => {
+    tagForDeletion('1', 'admin', past);
+    addKeep('userB', '1'); // raw insert — no applyKeep hold
+    const { held } = refreshDeletionHolds();
+    expect(held).toBe(1);
+    expect(dueDeletions(nowSec)).toHaveLength(0);
+  });
+
+  it('dueDeletions: only pending, past-due, present, unkept items', () => {
+    tagForDeletion('1', 'admin', past); // due
+    tagForDeletion('2', 'admin', future); // not yet due
+    tagForDeletion('3', 'admin', past);
+    addKeep('userA', '3'); // kept → ineligible even though past due
+    expect(dueDeletions(nowSec).map((r) => r.rating_key)).toEqual(['1']);
+  });
+
+  it('setDeletionResult records the purge outcome', () => {
+    tagForDeletion('1', 'admin', past);
+    setDeletionResult('1', 'deleted', 'deleted via radarr (Main)');
+    const [row] = listScheduledDeletions();
+    expect(row.status).toBe('deleted');
+    expect(row.status_detail).toBe('deleted via radarr (Main)');
+    expect(dueDeletions(nowSec)).toHaveLength(0);
+  });
+
+  it('arrMatchForItem returns the owning instance or null', () => {
+    expect(arrMatchForItem('1')).toBeNull();
+    replaceArrItems([
+      {
+        ratingKey: '1',
+        source: 'radarr',
+        instanceId: 'r1',
+        instanceName: 'Radarr',
+        arrId: 42,
+        monitored: true,
+        status: 'released',
+        quality: 'Bluray-1080p',
+        qualityKind: 'file',
+        rootFolder: null,
+        arrSizeBytes: GB,
+        tags: [],
+      },
+    ]);
+    expect(arrMatchForItem('1')).toEqual({
+      source: 'radarr',
+      instance_id: 'r1',
+      instance_name: 'Radarr',
+      arr_id: 42,
+    });
+  });
+
+  it('queryLibrary: scheduledDeletion bucket + live-tag fields on rows', () => {
+    tagForDeletion('1', 'admin', future);
+    tagForDeletion('2', 'admin', past);
+    cancelDeletion('2', 'admin'); // cancelled tag must NOT surface
+    const rows = queryLibrary({
+      plexUserId: 'userA',
+      limit: 100,
+      offset: 0,
+      stateBuckets: ['scheduledDeletion'],
+    });
+    expect(rows.map((r) => r.rating_key)).toEqual(['1']);
+    expect(rows[0].scheduled_delete_after).toBe(future);
+    expect(rows[0].scheduled_delete_status).toBe('pending');
+    const all = queryLibrary({ plexUserId: 'userA', limit: 100, offset: 0 });
+    expect(all.find((r) => r.rating_key === '2')?.scheduled_delete_after).toBeNull();
   });
 });

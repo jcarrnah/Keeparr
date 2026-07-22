@@ -8,6 +8,7 @@ import {
   type JobResult,
 } from './sync';
 import { runBackup } from './backup';
+import { runPurge } from './purge';
 import {
   getAllJobState,
   getJobState,
@@ -27,7 +28,8 @@ export type JobId =
   | 'watch'
   | 'requests'
   | 'arr'
-  | 'backup';
+  | 'backup'
+  | 'purge';
 
 export interface JobDef {
   id: JobId;
@@ -46,6 +48,9 @@ export const JOBS: JobDef[] = [
   { id: 'requests', label: 'Requests', run: syncSeerrRequests },
   { id: 'arr', label: 'Sonarr / Radarr', run: syncArr },
   { id: 'backup', label: 'Backup', run: runBackup },
+  // FORK: the only job that changes anything outside Keeparr. Master toggle
+  // default OFF + dry-run default ON (see lib/purge.ts).
+  { id: 'purge', label: 'Scheduled deletions', run: runPurge },
 ];
 
 export const JOB_IDS = JOBS.map((j) => j.id);

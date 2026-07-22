@@ -167,6 +167,31 @@ export async function fetchSonarr(inst: ArrInstance): Promise<ArrRecord[]> {
     .filter((r): r is ArrRecord => r !== null);
 }
 
+// --- FORK: deletion (used ONLY by the scheduled-deletions purge job) ---
+
+/**
+ * Delete a title + its files via the owning *arr instance — Keeparr never
+ * touches the filesystem itself. No import exclusion is added, so the title
+ * can be re-requested later.
+ */
+export async function deleteArrItem(
+  inst: ArrInstance,
+  source: ArrSource,
+  arrId: number
+): Promise<void> {
+  const path =
+    source === 'radarr'
+      ? `/movie/${arrId}?deleteFiles=true&addImportExclusion=false`
+      : `/series/${arrId}?deleteFiles=true`;
+  const url = inst.url.replace(/\/$/, '') + '/api/v3' + path;
+  await fetchJson<unknown>(url, {
+    method: 'DELETE',
+    headers: { 'X-Api-Key': inst.apiKey },
+    label: `${inst.name || inst.url} DELETE ${source} ${arrId}`,
+    allowEmpty: true,
+  });
+}
+
 /** All movies from a Radarr instance, normalized (tags resolved). */
 export async function fetchRadarr(inst: ArrInstance): Promise<ArrRecord[]> {
   const [movies, tags] = await Promise.all([

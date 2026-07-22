@@ -55,6 +55,11 @@ export interface MediaCardData {
   skipped?: boolean;
   /** True when the current user has watched it (any plays, from Tautulli). */
   watched?: boolean;
+  // --- FORK: scheduled deletion (live tag only) ---
+  /** Epoch seconds after which the purge may delete it (undefined = untagged). */
+  scheduledDeleteAfter?: number;
+  /** True when a keep is currently pausing the countdown. */
+  scheduledDeleteHeld?: boolean;
   // --- "OK to delete" (the original Seerr requester signing off) ---
   /** True when the current user requested this on Seerr (gates the control). */
   requestedByMe?: boolean;

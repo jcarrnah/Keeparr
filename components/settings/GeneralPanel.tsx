@@ -8,6 +8,10 @@ export default function GeneralPanel() {
   const [appTitle, setAppTitle] = useState('');
   const [appUrl, setAppUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
+  // FORK: scheduled-deletion settings (master toggle default OFF, dry-run ON).
+  const [delEnabled, setDelEnabled] = useState(false);
+  const [delGraceDays, setDelGraceDays] = useState(30);
+  const [delDryRun, setDelDryRun] = useState(true);
   const [keyDirty, setKeyDirty] = useState(false); // regenerated but not saved yet
   const [showKey, setShowKey] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -21,6 +25,9 @@ export default function GeneralPanel() {
         setAppTitle(d.appTitle ?? 'Keeparr');
         setAppUrl(d.appUrl ?? '');
         setApiKey(d.apiKey ?? '');
+        setDelEnabled(!!d.deletion?.enabled);
+        setDelGraceDays(d.deletion?.graceDays ?? 30);
+        setDelDryRun(d.deletion?.dryRun ?? true);
       })
       .catch(() => {});
   }, []);
@@ -51,6 +58,7 @@ export default function GeneralPanel() {
         body: JSON.stringify({
           appTitle,
           appUrl,
+          deletion: { enabled: delEnabled, graceDays: delGraceDays, dryRun: delDryRun },
           ...(keyDirty ? { apiKey } : {}),
         }),
       });
@@ -143,6 +151,50 @@ export default function GeneralPanel() {
             API docs →
           </a>
         </div>
+      </Card>
+
+      {/* FORK: scheduled deletions — the one feature that removes media (via
+          Sonarr/Radarr, after a grace period, keeps always win). */}
+      <Card title="Deletion">
+        <p className="text-sm text-slate-400 mb-3">
+          Tag items “delete after date”; a nightly job removes eligible items via
+          Sonarr/Radarr. Anything anyone keeps is <em>never</em> deleted — a keep
+          pauses the countdown.
+        </p>
+        <label className="flex items-center gap-2 text-sm text-slate-200">
+          <input
+            type="checkbox"
+            checked={delEnabled}
+            onChange={(e) => setDelEnabled(e.target.checked)}
+          />
+          Enable scheduled deletions
+        </label>
+        <label className="mt-3 flex items-center gap-2 text-sm text-slate-200">
+          <input
+            type="checkbox"
+            checked={delDryRun}
+            onChange={(e) => setDelDryRun(e.target.checked)}
+          />
+          Dry run — only log what would be deleted
+        </label>
+        <label className="block text-sm text-slate-400 mb-1 mt-4">
+          Grace period (days)
+        </label>
+        <input
+          className={`${inputCls} max-w-[8rem]`}
+          type="number"
+          min={0}
+          value={delGraceDays}
+          onChange={(e) => setDelGraceDays(Math.max(0, Number(e.target.value) || 0))}
+        />
+        <p className="mt-1 text-xs text-slate-500">
+          Days between tagging an item and it becoming eligible for the purge.
+        </p>
+        {delEnabled && !delDryRun && (
+          <p className="mt-2 text-xs text-amber-400">
+            Live mode — the nightly purge WILL delete files via Sonarr/Radarr.
+          </p>
+        )}
       </Card>
       </CardColumns>
 

@@ -33,14 +33,22 @@ type StateBucket =
   | 'dontcare'
   | 'okDeleteMine'
   | 'okDeleteAny'
-  | 'undecided';
-const STATE_OPTIONS: { value: StateBucket; label: string; seerrOnly?: boolean }[] = [
+  | 'undecided'
+  | 'scheduledDeletion';
+const STATE_OPTIONS: {
+  value: StateBucket;
+  label: string;
+  seerrOnly?: boolean;
+  deletionOnly?: boolean;
+}[] = [
   { value: 'undecided', label: 'Undecided' },
   { value: 'keptByMe', label: 'Kept by you' },
   { value: 'keptOther', label: 'Kept by others' },
   { value: 'dontcare', label: "I don't care" },
   { value: 'okDeleteMine', label: 'OK to delete (by you)', seerrOnly: true },
   { value: 'okDeleteAny', label: 'OK to delete (by anyone)', seerrOnly: true },
+  // FORK: items with a live scheduled-deletion tag.
+  { value: 'scheduledDeletion', label: 'Scheduled for deletion', deletionOnly: true },
 ];
 
 interface Facets {
@@ -111,6 +119,7 @@ export default function LibraryBrowser({
   tautulli = false,
   arr = false,
   seerr = false,
+  deletion = false,
 }: {
   sections: LibrarySection[];
   /** Tautulli connected → show the Watched filter (otherwise hidden). */
@@ -119,6 +128,8 @@ export default function LibraryBrowser({
   arr?: boolean;
   /** Seerr connected → show the "OK to delete" status options. */
   seerr?: boolean;
+  /** FORK: scheduled deletions enabled → show the "Scheduled for deletion" bucket. */
+  deletion?: boolean;
 }) {
   // Library selection lives in the URL (?sections=) — driven by the nav rail's
   // Browse list. Empty = all libraries.
@@ -361,7 +372,9 @@ export default function LibraryBrowser({
           onChange={setStates}
           groups={[
             {
-              options: STATE_OPTIONS.filter((o) => !o.seerrOnly || seerr).map((o) => ({
+              options: STATE_OPTIONS.filter(
+                (o) => (!o.seerrOnly || seerr) && (!o.deletionOnly || deletion)
+              ).map((o) => ({
                 value: o.value,
                 label: o.label,
               })),

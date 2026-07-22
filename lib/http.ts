@@ -14,6 +14,9 @@ export async function fetchJson<T = unknown>(
     /** Abort the request after this many ms (default 15s) so a hung upstream
      *  can't stall a page/job indefinitely. */
     timeoutMs?: number;
+    /** Tolerate an empty / non-JSON 2xx body (e.g. Sonarr/Radarr DELETEs
+     *  answer 200 with no content) — resolves undefined instead of throwing. */
+    allowEmpty?: boolean;
   }
 ): Promise<T> {
   let res: Response;
@@ -30,6 +33,15 @@ export async function fetchJson<T = unknown>(
     throw e;
   }
   if (!res.ok) throw new Error(`${opts.label} → HTTP ${res.status}`);
+  if (opts.allowEmpty) {
+    const text = await res.text();
+    if (!text.trim()) return undefined as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return undefined as T;
+    }
+  }
   const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
   if (!contentType.includes('json')) {
     throw new Error(

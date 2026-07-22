@@ -39,6 +39,7 @@ const STATE_BUCKETS: StateBucket[] = [
   'okDeleteMine',
   'okDeleteAny',
   'undecided',
+  'scheduledDeletion',
 ];
 const WATCH: WatchFilter[] = [
   'all',
@@ -156,6 +157,9 @@ export async function GET(req: Request) {
         tags: r.arr_tags ? safeTags(r.arr_tags) : undefined,
         arrSizeBytes: arrSize,
         sizeMismatch: mismatch || undefined,
+        // FORK: live scheduled-deletion tag → date badge on cards.
+        scheduledDeleteAfter: r.scheduled_delete_after ?? undefined,
+        scheduledDeleteHeld: r.scheduled_delete_status === 'held' || undefined,
       };
     });
     return NextResponse.json({ items, hasMore, nextOffset: offset + PAGE });

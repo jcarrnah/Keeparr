@@ -29,6 +29,12 @@ import {
   getApiKey,
   getBackupRetention,
   setBackupRetention,
+  getDeletionEnabled,
+  setDeletionEnabled,
+  getDeletionGraceDays,
+  setDeletionGraceDays,
+  getDeletionDryRun,
+  setDeletionDryRun,
   writeSetting,
   getSonarrInstances,
   getRadarrInstances,
@@ -119,6 +125,12 @@ export async function GET() {
       // masked copy-able field, Servarr-style. Service secrets stay hidden.
       apiKey: getApiKey() ?? '',
       backupRetention: getBackupRetention(),
+      // FORK: scheduled-deletion settings (master toggle default OFF).
+      deletion: {
+        enabled: getDeletionEnabled(),
+        graceDays: getDeletionGraceDays(),
+        dryRun: getDeletionDryRun(),
+      },
     });
   } catch (e) {
     return errorResponse(e);
@@ -147,6 +159,8 @@ interface PutBody {
   apiKey?: string;
   /** How many backup files to keep (oldest pruned first). */
   backupRetention?: number;
+  /** FORK: scheduled-deletion settings. */
+  deletion?: { enabled?: boolean; graceDays?: number; dryRun?: boolean };
 }
 
 /** Update settings. Only provided fields are changed. */
@@ -222,6 +236,21 @@ export async function PUT(req: Request) {
 
     if (typeof body.backupRetention === 'number' && body.backupRetention >= 1) {
       setBackupRetention(body.backupRetention);
+    }
+
+    if (body.deletion && typeof body.deletion === 'object') {
+      if (typeof body.deletion.enabled === 'boolean') {
+        setDeletionEnabled(body.deletion.enabled);
+      }
+      if (
+        typeof body.deletion.graceDays === 'number' &&
+        body.deletion.graceDays >= 0
+      ) {
+        setDeletionGraceDays(body.deletion.graceDays);
+      }
+      if (typeof body.deletion.dryRun === 'boolean') {
+        setDeletionDryRun(body.deletion.dryRun);
+      }
     }
 
     return NextResponse.json({ ok: true });
