@@ -2,6 +2,7 @@ import { getDb } from './db';
 import { FEED_MOVIE_RESERVE_MIN, FEED_MOVIE_RESERVE_RATIO } from './config';
 import type {
   AdminUserRow,
+  FeedWatchMode,
   JobRun,
   JobState,
   LibraryKind,
@@ -10,6 +11,8 @@ import type {
   SessionUser,
   SyncStatus,
 } from './types';
+
+export type { FeedWatchMode };
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -543,6 +546,36 @@ export interface FeedOptions {
   sectionId?: string;
   /** Override the reserved movie count for the mixed (all-libraries) feed. */
   reserveMovies?: number;
+  /** Restrict the feed to a watch-history slice (omit = no watch filter). */
+  watchMode?: FeedWatchMode;
+}
+
+/**
+ * WHERE fragment for a FeedWatchMode (against `m`), mirroring the Browse watch
+ * predicates. Mutates `params` with any cutoff it needs.
+ */
+function feedWatchClause(
+  mode: FeedWatchMode,
+  params: Record<string, unknown>
+): string {
+  const anyWatchSince =
+    'EXISTS (SELECT 1 FROM watch_history w WHERE w.rating_key = m.rating_key AND w.last_watched >= @watchCutoff)';
+  switch (mode) {
+    case 'never_played':
+      // Never watched by ANYONE on the server.
+      return 'NOT EXISTS (SELECT 1 FROM watch_history w WHERE w.rating_key = m.rating_key)';
+    case 'stale_90':
+      // No watch by anyone in the last 90 days (includes never-played).
+      params.watchCutoff = now() - 90 * 86400;
+      return `NOT ${anyWatchSince}`;
+    case 'recent_30':
+      // Watched by someone within the last 30 days.
+      params.watchCutoff = now() - 30 * 86400;
+      return anyWatchSince;
+    case 'my_unwatched':
+      // THIS user hasn't watched it (others may have).
+      return 'NOT EXISTS (SELECT 1 FROM watch_history w WHERE w.rating_key = m.rating_key AND w.plex_user_id = @uid)';
+  }
 }
 
 /**
@@ -575,7 +608,12 @@ export function getFeed(
   opts: FeedOptions = {}
 ): MediaItem[] {
   if (opts.sectionId) {
-    return weightedPull(plexUserId, { sectionId: opts.sectionId }, limit, []);
+    return weightedPull(
+      plexUserId,
+      { sectionId: opts.sectionId, watchMode: opts.watchMode },
+      limit,
+      []
+    );
   }
   return getFeedAll(plexUserId, limit, opts);
 }
@@ -587,7 +625,11 @@ export function getFeed(
  */
 function weightedPull(
   plexUserId: string,
-  filter: { libraryKind?: LibraryKind; sectionId?: string },
+  filter: {
+    libraryKind?: LibraryKind;
+    sectionId?: string;
+    watchMode?: FeedWatchMode;
+  },
   limit: number,
   excludeKeys: string[]
 ): MediaItem[] {
@@ -601,6 +643,9 @@ function weightedPull(
   if (filter.sectionId) {
     clauses.push('m.section_id = @sectionId');
     params.sectionId = filter.sectionId;
+  }
+  if (filter.watchMode) {
+    clauses.push(feedWatchClause(filter.watchMode, params));
   }
   excludeKeys.forEach((k, i) => (params[`ex${i}`] = k));
   if (excludeKeys.length) {
@@ -638,13 +683,13 @@ function getFeedAll(
 
   const movies = weightedPull(
     plexUserId,
-    { libraryKind: 'movie' },
+    { libraryKind: 'movie', watchMode: opts.watchMode },
     Math.min(reserveMovies, limit),
     []
   );
   const shows = weightedPull(
     plexUserId,
-    { libraryKind: 'show' },
+    { libraryKind: 'show', watchMode: opts.watchMode },
     limit - movies.length,
     []
   );
@@ -654,7 +699,12 @@ function getFeedAll(
     // Shows ran short — backfill with more movies we haven't used.
     const used = combined.map((m) => m.rating_key);
     combined = combined.concat(
-      weightedPull(plexUserId, { libraryKind: 'movie' }, limit - combined.length, used)
+      weightedPull(
+        plexUserId,
+        { libraryKind: 'movie', watchMode: opts.watchMode },
+        limit - combined.length,
+        used
+      )
     );
   }
 
@@ -669,18 +719,21 @@ function getFeedAll(
 /** How many items remain for this user to triage (not kept, not skipped). */
 export function countFeedRemaining(
   plexUserId: string,
-  opts: { sectionId?: string } = {}
+  opts: { sectionId?: string; watchMode?: FeedWatchMode } = {}
 ): number {
   const params: Record<string, unknown> = { uid: plexUserId };
-  let sectionSql = '';
+  let extraSql = '';
   if (opts.sectionId) {
-    sectionSql = ' AND m.section_id = @sectionId';
+    extraSql += ' AND m.section_id = @sectionId';
     params.sectionId = opts.sectionId;
+  }
+  if (opts.watchMode) {
+    extraSql += ` AND ${feedWatchClause(opts.watchMode, params)}`;
   }
   const row = getDb()
     .prepare(
       `SELECT COUNT(*) AS n FROM media_items m
-       WHERE ${FEED_ELIGIBILITY}${sectionSql}`
+       WHERE ${FEED_ELIGIBILITY}${extraSql}`
     )
     .get(params) as { n: number };
   return row.n;

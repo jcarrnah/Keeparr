@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getSessionUser } from '@/lib/auth';
-import { getManagedSections, isServerConfigured } from '@/lib/settings';
+import { getManagedSections, isServerConfigured, isWatchAvailable } from '@/lib/settings';
 import { sectionSizeSummary } from '@/lib/queries';
 import AppShell from '@/components/AppShell';
 import KeepView from '@/components/KeepView';
@@ -44,7 +44,7 @@ export default async function HomePage() {
           </div>
         </div>
       ) : (
-        <KeepView libraries={libraries} />
+        <KeepView libraries={libraries} watchAvailable={isWatchAvailable()} />
       )}
     </AppShell>
   );

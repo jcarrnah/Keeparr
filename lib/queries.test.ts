@@ -69,6 +69,7 @@ import {
   showRatingKeys,
   updateItemSize,
   type UpsertMediaInput,
+  type FeedWatchMode,
 } from './queries';
 
 const GB = 1024 ** 3;
@@ -480,6 +481,76 @@ describe('feed excludes kept + per-user skipped', () => {
 
   it('respects the limit', () => {
     expect(getFeed('userA', 2)).toHaveLength(2);
+  });
+});
+
+describe('feed watch-history lists (watchMode)', () => {
+  const dago = (d: number) => Math.floor(Date.now() / 1000) - d * 86400;
+
+  beforeEach(() => {
+    upsertMediaBatch([
+      media('1'),
+      media('2'),
+      media('3'),
+      media('4'),
+      media('5', { sectionId: '2' }),
+    ]);
+    upsertWatchBatch([
+      { plexUserId: 'userA', ratingKey: '1', plays: 2, lastWatched: dago(10) }, // recent, by me
+      { plexUserId: 'userA', ratingKey: '2', plays: 1, lastWatched: dago(200) }, // stale, by me
+      { plexUserId: 'userB', ratingKey: '3', plays: 1, lastWatched: dago(5) }, // recent, by someone else
+      { plexUserId: 'userB', ratingKey: '5', plays: 1, lastWatched: dago(100) }, // stale, by someone else
+      // '4' — watched by nobody
+    ]);
+  });
+
+  const feedKeys = (watchMode: FeedWatchMode) =>
+    getFeed('userA', 10, { watchMode })
+      .map((m) => m.rating_key)
+      .sort();
+
+  it('never_played = never watched by ANYONE', () => {
+    expect(feedKeys('never_played')).toEqual(['4']);
+    expect(countFeedRemaining('userA', { watchMode: 'never_played' })).toBe(1);
+  });
+
+  it('stale_90 = no watch by anyone in 90d (includes never-played)', () => {
+    expect(feedKeys('stale_90')).toEqual(['2', '4', '5']);
+    expect(countFeedRemaining('userA', { watchMode: 'stale_90' })).toBe(3);
+  });
+
+  it('recent_30 = watched by someone within 30d', () => {
+    expect(feedKeys('recent_30')).toEqual(['1', '3']);
+    expect(countFeedRemaining('userA', { watchMode: 'recent_30' })).toBe(2);
+  });
+
+  it("my_unwatched = THIS user hasn't watched it (others may have)", () => {
+    expect(feedKeys('my_unwatched')).toEqual(['3', '4', '5']);
+    // userB's own unwatched list differs — it's per-user.
+    const b = getFeed('userB', 10, { watchMode: 'my_unwatched' })
+      .map((m) => m.rating_key)
+      .sort();
+    expect(b).toEqual(['1', '2', '4']);
+  });
+
+  it('combines with the section filter', () => {
+    const keys = getFeed('userA', 10, { sectionId: '2', watchMode: 'my_unwatched' })
+      .map((m) => m.rating_key);
+    expect(keys).toEqual(['5']);
+    expect(
+      countFeedRemaining('userA', { sectionId: '2', watchMode: 'stale_90' })
+    ).toBe(1);
+    expect(
+      countFeedRemaining('userA', { sectionId: '2', watchMode: 'recent_30' })
+    ).toBe(0);
+  });
+
+  it('feed eligibility (keeps/skips) still applies inside a list', () => {
+    addKeep('userB', '4');
+    expect(feedKeys('never_played')).toEqual([]);
+    applySkipBatch('userA', ['2']);
+    // '2' skipped by me, '4' kept by userB — only '5' is left in the stale list.
+    expect(feedKeys('stale_90')).toEqual(['5']);
   });
 });
 

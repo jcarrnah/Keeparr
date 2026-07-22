@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { MediaCardData } from '@/lib/types';
+import { FEED_WATCH_MODES, type FeedWatchMode, type MediaCardData } from '@/lib/types';
 import { formatSize } from '@/lib/format';
 import MediaCard, { CARD_MIN_W } from './MediaCard';
 import {
@@ -22,8 +22,19 @@ interface Library {
   sizeBytes: number;
 }
 type Selection = 'all' | 'largest' | string; // string = section id
+/** Watch-history list tabs ('all' = no watch filter). */
+type WatchSelection = 'all' | FeedWatchMode;
+
+const WATCH_LABELS: Record<WatchSelection, string> = {
+  all: 'Everything',
+  never_played: 'Never played',
+  stale_90: 'Not watched in 90d+',
+  recent_30: 'Watched recently',
+  my_unwatched: 'My unwatched',
+};
 
 const STORAGE_KEY = 'keeparr.feedSelection';
+const WATCH_STORAGE_KEY = 'keeparr.feedWatchMode';
 const GAP = 12; // matches gap-3 on the grid
 const LABEL_H = 56; // title + size row + padding below the 2:3 poster
 // A card showing the "OK to delete" action button is ~this much taller. It's
@@ -70,8 +81,15 @@ function estimateDims(): { cols: number; rows: number } {
   return dimsFor(w, h);
 }
 
-export default function KeepView({ libraries }: { libraries: Library[] }) {
+export default function KeepView({
+  libraries,
+  watchAvailable = false,
+}: {
+  libraries: Library[];
+  watchAvailable?: boolean;
+}) {
   const [selection, setSelection] = useState<Selection>('all');
+  const [watchMode, setWatchMode] = useState<WatchSelection>('all');
   const [items, setItems] = useState<MediaCardData[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
   const [kept, setKept] = useState<Set<string>>(new Set());
@@ -88,8 +106,10 @@ export default function KeepView({ libraries }: { libraries: Library[] }) {
   // Restore last filter.
   useEffect(() => {
     let saved: string | null = null;
+    let savedWatch: string | null = null;
     try {
       saved = localStorage.getItem(STORAGE_KEY);
+      savedWatch = localStorage.getItem(WATCH_STORAGE_KEY);
     } catch {
       /* localStorage can throw under strict privacy settings */
     }
@@ -99,12 +119,24 @@ export default function KeepView({ libraries }: { libraries: Library[] }) {
     ) {
       setSelection(saved);
     }
+    if (savedWatch && FEED_WATCH_MODES.includes(savedWatch as FeedWatchMode)) {
+      setWatchMode(savedWatch as WatchSelection);
+    }
   }, [libraries]);
 
   function choose(next: Selection) {
     setSelection(next);
     try {
       localStorage.setItem(STORAGE_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function chooseWatch(next: WatchSelection) {
+    setWatchMode(next);
+    try {
+      localStorage.setItem(WATCH_STORAGE_KEY, next);
     } catch {
       /* ignore */
     }
@@ -157,6 +189,10 @@ export default function KeepView({ libraries }: { libraries: Library[] }) {
     const params = new URLSearchParams({ limit: String(FETCH_LIMIT) });
     if (selection === 'largest') params.set('largest', '1');
     else if (selection !== 'all') params.set('section', selection);
+    // Watch-history list (ignored for 'largest' — that's a fixed ranking).
+    if (watchAvailable && selection !== 'largest' && watchMode !== 'all') {
+      params.set('watch', watchMode);
+    }
     try {
       const data = await fetch(`/api/feed/random?${params}`).then((r) => r.json());
       if (seq !== feedSeq.current) return; // superseded — drop it
@@ -170,7 +206,7 @@ export default function KeepView({ libraries }: { libraries: Library[] }) {
     } finally {
       if (seq === feedSeq.current) setLoading(false);
     }
-  }, [selection, toast]);
+  }, [selection, watchMode, watchAvailable, toast]);
 
   useEffect(() => {
     loadFeed();
@@ -256,6 +292,30 @@ export default function KeepView({ libraries }: { libraries: Library[] }) {
           {libraries.map((l) => chip(l.id, l.title))}
           {chip('largest', 'Largest')}
         </div>
+        {/* Watch-history lists — vote on a coherent slice instead of the full mix.
+            Hidden without watch data, and for 'Largest' (a fixed ranking). */}
+        {watchAvailable && selection !== 'largest' && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 rounded-lg bg-rail p-1">
+            {(Object.keys(WATCH_LABELS) as WatchSelection[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => chooseWatch(m)}
+                className={`rounded-md px-3 py-1 text-xs transition-colors ${
+                  watchMode === m
+                    ? 'bg-slate-700 text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                {WATCH_LABELS[m]}
+              </button>
+            ))}
+            {remaining != null && (
+              <span className="ml-auto pr-2 text-xs text-slate-500">
+                {remaining.toLocaleString()} left in this list
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Grid (fills) + totals column */}

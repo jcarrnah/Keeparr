@@ -163,7 +163,8 @@
         "parameters": [
           { "name": "limit", "in": "query", "schema": { "type": "integer" } },
           { "name": "section", "in": "query", "schema": { "type": "string" }, "description": "Limit to one library" },
-          { "name": "largest", "in": "query", "schema": { "type": "string", "enum": ["1"] }, "description": "Biggest titles regardless of eligibility" }
+          { "name": "largest", "in": "query", "schema": { "type": "string", "enum": ["1"] }, "description": "Biggest titles regardless of eligibility" },
+          { "name": "watch", "in": "query", "schema": { "type": "string", "enum": ["never_played", "stale_90", "recent_30", "my_unwatched"] }, "description": "Restrict to a watch-history list (never_played/stale_90/recent_30 = anyone's history; my_unwatched = this user's). Ignored with largest=1" }
         ],
         "responses": { "200": { "description": "`{items: MediaCard[], remaining}`" } }
       }

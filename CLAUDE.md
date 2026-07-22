@@ -220,11 +220,15 @@ when it has no tvdb/tmdb **and** no imdb.
   (`/api/auth/plex/pin`, `/api/auth/plex/check`) and the credential
   `/api/auth/login` are per-IP rate-limited (`lib/rate-limit.ts`); login also
   buckets per-username + globally so `X-Forwarded-For` rotation can't bypass it.
-- `GET /api/feed/random?limit=&section=&largest=1` → home batch. Default (no
-  params) = screen-fill mix across **all Plex libraries**, weighted toward big
+- `GET /api/feed/random?limit=&section=&largest=1&watch=` → home batch. Default
+  (no params) = screen-fill mix across **all Plex libraries**, weighted toward big
   series with a guaranteed few movies. `section=<id>` limits to one Plex library;
   `largest=1` = biggest titles regardless of library/keep-eligibility
-  (`remaining` is null). Categories are real Plex libraries — never hardcoded.
+  (`remaining` is null). `watch=` restricts to a watch-history list
+  (`never_played`/`stale_90`/`recent_30` = anyone's history, `my_unwatched` =
+  this user's; ignored with `largest=1`; `remaining` counts within the list).
+  The Keep page shows the list tabs only when watch data is available
+  (`isWatchAvailable()`). Categories are real Plex libraries — never hardcoded.
 - `POST/DELETE /api/keep` `{ratingKey}` — toggle **this user's** keep. POST also
   clears their "don't care" + "OK to delete" (one transaction — the keep/skip/
   mark-delete POSTs each use an atomic `apply*` query, and all three 404 on an

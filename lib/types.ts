@@ -2,6 +2,25 @@
 
 export type LibraryKind = 'movie' | 'show';
 
+/**
+ * Watch-history slice for the home feed (the `watch=` query param) — lets votes
+ * be gathered on a coherent list instead of one big mixed batch.
+ * `never_played`/`stale_90`/`recent_30` are server-wide (anyone's history);
+ * `my_unwatched` is this user's.
+ */
+export type FeedWatchMode =
+  | 'never_played'
+  | 'stale_90'
+  | 'recent_30'
+  | 'my_unwatched';
+
+export const FEED_WATCH_MODES: FeedWatchMode[] = [
+  'never_played',
+  'stale_90',
+  'recent_30',
+  'my_unwatched',
+];
+
 /** A row from media_items as stored. */
 export interface MediaItem {
   rating_key: string;
