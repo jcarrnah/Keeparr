@@ -3,10 +3,12 @@ import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
 import {
   cancelDeletion,
+  getMediaItem,
   listScheduledDeletions,
   tagForDeletion,
 } from '@/lib/queries';
 import { getDeletionEnabled, getDeletionGraceDays } from '@/lib/settings';
+import { sendDiscordMessage } from '@/lib/discord';
 
 export const runtime = 'nodejs';
 
@@ -54,6 +56,11 @@ export async function POST(req: Request) {
     const deleteAfter = Math.floor(Date.now() / 1000) + graceDays * 86400;
     const ok = tagForDeletion(body.ratingKey, user.plexUserId, deleteAfter);
     if (!ok) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    // Discord: fire-and-forget — a slow/failing webhook must not stall the tag.
+    const title = getMediaItem(body.ratingKey)?.title ?? body.ratingKey;
+    void sendDiscordMessage(
+      `🏷️ **${title}** was tagged for deletion after ${new Date(deleteAfter * 1000).toLocaleDateString()}. Keep it in Keeparr to rescue it.`
+    );
     return NextResponse.json({ ok: true, deleteAfter });
   } catch (e) {
     return errorResponse(e);

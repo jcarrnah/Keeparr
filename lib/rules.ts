@@ -6,6 +6,7 @@
  * are never tagged, and an existing tag of ANY status is never overwritten.
  * Inert while the Deletion master toggle is off.
  */
+import { sendDiscordMessage } from './discord';
 import {
   insertRuleTags,
   listDeletionRules,
@@ -89,6 +90,10 @@ export async function runRules(): Promise<JobResult> {
         'info',
         'job:rules',
         `Rule "${rule.name}" tagged ${n} item(s) for deletion (grace ${grace}d).`
+      );
+      const sample = matches.slice(0, 8).map((m) => m.title).join(', ');
+      await sendDiscordMessage(
+        `🏷️ Rule **${rule.name}** tagged ${n} item(s) for deletion in ${grace} days — e.g. ${sample}${matches.length > 8 ? ', …' : ''}. Keep anything you want to rescue.`
       );
     }
   }

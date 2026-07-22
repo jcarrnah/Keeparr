@@ -17,6 +17,8 @@ export async function fetchJson<T = unknown>(
     /** Tolerate an empty / non-JSON 2xx body (e.g. Sonarr/Radarr DELETEs
      *  answer 200 with no content) — resolves undefined instead of throwing. */
     allowEmpty?: boolean;
+    /** Request body (caller sets the Content-Type header). */
+    body?: string;
   }
 ): Promise<T> {
   let res: Response;
@@ -24,6 +26,7 @@ export async function fetchJson<T = unknown>(
     res = await fetch(url, {
       method: opts.method ?? 'GET',
       headers: { Accept: 'application/json', ...(opts.headers ?? {}) },
+      body: opts.body,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     });
   } catch (e) {

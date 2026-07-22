@@ -27,6 +27,8 @@ const SECRET_KEYS = new Set([
   // Whole JSON blob encrypted at rest (each instance holds an apiKey).
   'sonarr_instances',
   'radarr_instances',
+  // FORK: the Discord webhook URL embeds its token — secret.
+  'discord_webhook_url',
 ]);
 
 export function readSetting(key: string): string | null {
@@ -347,6 +349,25 @@ export function getDeletionDryRun(): boolean {
 export function setDeletionDryRun(on: boolean): void {
   writeSetting('deletion_dry_run', on ? 'true' : 'false');
 }
+
+/** Mirror pending tags into a "Leaving Soon" Jellyfin/Emby collection. */
+export function getLeavingSoonEnabled(): boolean {
+  return readSetting('leaving_soon_enabled') !== 'false'; // default: ON (inert without the master toggle)
+}
+export function setLeavingSoonEnabled(on: boolean): void {
+  writeSetting('leaving_soon_enabled', on ? 'true' : 'false');
+}
+
+/** Cached "Leaving Soon" collection id (revalidated each sync). */
+export const getLeavingSoonCollectionId = () => readSetting('leaving_soon_collection_id');
+export const setLeavingSoonCollectionId = (id: string) =>
+  writeSetting('leaving_soon_collection_id', id);
+
+/** Discord webhook for deletion notifications (empty = notifications off). */
+export const getDiscordWebhookUrl = () => readSetting('discord_webhook_url');
+export const setDiscordWebhookUrl = (url: string) =>
+  writeSetting('discord_webhook_url', url.trim());
+export const isDiscordConfigured = () => !!getDiscordWebhookUrl();
 
 // --- Local demo (set only by the dev seed; synthetic storage capacity) ---
 export function getDevStorageTotal(): number | null {

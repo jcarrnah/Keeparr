@@ -35,6 +35,10 @@ import {
   setDeletionGraceDays,
   getDeletionDryRun,
   setDeletionDryRun,
+  getLeavingSoonEnabled,
+  setLeavingSoonEnabled,
+  isDiscordConfigured,
+  setDiscordWebhookUrl,
   writeSetting,
   getSonarrInstances,
   getRadarrInstances,
@@ -130,6 +134,8 @@ export async function GET() {
         enabled: getDeletionEnabled(),
         graceDays: getDeletionGraceDays(),
         dryRun: getDeletionDryRun(),
+        leavingSoon: getLeavingSoonEnabled(),
+        discordConfigured: isDiscordConfigured(),
       },
     });
   } catch (e) {
@@ -159,8 +165,15 @@ interface PutBody {
   apiKey?: string;
   /** How many backup files to keep (oldest pruned first). */
   backupRetention?: number;
-  /** FORK: scheduled-deletion settings. */
-  deletion?: { enabled?: boolean; graceDays?: number; dryRun?: boolean };
+  /** FORK: scheduled-deletion settings. discordWebhookUrl: '' clears it,
+   *  absent keeps the stored one (it's a secret — never round-tripped). */
+  deletion?: {
+    enabled?: boolean;
+    graceDays?: number;
+    dryRun?: boolean;
+    leavingSoon?: boolean;
+    discordWebhookUrl?: string;
+  };
 }
 
 /** Update settings. Only provided fields are changed. */
@@ -250,6 +263,12 @@ export async function PUT(req: Request) {
       }
       if (typeof body.deletion.dryRun === 'boolean') {
         setDeletionDryRun(body.deletion.dryRun);
+      }
+      if (typeof body.deletion.leavingSoon === 'boolean') {
+        setLeavingSoonEnabled(body.deletion.leavingSoon);
+      }
+      if (typeof body.deletion.discordWebhookUrl === 'string') {
+        setDiscordWebhookUrl(body.deletion.discordWebhookUrl);
       }
     }
 

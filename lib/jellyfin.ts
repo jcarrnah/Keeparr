@@ -384,3 +384,92 @@ export async function getSeriesSize(
   );
   return sumMediaSources(items);
 }
+
+// ---------------------------------------------------------------------------
+// FORK: collections (the "Leaving Soon" sync). Item ids here are Jellyfin/Emby
+// item ids — which ARE media_items.rating_key on these backends.
+// ---------------------------------------------------------------------------
+
+/** Find a BoxSet by exact name; null when it doesn't exist. */
+export async function findCollectionByName(
+  baseUrl: string,
+  token: string,
+  name: string
+): Promise<string | null> {
+  const d = await fetchJson<{ Items?: { Id?: string; Name?: string }[] }>(
+    `${base(baseUrl)}/Items?IncludeItemTypes=BoxSet&Recursive=true&SearchTerm=${encodeURIComponent(name)}`,
+    { headers: authHeaders(token), label: 'Jellyfin collection lookup' }
+  );
+  const hit = (d.Items ?? []).find((i) => i.Name === name);
+  return hit?.Id ? String(hit.Id) : null;
+}
+
+/** Create a collection (optionally seeded with items). Returns its id. */
+export async function createCollection(
+  baseUrl: string,
+  token: string,
+  name: string,
+  itemIds: string[] = []
+): Promise<string> {
+  const ids = itemIds.length ? `&Ids=${itemIds.map(encodeURIComponent).join(',')}` : '';
+  const d = await fetchJson<{ Id?: string }>(
+    `${base(baseUrl)}/Collections?Name=${encodeURIComponent(name)}${ids}`,
+    {
+      method: 'POST',
+      headers: authHeaders(token),
+      label: 'Jellyfin create collection',
+    }
+  );
+  if (!d?.Id) throw new Error('Jellyfin returned no collection id.');
+  return String(d.Id);
+}
+
+/** Current item ids inside a collection (paged like every /Items read). */
+export async function getCollectionItemIds(
+  baseUrl: string,
+  token: string,
+  collectionId: string
+): Promise<string[]> {
+  const items = await fetchAllPages<{ Id?: string }>(
+    `${base(baseUrl)}/Items?ParentId=${encodeURIComponent(collectionId)}`,
+    token,
+    'Jellyfin collection items'
+  );
+  return items.map((i) => String(i.Id ?? '')).filter(Boolean);
+}
+
+/** Add/remove items (chunked — long id lists would blow the URL length). */
+async function editCollectionItems(
+  baseUrl: string,
+  token: string,
+  collectionId: string,
+  itemIds: string[],
+  method: 'POST' | 'DELETE'
+): Promise<void> {
+  for (let i = 0; i < itemIds.length; i += 50) {
+    const chunk = itemIds.slice(i, i + 50);
+    await fetchJson<unknown>(
+      `${base(baseUrl)}/Collections/${encodeURIComponent(collectionId)}/Items?Ids=${chunk.map(encodeURIComponent).join(',')}`,
+      {
+        method,
+        headers: authHeaders(token),
+        label: `Jellyfin collection ${method === 'POST' ? 'add' : 'remove'}`,
+        allowEmpty: true, // 204 No Content
+      }
+    );
+  }
+}
+
+export const addToCollection = (
+  baseUrl: string,
+  token: string,
+  collectionId: string,
+  itemIds: string[]
+) => editCollectionItems(baseUrl, token, collectionId, itemIds, 'POST');
+
+export const removeFromCollection = (
+  baseUrl: string,
+  token: string,
+  collectionId: string,
+  itemIds: string[]
+) => editCollectionItems(baseUrl, token, collectionId, itemIds, 'DELETE');

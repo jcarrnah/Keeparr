@@ -187,7 +187,8 @@ export function applySchema(database: Database.Database): void {
       status        TEXT NOT NULL DEFAULT 'pending',
                     -- pending | held (keep exists) | deleted | failed | cancelled
       status_at     INTEGER,
-      status_detail TEXT                    -- arr response / error / who cancelled
+      status_detail TEXT,                   -- arr response / error / who cancelled
+      notified_week INTEGER NOT NULL DEFAULT 0 -- final-7-days Discord notice sent
     );
     CREATE INDEX IF NOT EXISTS idx_scheddel_due ON scheduled_deletions(status, delete_after);
 
@@ -252,6 +253,17 @@ function migrate(database: Database.Database): void {
   if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'instance_id')) {
     database.exec(
       `ALTER TABLE arr_unmatched ADD COLUMN instance_id TEXT NOT NULL DEFAULT ''`
+    );
+  }
+
+  // FORK: scheduled_deletions gained notified_week (final-7-days Discord notice
+  // sent) after the table first shipped — guarded ALTER for those fork DBs.
+  const sdCols = database
+    .prepare(`PRAGMA table_info(scheduled_deletions)`)
+    .all() as { name: string }[];
+  if (sdCols.length > 0 && !sdCols.some((c) => c.name === 'notified_week')) {
+    database.exec(
+      `ALTER TABLE scheduled_deletions ADD COLUMN notified_week INTEGER NOT NULL DEFAULT 0`
     );
   }
 

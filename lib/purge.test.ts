@@ -19,13 +19,19 @@ import {
 } from './settings';
 import { runPurge } from './purge';
 import { deleteArrItem } from './arr';
+import { sendDiscordMessage } from './discord';
 
 vi.mock('./arr', async (importOriginal) => {
   const mod = await importOriginal<typeof import('./arr')>();
   return { ...mod, deleteArrItem: vi.fn() };
 });
+vi.mock('./discord', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./discord')>();
+  return { ...mod, sendDiscordMessage: vi.fn() };
+});
 
 const mockDelete = vi.mocked(deleteArrItem);
+const mockDiscord = vi.mocked(sendDiscordMessage);
 
 const GB = 1024 ** 3;
 const past = Math.floor(Date.now() / 1000) - 100;
@@ -68,6 +74,8 @@ beforeEach(() => {
   __setTestDbToMemory();
   mockDelete.mockReset();
   mockDelete.mockResolvedValue(undefined);
+  mockDiscord.mockReset();
+  mockDiscord.mockResolvedValue(true);
   upsertMediaBatch([media('1'), media('2')]);
   setRadarrInstances([{ id: 'r1', name: 'Radarr', url: 'http://radarr', apiKey: 'k' }]);
 });
@@ -138,6 +146,41 @@ describe('FORK: runPurge', () => {
     expect(res.message).toMatch(/1 unmatched/);
     expect(mockDelete).not.toHaveBeenCalled();
     expect(listScheduledDeletions()[0].status).toBe('pending');
+  });
+
+  it('final-week Discord notice fires once per item (marked only when delivered)', async () => {
+    setDeletionEnabled(true);
+    const inFiveDays = Math.floor(Date.now() / 1000) + 5 * 86400;
+    tagForDeletion('1', 'admin', inFiveDays);
+
+    // First run: webhook down → not marked, retried next run.
+    mockDiscord.mockResolvedValueOnce(false);
+    await runPurge();
+    expect(mockDiscord).toHaveBeenCalledWith(expect.stringContaining('Leaving in the next 7 days'));
+
+    // Second run: delivered → marked; third run: no re-notice.
+    await runPurge();
+    const noticeCalls = () =>
+      mockDiscord.mock.calls.filter(([msg]) => msg.includes('Leaving in the next 7 days')).length;
+    expect(noticeCalls()).toBe(2);
+    await runPurge();
+    expect(noticeCalls()).toBe(2); // no third notice
+  });
+
+  it('live purge sends a summary; dry run stays quiet', async () => {
+    setDeletionEnabled(true);
+    tagForDeletion('1', 'admin', past);
+    arrMatch('1');
+    await runPurge(); // dry run (default)
+    expect(
+      mockDiscord.mock.calls.some(([msg]) => msg.includes('Purge complete'))
+    ).toBe(false);
+
+    setDeletionDryRun(false);
+    await runPurge();
+    expect(
+      mockDiscord.mock.calls.some(([msg]) => msg.includes('Purge complete'))
+    ).toBe(true);
   });
 
   it('a keep added after tagging holds the item through the purge', async () => {

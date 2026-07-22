@@ -3,12 +3,14 @@ import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
 import { getServerIdentity } from '@/lib/plex';
 import {
+  getDiscordWebhookUrl,
   getRadarrInstances,
   getSeerrKey,
   getServerToken,
   getSonarrInstances,
   getTautulliKey,
 } from '@/lib/settings';
+import { testDiscord } from '@/lib/discord';
 import { logEvent } from '@/lib/queries';
 import { testTautulli } from '@/lib/tautulli';
 import { testSeerr } from '@/lib/seerr';
@@ -18,7 +20,15 @@ import { testJellyfin } from '@/lib/jellyfin';
 export const runtime = 'nodejs';
 
 interface Body {
-  service: 'plex' | 'jellyfin' | 'emby' | 'tautulli' | 'seerr' | 'sonarr' | 'radarr';
+  service:
+    | 'plex'
+    | 'jellyfin'
+    | 'emby'
+    | 'tautulli'
+    | 'seerr'
+    | 'sonarr'
+    | 'radarr'
+    | 'discord'; // FORK: deletion-notification webhook
   url: string;
   apiKey?: string;
   token?: string;
@@ -60,6 +70,9 @@ export async function POST(req: Request) {
         key = insts.find((i) => i.id === body.instanceId)?.apiKey ?? '';
       }
       result = await testArr(body.url, key);
+    } else if (body.service === 'discord') {
+      // FORK: blank url → fall back to the saved webhook (re-testing).
+      result = await testDiscord(body.url || getDiscordWebhookUrl() || '');
     } else {
       return NextResponse.json({ error: 'bad_service' }, { status: 400 });
     }

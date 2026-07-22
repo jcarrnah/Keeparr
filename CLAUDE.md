@@ -187,6 +187,14 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   `refreshDeletionHolds()` (run at the start of each purge) reconciles both
   directions; `dueDeletions()` re-checks `NOT EXISTS keep`. Unmatched items are
   reported, never deleted. Master toggle default OFF, dry-run default ON.
+  `notified_week` flags the "entering final 7 days" Discord notice (guarded
+  ALTER for fork DBs that predate it; marked only when actually delivered so
+  a transient webhook failure retries nightly). The purge job also sends a
+  Discord purge summary (live mode only) and then mirrors the pending set
+  into the "Leaving Soon" Jellyfin/Emby collection (`lib/leaving-soon.ts` —
+  Plex has no equivalent; collection add/remove lives in `lib/jellyfin.ts`).
+  Manual tags and rule batches notify via `lib/discord.ts` (fire-and-forget,
+  never breaks a job/route; no-op without a webhook URL).
 - `deletion_rules` — **FORK-ONLY**: auto-tag rules (`name`, `enabled`,
   `conditions` JSON `RuleCondition[]` from `lib/types.ts`, `grace_days`
   override). The nightly `rules` job (02:00, `lib/rules.ts`) evaluates enabled
@@ -401,7 +409,12 @@ all), `open_signin` (`'true'`/`'false'`), `api_key`* (automation), `app_title`,
 `backup_retention` (how many backup files to keep; default 14),
 **FORK:** `deletion_enabled` (default `'false'` — master switch for the purge
 job), `deletion_grace_days` (default 30), `deletion_dry_run` (default `'true'`
-— purge only logs; all three edited via the Settings → General "Deletion" card),
+— purge only logs), `leaving_soon_enabled` (default `'true'` — mirror pending
+tags into a "Leaving Soon" Jellyfin/Emby collection, `lib/leaving-soon.ts`;
+cached collection id in `leaving_soon_collection_id`), `discord_webhook_url`*
+(deletion notifications, `lib/discord.ts`; empty = off; all edited via the
+Settings → General "Deletion" card; test via `test-connection` service
+`discord`),
 `dev_storage_total` (demo-only synthetic capacity, set by the seed). `*` = encrypted
 at rest.
 

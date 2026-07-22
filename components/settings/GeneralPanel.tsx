@@ -13,6 +13,10 @@ export default function GeneralPanel() {
   const [delEnabled, setDelEnabled] = useState(false);
   const [delGraceDays, setDelGraceDays] = useState(30);
   const [delDryRun, setDelDryRun] = useState(true);
+  const [leavingSoon, setLeavingSoon] = useState(true);
+  const [discordUrl, setDiscordUrl] = useState(''); // never round-tripped (secret)
+  const [discordConfigured, setDiscordConfigured] = useState(false);
+  const [discordMsg, setDiscordMsg] = useState('');
   const [keyDirty, setKeyDirty] = useState(false); // regenerated but not saved yet
   const [showKey, setShowKey] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -29,6 +33,8 @@ export default function GeneralPanel() {
         setDelEnabled(!!d.deletion?.enabled);
         setDelGraceDays(d.deletion?.graceDays ?? 30);
         setDelDryRun(d.deletion?.dryRun ?? true);
+        setLeavingSoon(d.deletion?.leavingSoon ?? true);
+        setDiscordConfigured(!!d.deletion?.discordConfigured);
       })
       .catch(() => {});
   }, []);
@@ -59,7 +65,14 @@ export default function GeneralPanel() {
         body: JSON.stringify({
           appTitle,
           appUrl,
-          deletion: { enabled: delEnabled, graceDays: delGraceDays, dryRun: delDryRun },
+          deletion: {
+            enabled: delEnabled,
+            graceDays: delGraceDays,
+            dryRun: delDryRun,
+            leavingSoon,
+            // Only send when the admin typed a new one ('' would clear it).
+            ...(discordUrl.trim() ? { discordWebhookUrl: discordUrl.trim() } : {}),
+          },
           ...(keyDirty ? { apiKey } : {}),
         }),
       });
@@ -196,6 +209,57 @@ export default function GeneralPanel() {
             Live mode — the nightly purge WILL delete files via Sonarr/Radarr.
           </p>
         )}
+
+        <label className="mt-4 flex items-center gap-2 text-sm text-slate-200">
+          <input
+            type="checkbox"
+            checked={leavingSoon}
+            onChange={(e) => setLeavingSoon(e.target.checked)}
+          />
+          Maintain a “Leaving Soon” collection (Jellyfin/Emby)
+        </label>
+        <p className="mt-1 text-xs text-slate-500">
+          Mirrors pending tags into a collection on the media server so the
+          household sees what's doomed — and can rescue it by keeping it here.
+        </p>
+
+        <label className="block text-sm text-slate-400 mb-1 mt-4">
+          Discord webhook URL
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            className={inputCls}
+            type="password"
+            value={discordUrl}
+            onChange={(e) => setDiscordUrl(e.target.value)}
+            placeholder={discordConfigured ? '•••••• (configured — paste to replace)' : 'https://discord.com/api/webhooks/…'}
+          />
+          <button
+            type="button"
+            className={`${btnGhost} shrink-0`}
+            onClick={async () => {
+              setDiscordMsg('');
+              try {
+                const res = await fetch('/api/admin/test-connection', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ service: 'discord', url: discordUrl.trim() }),
+                });
+                const d = await res.json();
+                setDiscordMsg(d.message ?? (d.ok ? 'OK' : 'Failed'));
+              } catch {
+                setDiscordMsg('Test failed.');
+              }
+            }}
+          >
+            Test
+          </button>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          Notifies on: items tagged, items entering their final 7 days, purge
+          results and failures. Leave blank for no notifications.
+        </p>
+        {discordMsg && <p className="mt-1 text-xs text-slate-300">{discordMsg}</p>}
       </Card>
 
       {/* FORK: rule builder (auto-tagging into scheduled_deletions). */}

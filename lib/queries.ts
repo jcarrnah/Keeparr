@@ -2101,6 +2101,7 @@ export interface ScheduledDeletionRow {
   status: ScheduledDeletionStatus;
   status_at: number | null;
   status_detail: string | null;
+  notified_week: number;
   title: string;
   size_bytes: number;
   section_id: string;
@@ -2397,5 +2398,41 @@ export function insertRuleTags(
     let n = 0;
     for (const rk of ratingKeys) n += ins.run(rk, taggedBy, t, deleteAfter, t).changes;
     return n;
+  })();
+}
+
+/** Rating keys of all live 'pending' tags (drives the Leaving Soon collection). */
+export function pendingDeletionKeys(): string[] {
+  const rows = getDb()
+    .prepare(`SELECT rating_key FROM scheduled_deletions WHERE status = 'pending'`)
+    .all() as { rating_key: string }[];
+  return rows.map((r) => r.rating_key);
+}
+
+/**
+ * Pending tags inside their final 7 days that haven't had the "entering final
+ * week" notice yet (Discord). Caller marks them via markWeekNotified.
+ */
+export function enteringFinalWeek(nowSec: number = now()): ScheduledDeletionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT sd.*, m.title, m.size_bytes, m.section_id, m.removed,
+              0 AS kept, NULL AS tagged_by_name
+       FROM scheduled_deletions sd
+       JOIN media_items m ON m.rating_key = sd.rating_key
+       WHERE sd.status = 'pending' AND sd.notified_week = 0
+         AND sd.delete_after <= ? + 7 * 86400
+       ORDER BY sd.delete_after ASC`
+    )
+    .all(nowSec) as ScheduledDeletionRow[];
+}
+
+export function markWeekNotified(ratingKeys: string[]): void {
+  const db = getDb();
+  const upd = db.prepare(
+    `UPDATE scheduled_deletions SET notified_week = 1 WHERE rating_key = ?`
+  );
+  db.transaction(() => {
+    for (const rk of ratingKeys) upd.run(rk);
   })();
 }

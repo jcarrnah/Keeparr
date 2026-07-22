@@ -7,11 +7,15 @@
  * job_state/job_runs like any other job.
  */
 import { deleteArrItem, type ArrSource } from './arr';
+import { sendDiscordMessage } from './discord';
 import { formatSize } from './format';
+import { syncLeavingSoonCollection } from './leaving-soon';
 import {
   arrMatchForItem,
   dueDeletions,
+  enteringFinalWeek,
   logEvent,
+  markWeekNotified,
   refreshDeletionHolds,
   setDeletionResult,
 } from './queries';
@@ -32,6 +36,26 @@ export async function runPurge(): Promise<JobResult> {
   // Reconcile holds first so "keep removed" items resume their countdown and
   // freshly-kept items are parked before eligibility is computed.
   const { held, released } = refreshDeletionHolds();
+
+  // Discord: one heads-up as items enter their final 7 days (rescue window).
+  const finalWeek = enteringFinalWeek();
+  if (finalWeek.length > 0) {
+    const list = finalWeek
+      .slice(0, 15)
+      .map(
+        (i) =>
+          `• ${i.title} (${formatSize(i.size_bytes)}) — ${new Date(i.delete_after * 1000).toLocaleDateString()}`
+      )
+      .join('\n');
+    const sent = await sendDiscordMessage(
+      `⏳ **Leaving in the next 7 days** — keep them in Keeparr to rescue:\n${list}` +
+        (finalWeek.length > 15 ? `\n…and ${finalWeek.length - 15} more` : '')
+    );
+    // Only mark when actually delivered — a transient webhook failure (or the
+    // webhook being configured later) retries on the next nightly run.
+    if (sent) markWeekNotified(finalWeek.map((i) => i.rating_key));
+  }
+
   const due = dueDeletions();
   const dryRun = getDeletionDryRun();
 
@@ -100,5 +124,19 @@ export async function runPurge(): Promise<JobResult> {
   if (unmatched) parts.push(`${unmatched} unmatched (left alone)`);
   if (held) parts.push(`${held} newly held by keeps`);
   if (released) parts.push(`${released} resumed after keep removal`);
+
+  // Discord: purge summary (only when something happened or failed; dry-run
+  // stays quiet — its results are in the app log).
+  if (!dryRun && (deleted > 0 || failed > 0)) {
+    const failNote = failed ? `\n⚠️ ${failed} deletion(s) FAILED — see Settings → Logs.` : '';
+    await sendDiscordMessage(
+      `🧹 **Purge complete** — deleted ${deleted} item(s), reclaimed ${formatSize(bytes)}.${failNote}`
+    );
+  }
+
+  // Mirror the (post-purge) pending set into the Leaving Soon collection.
+  const leavingSoon = await syncLeavingSoonCollection();
+  if (leavingSoon) parts.push(leavingSoon);
+
   return { result: deleted, message: parts.join('; ') + '.' };
 }
