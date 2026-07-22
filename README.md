@@ -1,5 +1,11 @@
 # Keeparr
 
+> **This is the jcarrnah fork** of [drohack/Keeparr](https://github.com/drohack/Keeparr).
+> It adds scheduled deletions (default OFF, dry-run ON, keeps always win),
+> rule-based auto-tagging, a "Leaving Soon" Jellyfin collection, Discord
+> notifications, and a swipe UI. **See [FORK.md](FORK.md) for everything that
+> differs.** Image: `ghcr.io/jcarrnah/keeparr:latest`.
+
 A self-hosted web app that makes it dead-simple for a household to decide **what
 media to keep** — and to find what can be safely deleted to reclaim disk space.
 
