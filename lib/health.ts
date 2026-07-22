@@ -6,6 +6,7 @@ import {
   getManagedSections,
   getStorageMappings,
   isArrConfigured,
+  isOmdbConfigured,
   isSeerrConfigured,
   isServerConfigured,
   isWatchAvailable,
@@ -43,6 +44,9 @@ function jobRelevant(id: JobId): boolean {
     case 'purge':
     case 'rules':
       return getDeletionEnabled();
+    // FORK: ratings only matter once an OMDb key is set.
+    case 'ratings':
+      return isOmdbConfigured();
     default:
       // recentlyAdded / library / sizes need the media server.
       return isServerConfigured();

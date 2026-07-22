@@ -295,6 +295,19 @@ function migrate(database: Database.Database): void {
     database.exec(`ALTER TABLE media_items ADD COLUMN guid_imdb TEXT`);
   }
 
+  // FORK: external ratings from OMDb (keyed by guid_imdb; refreshed by the
+  // 'ratings' job). Guarded ALTERs so upstream's CREATE block stays untouched.
+  for (const [col, type] of [
+    ['imdb_rating', 'REAL'], // 0–10
+    ['rt_score', 'INTEGER'], // Rotten Tomatoes %
+    ['metacritic', 'INTEGER'], // 0–100
+    ['ratings_fetched_at', 'INTEGER'], // epoch; set even on a miss (no refetch loop)
+  ] as const) {
+    if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === col)) {
+      database.exec(`ALTER TABLE media_items ADD COLUMN ${col} ${type}`);
+    }
+  }
+
   // Migrate the legacy global keeps table (rating_key PK, kept_by) to per-user
   // (plex_user_id, rating_key). The new applySchema CREATE only runs on a fresh
   // DB; existing DBs still have the old shape until rebuilt here.

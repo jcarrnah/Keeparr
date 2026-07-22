@@ -10,6 +10,7 @@ import {
 import { runBackup } from './backup';
 import { runPurge } from './purge';
 import { runRules } from './rules';
+import { runRatings } from './ratings';
 import {
   getAllJobState,
   getJobState,
@@ -31,7 +32,8 @@ export type JobId =
   | 'arr'
   | 'backup'
   | 'rules'
-  | 'purge';
+  | 'purge'
+  | 'ratings';
 
 export interface JobDef {
   id: JobId;
@@ -55,6 +57,8 @@ export const JOBS: JobDef[] = [
   // master toggle is on (default OFF; purge also defaults to dry-run).
   { id: 'rules', label: 'Deletion rules', run: runRules },
   { id: 'purge', label: 'Scheduled deletions', run: runPurge },
+  // FORK: OMDb ratings backfill/refresh (inert without an OMDb key).
+  { id: 'ratings', label: 'Ratings (OMDb)', run: runRatings },
 ];
 
 export const JOB_IDS = JOBS.map((j) => j.id);

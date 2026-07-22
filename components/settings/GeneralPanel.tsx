@@ -14,6 +14,10 @@ export default function GeneralPanel() {
   const [delGraceDays, setDelGraceDays] = useState(30);
   const [delDryRun, setDelDryRun] = useState(true);
   const [leavingSoon, setLeavingSoon] = useState(true);
+  // FORK: OMDb ratings key (secret — never round-tripped).
+  const [omdbKey, setOmdbKey] = useState('');
+  const [omdbConfigured, setOmdbConfigured] = useState(false);
+  const [omdbMsg, setOmdbMsg] = useState('');
   const [discordUrl, setDiscordUrl] = useState(''); // never round-tripped (secret)
   const [discordConfigured, setDiscordConfigured] = useState(false);
   const [discordMsg, setDiscordMsg] = useState('');
@@ -35,6 +39,7 @@ export default function GeneralPanel() {
         setDelDryRun(d.deletion?.dryRun ?? true);
         setLeavingSoon(d.deletion?.leavingSoon ?? true);
         setDiscordConfigured(!!d.deletion?.discordConfigured);
+        setOmdbConfigured(!!d.omdb?.configured);
       })
       .catch(() => {});
   }, []);
@@ -73,6 +78,7 @@ export default function GeneralPanel() {
             // Only send when the admin typed a new one ('' would clear it).
             ...(discordUrl.trim() ? { discordWebhookUrl: discordUrl.trim() } : {}),
           },
+          ...(omdbKey.trim() ? { omdbApiKey: omdbKey.trim() } : {}),
           ...(keyDirty ? { apiKey } : {}),
         }),
       });
@@ -260,6 +266,46 @@ export default function GeneralPanel() {
           results and failures. Leave blank for no notifications.
         </p>
         {discordMsg && <p className="mt-1 text-xs text-slate-300">{discordMsg}</p>}
+      </Card>
+
+      {/* FORK: OMDb ratings enrichment (IMDb/RT/Metacritic on swipe cards). */}
+      <Card title="Ratings (OMDb)">
+        <p className="text-sm text-slate-400 mb-3">
+          A free OMDb API key (~1000 lookups/day) adds IMDb, Rotten Tomatoes and
+          Metacritic scores to swipe cards. The nightly Ratings job backfills the
+          library under the daily cap, then refreshes stale entries.
+        </p>
+        <label className="block text-sm text-slate-400 mb-1">API key</label>
+        <div className="flex items-center gap-2">
+          <input
+            className={`${inputCls} max-w-xs`}
+            type="password"
+            value={omdbKey}
+            onChange={(e) => setOmdbKey(e.target.value)}
+            placeholder={omdbConfigured ? '•••••• (configured — paste to replace)' : 'OMDb API key'}
+          />
+          <button
+            type="button"
+            className={`${btnGhost} shrink-0`}
+            onClick={async () => {
+              setOmdbMsg('');
+              try {
+                const res = await fetch('/api/admin/test-connection', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ service: 'omdb', url: '', apiKey: omdbKey.trim() }),
+                });
+                const d = await res.json();
+                setOmdbMsg(d.message ?? (d.ok ? 'OK' : 'Failed'));
+              } catch {
+                setOmdbMsg('Test failed.');
+              }
+            }}
+          >
+            Test
+          </button>
+        </div>
+        {omdbMsg && <p className="mt-1 text-xs text-slate-300">{omdbMsg}</p>}
       </Card>
 
       {/* FORK: rule builder (auto-tagging into scheduled_deletions). */}

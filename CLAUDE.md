@@ -214,7 +214,16 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   this user's verdicts, honors the `watch=` list modes. UI:
   `app/swipe/page.tsx` → `components/SwipeView.tsx` (pointer-event card stack,
   no animation dep; arrows/S/U keys; 5-deep client undo buffer); rail entry
-  "Swipe" + a PWA shortcut.
+  "Swipe" + a PWA shortcut. Cards show OMDb enrichment when present:
+  `media_items` gained `imdb_rating`/`rt_score`/`metacritic`/
+  `ratings_fetched_at` (guarded ALTERs, keyed by the existing `guid_imdb` —
+  first id when CSV). The daily `ratings` job (09:00, `lib/ratings.ts` over
+  `lib/omdb.ts`) backfills under a ~900/day cap with a natural resume cursor
+  (never-fetched first), stamps misses so they aren't refetched, refreshes
+  >90d-stale entries, and aborts the run on transport/auth errors. OMDb key:
+  `omdb_api_key`* (Settings → General "Ratings (OMDb)" card; test via
+  `test-connection` service `omdb`; job gated in health checks on
+  `isOmdbConfigured`).
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
   `requests`/`arr`): last run/status/message/duration/result. Rows stuck at

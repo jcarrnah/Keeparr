@@ -79,6 +79,11 @@ export interface MediaItem {
   guid_tvdb: string | null;
   last_synced: number;
   removed: number;
+  // --- FORK: OMDb ratings (guarded-ALTER columns; absent pre-migration) ---
+  imdb_rating?: number | null;
+  rt_score?: number | null;
+  metacritic?: number | null;
+  ratings_fetched_at?: number | null;
 }
 
 /** A media item enriched with per-request flags for the UI. */
@@ -99,6 +104,10 @@ export interface MediaCardData {
   skipped?: boolean;
   /** True when the current user has watched it (any plays, from Tautulli). */
   watched?: boolean;
+  // --- FORK: OMDb ratings (swipe cards; undefined until the ratings job ran) ---
+  imdbRating?: number;
+  rtScore?: number;
+  metacritic?: number;
   // --- FORK: scheduled deletion (live tag only) ---
   /** Epoch seconds after which the purge may delete it (undefined = untagged). */
   scheduledDeleteAfter?: number;

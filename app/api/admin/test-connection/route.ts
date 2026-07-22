@@ -4,6 +4,7 @@ import { errorResponse } from '@/lib/route-helpers';
 import { getServerIdentity } from '@/lib/plex';
 import {
   getDiscordWebhookUrl,
+  getOmdbKey,
   getRadarrInstances,
   getSeerrKey,
   getServerToken,
@@ -11,6 +12,7 @@ import {
   getTautulliKey,
 } from '@/lib/settings';
 import { testDiscord } from '@/lib/discord';
+import { testOmdb } from '@/lib/omdb';
 import { logEvent } from '@/lib/queries';
 import { testTautulli } from '@/lib/tautulli';
 import { testSeerr } from '@/lib/seerr';
@@ -28,7 +30,8 @@ interface Body {
     | 'seerr'
     | 'sonarr'
     | 'radarr'
-    | 'discord'; // FORK: deletion-notification webhook
+    | 'discord' // FORK: deletion-notification webhook
+    | 'omdb'; // FORK: ratings enrichment
   url: string;
   apiKey?: string;
   token?: string;
@@ -73,6 +76,9 @@ export async function POST(req: Request) {
     } else if (body.service === 'discord') {
       // FORK: blank url → fall back to the saved webhook (re-testing).
       result = await testDiscord(body.url || getDiscordWebhookUrl() || '');
+    } else if (body.service === 'omdb') {
+      // FORK: blank key → fall back to the saved one (re-testing).
+      result = await testOmdb(body.apiKey || getOmdbKey() || '');
     } else {
       return NextResponse.json({ error: 'bad_service' }, { status: 400 });
     }

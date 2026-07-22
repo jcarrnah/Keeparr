@@ -53,6 +53,8 @@ export const DEFAULT_JOB_SCHEDULES: Record<string, JobSchedule> = {
   // Both inert unless the Deletion master toggle is on (default OFF).
   rules: { type: 'daily', hour: 2, minute: 0 },
   purge: { type: 'daily', hour: 2, minute: 30 },
+  // FORK: OMDb ratings — after the morning refresh cycle, off the busy window.
+  ratings: { type: 'daily', hour: 9, minute: 0 },
 };
 
 /** How many backup files to keep (oldest pruned first). Overridable in Settings. */

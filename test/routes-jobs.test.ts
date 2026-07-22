@@ -100,6 +100,7 @@ describe('GET /api/admin/jobs', () => {
       'backup',
       'library',
       'purge',
+      'ratings',
       'recentlyAdded',
       'requests',
       'rules',

@@ -34,6 +34,10 @@ export async function GET(req: Request) {
     const items = rows.map((m) => ({
       ...toCard(m, false, undefined, undefined, watched.has(m.rating_key)),
       requestedByMe: requested.has(m.rating_key),
+      // OMDb enrichment (undefined until the ratings job has covered the item).
+      imdbRating: m.imdb_rating ?? undefined,
+      rtScore: m.rt_score ?? undefined,
+      metacritic: m.metacritic ?? undefined,
     }));
     const remaining = countSwipeRemaining(user.plexUserId, { sectionId, watchMode });
     return NextResponse.json({ items, remaining });

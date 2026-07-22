@@ -29,6 +29,8 @@ const SECRET_KEYS = new Set([
   'radarr_instances',
   // FORK: the Discord webhook URL embeds its token — secret.
   'discord_webhook_url',
+  // FORK: OMDb API key (ratings enrichment).
+  'omdb_api_key',
 ]);
 
 export function readSetting(key: string): string | null {
@@ -368,6 +370,11 @@ export const getDiscordWebhookUrl = () => readSetting('discord_webhook_url');
 export const setDiscordWebhookUrl = (url: string) =>
   writeSetting('discord_webhook_url', url.trim());
 export const isDiscordConfigured = () => !!getDiscordWebhookUrl();
+
+// --- FORK: OMDb (IMDb/RT/Metacritic ratings for swipe cards) ---
+export const getOmdbKey = () => readSetting('omdb_api_key');
+export const setOmdbKey = (key: string) => writeSetting('omdb_api_key', key.trim());
+export const isOmdbConfigured = () => !!getOmdbKey();
 
 // --- Local demo (set only by the dev seed; synthetic storage capacity) ---
 export function getDevStorageTotal(): number | null {

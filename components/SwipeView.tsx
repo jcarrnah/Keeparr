@@ -311,6 +311,19 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
                     {item.watched && <span title="You've watched this">👁 watched</span>}
                     {item.requestedByMe && <span className="text-sky-300">requested by you</span>}
                   </div>
+                  {(item.imdbRating != null || item.rtScore != null || item.metacritic != null) && (
+                    <div className="mt-1 flex items-center gap-3 text-xs text-slate-300">
+                      {item.imdbRating != null && (
+                        <span title="IMDb rating">⭐ {item.imdbRating.toFixed(1)}</span>
+                      )}
+                      {item.rtScore != null && (
+                        <span title="Rotten Tomatoes">🍅 {item.rtScore}%</span>
+                      )}
+                      {item.metacritic != null && (
+                        <span title="Metacritic">Ⓜ {item.metacritic}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {/* Drag verdict overlay */}
                 {isTop && activeDef && !isLeaving && (

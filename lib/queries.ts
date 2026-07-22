@@ -2611,3 +2611,44 @@ export function countSwipeRemaining(
     .get(params) as { n: number };
   return row.n;
 }
+
+// ---------------------------------------------------------------------------
+// FORK: ratings enrichment (OMDb columns on media_items; 'ratings' job).
+// ---------------------------------------------------------------------------
+
+/**
+ * Items due a ratings fetch: has an IMDb id, present, and never fetched or
+ * stale (fetched before `staleBefore`). Never-fetched first (the backfill
+ * cursor), then oldest — so a capped run naturally resumes where it left off.
+ */
+export function itemsNeedingRatings(
+  limit: number,
+  staleBefore: number
+): { rating_key: string; guid_imdb: string }[] {
+  return getDb()
+    .prepare(
+      `SELECT rating_key, guid_imdb FROM media_items
+       WHERE removed = 0 AND guid_imdb IS NOT NULL AND guid_imdb != ''
+         AND (ratings_fetched_at IS NULL OR ratings_fetched_at < ?)
+       ORDER BY (ratings_fetched_at IS NULL) DESC, ratings_fetched_at ASC
+       LIMIT ?`
+    )
+    .all(staleBefore, limit) as { rating_key: string; guid_imdb: string }[];
+}
+
+/**
+ * Store a fetch result. Nulls are stored as-is (OMDb miss / N/A) — the
+ * timestamp is stamped either way so a durable miss isn't refetched daily.
+ */
+export function updateItemRatings(
+  ratingKey: string,
+  r: { imdbRating: number | null; rtScore: number | null; metacritic: number | null }
+): void {
+  getDb()
+    .prepare(
+      `UPDATE media_items
+       SET imdb_rating = ?, rt_score = ?, metacritic = ?, ratings_fetched_at = ?
+       WHERE rating_key = ?`
+    )
+    .run(r.imdbRating, r.rtScore, r.metacritic, now(), ratingKey);
+}

@@ -39,6 +39,8 @@ import {
   setLeavingSoonEnabled,
   isDiscordConfigured,
   setDiscordWebhookUrl,
+  isOmdbConfigured,
+  setOmdbKey,
   writeSetting,
   getSonarrInstances,
   getRadarrInstances,
@@ -137,6 +139,8 @@ export async function GET() {
         leavingSoon: getLeavingSoonEnabled(),
         discordConfigured: isDiscordConfigured(),
       },
+      // FORK: OMDb ratings enrichment (key never returned).
+      omdb: { configured: isOmdbConfigured() },
     });
   } catch (e) {
     return errorResponse(e);
@@ -174,6 +178,8 @@ interface PutBody {
     leavingSoon?: boolean;
     discordWebhookUrl?: string;
   };
+  /** FORK: OMDb key. '' clears; absent keeps the stored one (secret). */
+  omdbApiKey?: string;
 }
 
 /** Update settings. Only provided fields are changed. */
@@ -270,6 +276,10 @@ export async function PUT(req: Request) {
       if (typeof body.deletion.discordWebhookUrl === 'string') {
         setDiscordWebhookUrl(body.deletion.discordWebhookUrl);
       }
+    }
+
+    if (typeof body.omdbApiKey === 'string') {
+      setOmdbKey(body.omdbApiKey);
     }
 
     return NextResponse.json({ ok: true });
