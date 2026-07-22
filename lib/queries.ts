@@ -11,9 +11,10 @@ import type {
   RuleCondition,
   SessionUser,
   SyncStatus,
+  Verdict,
 } from './types';
 
-export type { FeedWatchMode, RuleCondition };
+export type { FeedWatchMode, RuleCondition, Verdict };
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -637,6 +638,8 @@ function weightedPull(
     libraryKind?: LibraryKind;
     sectionId?: string;
     watchMode?: FeedWatchMode;
+    /** FORK: drop items this user already swiped (the swipe deck). */
+    excludeMyVerdicts?: boolean;
   },
   limit: number,
   excludeKeys: string[]
@@ -654,6 +657,11 @@ function weightedPull(
   }
   if (filter.watchMode) {
     clauses.push(feedWatchClause(filter.watchMode, params));
+  }
+  if (filter.excludeMyVerdicts) {
+    clauses.push(
+      'm.rating_key NOT IN (SELECT rating_key FROM verdicts WHERE plex_user_id = @uid)'
+    );
   }
   excludeKeys.forEach((k, i) => (params[`ex${i}`] = k));
   if (excludeKeys.length) {
@@ -2435,4 +2443,171 @@ export function markWeekNotified(ratingKeys: string[]): void {
   db.transaction(() => {
     for (const rk of ratingKeys) upd.run(rk);
   })();
+}
+
+// ---------------------------------------------------------------------------
+// FORK: swipe verdicts (2.1). Write-through so the rest of the app just works:
+// want_to_watch/loved_it → keep; dont_care → skip; done_with_it/not_interested
+// → clear this user's keep (they stand as delete votes via the verdicts table
+// itself). All transitions atomic, mirroring the apply* mutation style.
+// ---------------------------------------------------------------------------
+
+/**
+ * Record this user's verdict and write it through to keeps/skips. False when
+ * the item is unknown/tombstoned. Replaces any previous verdict (re-swiping
+ * an item transitions its write-through state too).
+ */
+export function applyVerdict(
+  plexUserId: string,
+  ratingKey: string,
+  verdict: Verdict
+): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const item = db
+      .prepare('SELECT 1 FROM media_items WHERE rating_key = ? AND removed = 0')
+      .get(ratingKey);
+    if (!item) return false;
+    const t = now();
+    db.prepare(
+      `INSERT INTO verdicts (plex_user_id, rating_key, verdict, decided_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(plex_user_id, rating_key) DO UPDATE SET
+         verdict = excluded.verdict, decided_at = excluded.decided_at`
+    ).run(plexUserId, ratingKey, verdict, t);
+
+    const clearKeep = () =>
+      db.prepare('DELETE FROM keeps WHERE plex_user_id = ? AND rating_key = ?').run(
+        plexUserId,
+        ratingKey
+      );
+    const clearSkip = () =>
+      db.prepare('DELETE FROM user_skips WHERE plex_user_id = ? AND rating_key = ?').run(
+        plexUserId,
+        ratingKey
+      );
+    const clearDelete = () =>
+      db.prepare('DELETE FROM user_deletes WHERE plex_user_id = ? AND rating_key = ?').run(
+        plexUserId,
+        ratingKey
+      );
+
+    if (verdict === 'want_to_watch' || verdict === 'loved_it') {
+      // Same effect as applyKeep: keep + exclusivity + pause any pending tag.
+      db.prepare(
+        `INSERT INTO keeps (plex_user_id, rating_key, kept_at) VALUES (?, ?, ?)
+         ON CONFLICT(plex_user_id, rating_key) DO NOTHING`
+      ).run(plexUserId, ratingKey, t);
+      clearSkip();
+      clearDelete();
+      db.prepare(
+        `UPDATE scheduled_deletions
+         SET status = 'held', status_at = ?, status_detail = 'keep added'
+         WHERE rating_key = ? AND status = 'pending'`
+      ).run(t, ratingKey);
+    } else if (verdict === 'dont_care') {
+      db.prepare(
+        `INSERT INTO user_skips (plex_user_id, rating_key, skipped_at) VALUES (?, ?, ?)
+         ON CONFLICT(plex_user_id, rating_key) DO NOTHING`
+      ).run(plexUserId, ratingKey, t);
+      clearKeep();
+      clearDelete();
+    } else {
+      // done_with_it / not_interested: a delete vote — withdraw this user's
+      // keep/skip; the verdict row itself is the vote (fed to rules/consensus).
+      clearKeep();
+      clearSkip();
+    }
+    return true;
+  })();
+}
+
+/**
+ * Undo: remove the verdict AND its write-through side effects (keep/skip),
+ * returning the removed verdict (null when there was none). The item rolls
+ * back into the deck.
+ */
+export function removeVerdict(
+  plexUserId: string,
+  ratingKey: string
+): Verdict | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const row = db
+      .prepare(
+        'SELECT verdict FROM verdicts WHERE plex_user_id = ? AND rating_key = ?'
+      )
+      .get(plexUserId, ratingKey) as { verdict: Verdict } | undefined;
+    if (!row) return null;
+    db.prepare('DELETE FROM verdicts WHERE plex_user_id = ? AND rating_key = ?').run(
+      plexUserId,
+      ratingKey
+    );
+    if (row.verdict === 'want_to_watch' || row.verdict === 'loved_it') {
+      db.prepare('DELETE FROM keeps WHERE plex_user_id = ? AND rating_key = ?').run(
+        plexUserId,
+        ratingKey
+      );
+    } else if (row.verdict === 'dont_care') {
+      db.prepare('DELETE FROM user_skips WHERE plex_user_id = ? AND rating_key = ?').run(
+        plexUserId,
+        ratingKey
+      );
+    }
+    return row.verdict;
+  })();
+}
+
+/** This user's verdict for one item (null = not swiped). */
+export function getVerdict(plexUserId: string, ratingKey: string): Verdict | null {
+  const row = getDb()
+    .prepare('SELECT verdict FROM verdicts WHERE plex_user_id = ? AND rating_key = ?')
+    .get(plexUserId, ratingKey) as { verdict: Verdict } | undefined;
+  return row?.verdict ?? null;
+}
+
+/**
+ * The swipe deck: movies this user hasn't sworn a verdict on, size-weighted
+ * like the feed (big titles are the decision-relevant ones), honoring the same
+ * section/watch-list filters as the keep loop. Series stay in the classic loop.
+ */
+export function getSwipeDeck(
+  plexUserId: string,
+  limit: number,
+  opts: { sectionId?: string; watchMode?: FeedWatchMode } = {}
+): MediaItem[] {
+  return weightedPull(
+    plexUserId,
+    {
+      libraryKind: 'movie',
+      sectionId: opts.sectionId,
+      watchMode: opts.watchMode,
+      excludeMyVerdicts: true,
+    },
+    limit,
+    []
+  );
+}
+
+/** How many movies remain un-swiped for this user (per the same filters). */
+export function countSwipeRemaining(
+  plexUserId: string,
+  opts: { sectionId?: string; watchMode?: FeedWatchMode } = {}
+): number {
+  const params: Record<string, unknown> = { uid: plexUserId };
+  let extra = '';
+  if (opts.sectionId) {
+    extra += ' AND m.section_id = @sectionId';
+    params.sectionId = opts.sectionId;
+  }
+  if (opts.watchMode) extra += ` AND ${feedWatchClause(opts.watchMode, params)}`;
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM media_items m
+       WHERE ${FEED_ELIGIBILITY} AND m.library_kind = 'movie'
+         AND m.rating_key NOT IN (SELECT rating_key FROM verdicts WHERE plex_user_id = @uid)
+         ${extra}`
+    )
+    .get(params) as { n: number };
+  return row.n;
 }

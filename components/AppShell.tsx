@@ -251,6 +251,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
+          {/* FORK: swipe mode (movies-first verdicts). */}
+          {navItem('/swipe', 'Swipe', pathname.startsWith('/swipe'), '⇄')}
           {navItem('/stats', 'Big Picture', pathname.startsWith('/stats'), '◴')}
           {user?.isAdmin &&
             navItem(

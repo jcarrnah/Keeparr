@@ -207,6 +207,25 @@ export function applySchema(database: Database.Database): void {
       updated_at  INTEGER NOT NULL
     );
 
+    -- FORK: per-user swipe verdicts (movies-first). Two dimensions, not
+    -- flattened: want-to-watch vs worth-keeping. Write-through keeps the rest
+    -- of the app working: want_to_watch/loved_it upsert into keeps, dont_care
+    -- into user_skips, done_with_it/not_interested clear this user's keep and
+    -- stand as delete votes (read by deletion rules / consensus views).
+    CREATE TABLE IF NOT EXISTS verdicts (
+      plex_user_id TEXT NOT NULL,
+      rating_key   TEXT NOT NULL REFERENCES media_items(rating_key) ON DELETE CASCADE,
+      verdict      TEXT NOT NULL,
+        -- want_to_watch : never seen, interested        → implies keep
+        -- loved_it      : seen, would rewatch           → implies keep
+        -- done_with_it  : seen, finished with it        → soft delete vote
+        -- not_interested: never seen, never will        → delete vote
+        -- dont_care     : abstain                       → maps to user_skips
+      decided_at   INTEGER NOT NULL,
+      PRIMARY KEY (plex_user_id, rating_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_verdicts_item ON verdicts(rating_key);
+
     -- App event log (shown on the Settings → Logs page).
     CREATE TABLE IF NOT EXISTS logs (
       id      INTEGER PRIMARY KEY AUTOINCREMENT,

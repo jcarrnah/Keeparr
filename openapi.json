@@ -169,6 +169,32 @@
         "responses": { "200": { "description": "`{items: MediaCard[], remaining}`" } }
       }
     },
+    "/api/swipe/deck": {
+      "get": {
+        "tags": ["media"],
+        "summary": "FORK: swipe deck — movies this user hasn't sworn a verdict on",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "section", "in": "query", "schema": { "type": "string" }, "description": "Limit to one library" },
+          { "name": "watch", "in": "query", "schema": { "type": "string", "enum": ["never_played", "stale_90", "recent_30", "my_unwatched"] }, "description": "Same watch-history lists as the feed" }
+        ],
+        "responses": { "200": { "description": "`{items: MediaCard[], remaining}`" } }
+      }
+    },
+    "/api/swipe/verdict": {
+      "post": {
+        "tags": ["media"],
+        "summary": "FORK: record a swipe verdict (write-through to keeps/skips)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" }, "verdict": { "type": "string", "enum": ["want_to_watch", "loved_it", "done_with_it", "not_interested", "dont_care"] } }, "required": ["ratingKey", "verdict"] } } } },
+        "responses": { "200": { "description": "`{ok}`" }, "404": { "description": "Unknown or tombstoned item" } }
+      },
+      "delete": {
+        "tags": ["media"],
+        "summary": "FORK: undo a verdict (reverses its keep/skip side effects)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" } }, "required": ["ratingKey"] } } } },
+        "responses": { "200": { "description": "`{ok, removed}`" }, "404": { "description": "No verdict to undo" } }
+      }
+    },
     "/api/keep": {
       "post": {
         "tags": ["media"],

@@ -46,6 +46,25 @@ export const RULE_FIELDS = [
   'requested',
 ] as const;
 
+/**
+ * FORK: a swipe verdict. Gestures: right = want_to_watch, up = loved_it,
+ * left = not_interested, down = done_with_it, skip = dont_care.
+ */
+export type Verdict =
+  | 'want_to_watch'
+  | 'loved_it'
+  | 'done_with_it'
+  | 'not_interested'
+  | 'dont_care';
+
+export const VERDICTS: Verdict[] = [
+  'want_to_watch',
+  'loved_it',
+  'done_with_it',
+  'not_interested',
+  'dont_care',
+];
+
 /** A row from media_items as stored. */
 export interface MediaItem {
   rating_key: string;

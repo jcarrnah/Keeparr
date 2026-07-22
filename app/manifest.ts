@@ -29,6 +29,7 @@ export default function manifest(): MetadataRoute.Manifest {
     ],
     shortcuts: [
       { name: 'Keep', url: '/', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
+      { name: 'Swipe', url: '/swipe', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
       { name: 'Browse', url: '/library', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
       { name: 'Big Picture', url: '/stats', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
     ],

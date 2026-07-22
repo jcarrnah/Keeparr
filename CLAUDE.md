@@ -204,6 +204,17 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   and ANY existing `scheduled_deletions` row (manual tags / cancelled /
   purge outcomes are never overwritten). Matches are INSERT-OR-IGNOREd as
   `pending`, `tagged_by = 'rule:<id>'`. Inert unless `deletion_enabled`.
+- `verdicts` — **FORK-ONLY**: per-user swipe verdicts, PK
+  `(plex_user_id, rating_key)`. Values: `want_to_watch`/`loved_it` (imply a
+  keep), `dont_care` (maps to `user_skips`), `done_with_it`/`not_interested`
+  (clear this user's keep; stand as delete votes). `applyVerdict` writes
+  through atomically (keep-implying verdicts also pause a pending scheduled
+  deletion, like `applyKeep`); `removeVerdict` (undo) reverses the write-
+  through. The deck (`getSwipeDeck`) is movies-only, feed-eligible, excludes
+  this user's verdicts, honors the `watch=` list modes. UI:
+  `app/swipe/page.tsx` → `components/SwipeView.tsx` (pointer-event card stack,
+  no animation dep; arrows/S/U keys; 5-deep client undo buffer); rail entry
+  "Swipe" + a PWA shortcut.
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
   `requests`/`arr`): last run/status/message/duration/result. Rows stuck at
@@ -255,6 +266,10 @@ when it has no tvdb/tmdb **and** no imdb.
   this user's; ignored with `largest=1`; `remaining` counts within the list).
   The Keep page shows the list tabs only when watch data is available
   (`isWatchAvailable()`). Categories are real Plex libraries — never hardcoded.
+- **FORK:** `GET /api/swipe/deck?limit=&section=&watch=` → un-swiped movies +
+  `remaining`; `POST /api/swipe/verdict {ratingKey, verdict}` (validated
+  against `VERDICTS`; replaces a previous verdict, transitioning its
+  write-through state) / `DELETE {ratingKey}` (undo → `{ok, removed}`).
 - `POST/DELETE /api/keep` `{ratingKey}` — toggle **this user's** keep. POST also
   clears their "don't care" + "OK to delete" (one transaction — the keep/skip/
   mark-delete POSTs each use an atomic `apply*` query, and all three 404 on an
