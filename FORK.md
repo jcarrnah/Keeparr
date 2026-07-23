@@ -61,13 +61,14 @@ in place.
 ### Swipe mode ("Tinder for the library")
 **/swipe** (also a PWA shortcut): a card stack over **movies and whole TV
 series** (a verdict always covers the entire show — never a season).
-Right = *want to watch* · up = *worth keeping* · left = *not interested* ·
-down = *done with it* · Skip = *don't care*. Buttons + arrow keys on desktop,
-U to undo (last 5). Verdicts are persistent and per-user, and write through to
-the normal keep/skip machinery (*want to watch*/*worth keeping* = a keep —
-which also pauses any pending deletion; *done with it*/*not interested* stand
-as delete votes for rules and future consensus views). Decks support the same
-watch-history lists as the feed.
+Right = **Save for later** (unseen, keep to watch) · up = **Worth keeping**
+(seen, keep) · left = **Let it go** (never watching — releases your claim) ·
+down = **Can go** (watched, done with it) · **Skip** = abstain. Buttons +
+arrow keys on desktop, U to undo (last 5). Verdicts are persistent and
+per-user, and write through to the normal keep/skip machinery (*Save for
+later*/*Worth keeping* = a keep — which also pauses any pending deletion;
+*Let it go*/*Can go* stand as delete votes for rules and future consensus
+views). Decks support the same watch-history lists as the feed.
 
 ### Ratings on swipe cards (OMDb)
 Add a free [OMDb API key](https://www.omdbapi.com/apikey.aspx) (Settings →

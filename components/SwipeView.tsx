@@ -35,13 +35,15 @@ interface VerdictDef {
   color: string; // overlay + button accent classes
   dir: 'left' | 'right' | 'up' | 'down' | null;
 }
+// Outcome-focused labels (user-chosen); stored values keep their original
+// names — no migration, and the semantics are unchanged:
+//   Save for later = unseen, keep to watch · Worth keeping = seen, keep ·
+//   Let it go = never watching, releases my claim · Can go = watched, done.
 const VERDICT_DEFS: VerdictDef[] = [
-  { verdict: 'not_interested', label: 'Not interested', color: 'text-rose-400 border-rose-500', dir: 'left' },
-  { verdict: 'done_with_it', label: 'Done with it', color: 'text-amber-400 border-amber-500', dir: 'down' },
+  { verdict: 'not_interested', label: 'Let it go', color: 'text-rose-400 border-rose-500', dir: 'left' },
+  { verdict: 'done_with_it', label: 'Can go', color: 'text-amber-400 border-amber-500', dir: 'down' },
   { verdict: 'dont_care', label: 'Skip', color: 'text-slate-300 border-slate-500', dir: null },
-  { verdict: 'want_to_watch', label: 'Want to watch', color: 'text-emerald-400 border-emerald-500', dir: 'right' },
-  // Stored value stays 'loved_it'; the label covers "seen it, keeping it"
-  // whether or not you loved it (both mean: this stays on the server).
+  { verdict: 'want_to_watch', label: 'Save for later', color: 'text-emerald-400 border-emerald-500', dir: 'right' },
   { verdict: 'loved_it', label: 'Worth keeping', color: 'text-sky-400 border-sky-500', dir: 'up' },
 ];
 const byDir = (d: 'left' | 'right' | 'up' | 'down') =>
@@ -369,7 +371,7 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
         </button>
       </div>
       <p className="pb-2 text-center text-[11px] text-slate-600">
-        → want to watch · ↑ worth keeping · ← not interested · ↓ done with it · S skip · U undo
+        → save for later · ↑ worth keeping · ← let it go · ↓ can go · S skip · U undo
       </p>
     </div>
   );
