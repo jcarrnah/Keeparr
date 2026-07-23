@@ -7,6 +7,7 @@
  * (or S) = dont_care. Buttons + arrow keys cover desktop. Plain pointer
  * events — upstream is dependency-light, so no animation library.
  */
+import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatGB } from '@/lib/format';
 import {
@@ -231,11 +232,16 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
       <div className="w-full max-w-md">
         <div className="flex items-baseline justify-between gap-3">
           <h1 className="text-2xl font-bold">Swipe</h1>
-          {remaining != null && (
-            <span className="text-xs text-slate-500">
-              {remaining.toLocaleString()} title{remaining === 1 ? '' : 's'} left
-            </span>
-          )}
+          <span className="flex items-baseline gap-3">
+            <Link href="/swipe/matches" className="text-xs text-brand underline hover:text-brand-light">
+              Matches →
+            </Link>
+            {remaining != null && (
+              <span className="text-xs text-slate-500">
+                {remaining.toLocaleString()} title{remaining === 1 ? '' : 's'} left
+              </span>
+            )}
+          </span>
         </div>
         {watchAvailable && (
           <div className="mt-2 flex flex-wrap items-center gap-1 rounded-lg bg-rail p-1">

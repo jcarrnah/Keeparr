@@ -218,7 +218,15 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   `watch=` list modes. UI:
   `app/swipe/page.tsx` → `components/SwipeView.tsx` (pointer-event card stack,
   no animation dep; arrows/S/U keys; 5-deep client undo buffer); rail entry
-  "Swipe" + a PWA shortcut. Cards show OMDb enrichment when present:
+  "Swipe" + a PWA shortcut. Results at `/swipe/matches`
+  (`components/MatchesView.tsx`): **Movie night** (`movieNightMatches` — ≥2
+  chosen users with `want_to_watch`, optional nobody-watched filter, names
+  deliberately visible) + **Consensus** (`verdictConsensus` — per-item name
+  rollup by verdict, `delete_votes` = done_with_it + not_interested, sortable
+  votes/size) via `GET /api/swipe/matches` + `GET /api/swipe/consensus`.
+  Browse cards additionally get an admin-only Schedule/Cancel-deletion button
+  (`MediaCard taggable` prop, gated on `isAdmin && deletion_enabled`, calls
+  the scheduled-deletions admin API with the configured grace). Cards show OMDb enrichment when present:
   `media_items` gained `imdb_rating`/`rt_score`/`metacritic`/
   `ratings_fetched_at` (guarded ALTERs, keyed by the existing `guid_imdb` —
   first id when CSV). The daily `ratings` job (09:00, `lib/ratings.ts` over

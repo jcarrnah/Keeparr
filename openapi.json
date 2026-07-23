@@ -195,6 +195,28 @@
         "responses": { "200": { "description": "`{ok, removed}`" }, "404": { "description": "No verdict to undo" } }
       }
     },
+    "/api/swipe/matches": {
+      "get": {
+        "tags": ["media"],
+        "summary": "FORK: movie-night matches — titles ≥2 chosen users saved for later (names shown by design)",
+        "parameters": [
+          { "name": "users", "in": "query", "schema": { "type": "string" }, "description": "Comma list of user ids to match between (omit = all participants)" },
+          { "name": "unwatched", "in": "query", "schema": { "type": "string", "enum": ["1"] }, "description": "Only titles nobody on the server has watched" }
+        ],
+        "responses": { "200": { "description": "`{items: [{…card, wantCount, wanterIds[], wanterNames[]}], users[], me}`" } }
+      }
+    },
+    "/api/swipe/consensus": {
+      "get": {
+        "tags": ["media"],
+        "summary": "FORK: per-item verdict rollup (who wants / keeps / released each title)",
+        "parameters": [
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["votes", "size"] }, "description": "votes = most delete votes first (default)" },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "`{items: [{…card, kept, wantNames[], keepNames[], doneNames[], neverNames[], skipCount, deleteVotes}], hasMore, nextOffset}`" } }
+      }
+    },
     "/api/keep": {
       "post": {
         "tags": ["media"],

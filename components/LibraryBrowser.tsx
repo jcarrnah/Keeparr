@@ -120,6 +120,7 @@ export default function LibraryBrowser({
   arr = false,
   seerr = false,
   deletion = false,
+  canTagDeletion = false,
 }: {
   sections: LibrarySection[];
   /** Tautulli connected → show the Watched filter (otherwise hidden). */
@@ -130,6 +131,8 @@ export default function LibraryBrowser({
   seerr?: boolean;
   /** FORK: scheduled deletions enabled → show the "Scheduled for deletion" bucket. */
   deletion?: boolean;
+  /** FORK: admin + deletion enabled → per-card "Schedule deletion" button. */
+  canTagDeletion?: boolean;
 }) {
   // Library selection lives in the URL (?sections=) — driven by the nav rail's
   // Browse list. Empty = all libraries.
@@ -523,6 +526,7 @@ export default function LibraryBrowser({
               item={item}
               skippable
               requested={requested.has(item.ratingKey)}
+              taggable={canTagDeletion}
             />
           ))}
         </div>

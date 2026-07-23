@@ -1,8 +1,10 @@
 'use client';
 
+import { useState } from 'react';
 import type { MediaCardData } from '@/lib/types';
 import { formatGB } from '@/lib/format';
 import { useKeepState } from './useKeepState';
+import { useToast } from './Toaster';
 
 // Shared so every page sizes its cards identically. CARD_MIN_W must match the
 // px in CARD_GRID_CLASS (kept as a literal so Tailwind's scanner sees it).
@@ -24,6 +26,8 @@ interface Props {
   onDeleteChange?: (ratingKey: string, markedForDelete: boolean) => void;
   /** Optional "you requested this" badge (from Seerr). */
   requested?: boolean;
+  /** FORK: admin + Deletion enabled → show a schedule/cancel-deletion button. */
+  taggable?: boolean;
 }
 
 export default function MediaCard({
@@ -34,7 +38,40 @@ export default function MediaCard({
   onSkipChange,
   onDeleteChange,
   requested,
+  taggable = false,
 }: Props) {
+  // FORK: local scheduled-deletion state so tagging updates the badge without
+  // a refetch. Initialized from the row; only meaningful when `taggable`.
+  const [schedAfter, setSchedAfter] = useState<number | undefined>(item.scheduledDeleteAfter);
+  const [schedHeld, setSchedHeld] = useState<boolean>(!!item.scheduledDeleteHeld);
+  const [tagBusy, setTagBusy] = useState(false);
+  const toast = useToast();
+
+  const onTagClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTagBusy(true);
+    try {
+      const tagged = schedAfter != null;
+      const res = await fetch('/api/admin/scheduled-deletions', {
+        method: tagged ? 'DELETE' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ratingKey: item.ratingKey }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      if (tagged) {
+        setSchedAfter(undefined);
+        setSchedHeld(false);
+      } else {
+        const d = await res.json();
+        setSchedAfter(d.deleteAfter);
+        setSchedHeld(false);
+      }
+    } catch {
+      toast("Couldn't update the deletion tag.", 'error');
+    } finally {
+      setTagBusy(false);
+    }
+  };
   // Per user: keptByMe / skipped / markedForDelete / neither (shared logic). An
   // item can also be "kept by others" (item.kept true while not mine) —
   // protected, but their keep is never ours to remove. Snapshot fixed at load.
@@ -189,29 +226,29 @@ export default function MediaCard({
         </div>
       ) : null}
       {/* Left-top badge stack: Requested + (FORK) scheduled-deletion notice. */}
-      {(requested || item.scheduledDeleteAfter != null) && (
+      {(requested || schedAfter != null) && (
         <div className="absolute left-2 top-2 flex flex-col items-start gap-1">
           {requested && (
             <div className="rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold text-paper">
               Requested
             </div>
           )}
-          {item.scheduledDeleteAfter != null && (
+          {schedAfter != null && (
             <div
               title={
-                item.scheduledDeleteHeld
+                schedHeld
                   ? 'Scheduled for deletion, but paused — someone keeps it. The countdown resumes if all keeps are removed.'
-                  : `Scheduled for deletion after ${new Date(item.scheduledDeleteAfter * 1000).toLocaleDateString()}. Keeping this pauses the deletion.`
+                  : `Scheduled for deletion after ${new Date(schedAfter * 1000).toLocaleDateString()}. Keeping this pauses the deletion.`
               }
               className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                item.scheduledDeleteHeld
+                schedHeld
                   ? 'bg-slate-700/90 text-slate-200'
                   : 'bg-red-500/90 text-paper'
               }`}
             >
-              {item.scheduledDeleteHeld
+              {schedHeld
                 ? '⏸ Deletion paused'
-                : `⌛ Leaving ${new Date(item.scheduledDeleteAfter * 1000).toLocaleDateString()}`}
+                : `⌛ Leaving ${new Date(schedAfter * 1000).toLocaleDateString()}`}
             </div>
           )}
         </div>
@@ -249,6 +286,26 @@ export default function MediaCard({
             }`}
           >
             {markedForDelete ? '↺ Never mind' : 'OK to delete'}
+          </button>
+        )}
+        {/* FORK: admin schedule/cancel deletion (uses the configured grace). */}
+        {taggable && (
+          <button
+            type="button"
+            onClick={onTagClick}
+            disabled={tagBusy}
+            title={
+              schedAfter != null
+                ? 'Cancel the scheduled deletion'
+                : 'Tag for deletion after the configured grace period'
+            }
+            className={`mt-1.5 w-full rounded border px-2 py-1 text-[11px] disabled:opacity-60 ${
+              schedAfter != null
+                ? 'border-red-500/70 bg-red-500/20 font-semibold text-red-300'
+                : 'border-slate-700 text-slate-400 hover:border-red-500/70 hover:text-red-300'
+            }`}
+          >
+            {schedAfter != null ? '↺ Cancel deletion' : '⌛ Schedule deletion'}
           </button>
         )}
       </div>

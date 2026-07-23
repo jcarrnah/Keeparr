@@ -42,6 +42,7 @@ export default async function LibraryPage() {
           arr={isArrConfigured()}
           seerr={isSeerrConfigured()}
           deletion={getDeletionEnabled()}
+          canTagDeletion={user.isAdmin && getDeletionEnabled()}
         />
       )}
     </AppShell>

@@ -2672,3 +2672,102 @@ export function cancelDeletionsByTagger(taggedBy: string, detail: string): numbe
     )
     .run(now(), detail, taggedBy).changes;
 }
+
+// ---------------------------------------------------------------------------
+// FORK: swipe matchmaking + consensus (2.4). Identity is deliberately visible
+// here — "you and Sam both want to watch these" is the whole point.
+// ---------------------------------------------------------------------------
+
+/** Users who have sworn at least one verdict (the matchmaking participants). */
+export function verdictParticipants(): { plex_user_id: string; username: string }[] {
+  return getDb()
+    .prepare(
+      `SELECT DISTINCT u.plex_user_id, COALESCE(u.username, u.plex_user_id) AS username
+       FROM verdicts v JOIN users u ON u.plex_user_id = v.plex_user_id
+       ORDER BY username COLLATE NOCASE`
+    )
+    .all() as { plex_user_id: string; username: string }[];
+}
+
+export interface MovieNightMatch extends MediaItem {
+  want_count: number;
+  wanter_ids: string; // CSV plex_user_ids
+  wanter_names: string; // CSV usernames (same order)
+}
+
+/**
+ * Movie night: present items where ≥2 of the chosen users (all participants
+ * when omitted) said want_to_watch, most-wanted first. `unwatchedOnly` = nobody
+ * on the server has watched it yet.
+ */
+export function movieNightMatches(
+  opts: { userIds?: string[]; unwatchedOnly?: boolean } = {}
+): MovieNightMatch[] {
+  const params: Record<string, unknown> = {};
+  let userSql = '';
+  if (opts.userIds && opts.userIds.length > 0) {
+    const named = opts.userIds.map((_, i) => `@u${i}`);
+    opts.userIds.forEach((id, i) => (params[`u${i}`] = id));
+    userSql = ` AND v.plex_user_id IN (${named.join(', ')})`;
+  }
+  const unwatchedSql = opts.unwatchedOnly
+    ? ` AND NOT EXISTS (SELECT 1 FROM watch_history w WHERE w.rating_key = m.rating_key)`
+    : '';
+  return getDb()
+    .prepare(
+      `SELECT m.*, COUNT(*) AS want_count,
+              GROUP_CONCAT(v.plex_user_id) AS wanter_ids,
+              GROUP_CONCAT(COALESCE(u.username, v.plex_user_id)) AS wanter_names
+       FROM verdicts v
+       JOIN media_items m ON m.rating_key = v.rating_key AND m.removed = 0
+       LEFT JOIN users u ON u.plex_user_id = v.plex_user_id
+       WHERE v.verdict = 'want_to_watch'${userSql}${unwatchedSql}
+       GROUP BY v.rating_key
+       HAVING COUNT(*) >= 2
+       ORDER BY want_count DESC, m.size_bytes DESC, m.title COLLATE NOCASE`
+    )
+    .all(params) as MovieNightMatch[];
+}
+
+export interface ConsensusRow extends MediaItem {
+  kept: number; // anyone keeps it (protected)
+  want_names: string | null; // want_to_watch (save for later)
+  keep_names: string | null; // loved_it (worth keeping)
+  done_names: string | null; // done_with_it (can go — watched)
+  never_names: string | null; // not_interested (let it go — unseen)
+  skip_count: number; // dont_care abstentions
+  delete_votes: number; // done_with_it + not_interested
+}
+
+/**
+ * Per-item verdict rollup over every item ANYONE has sworn a verdict on —
+ * feeds the human decision of what to tag for deletion. Sort: 'votes' =
+ * most delete votes first (ties by size), 'size' = largest first.
+ */
+export function verdictConsensus(
+  opts: { sort?: 'votes' | 'size'; limit: number; offset: number }
+): ConsensusRow[] {
+  const name = `COALESCE(u.username, v.plex_user_id)`;
+  const order =
+    opts.sort === 'size'
+      ? 'm.size_bytes DESC'
+      : 'delete_votes DESC, m.size_bytes DESC';
+  return getDb()
+    .prepare(
+      `SELECT m.*,
+              EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = m.rating_key) AS kept,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'want_to_watch' THEN ${name} END) AS want_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'loved_it' THEN ${name} END) AS keep_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'done_with_it' THEN ${name} END) AS done_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'not_interested' THEN ${name} END) AS never_names,
+              SUM(v.verdict = 'dont_care') AS skip_count,
+              SUM(v.verdict IN ('done_with_it', 'not_interested')) AS delete_votes
+       FROM verdicts v
+       JOIN media_items m ON m.rating_key = v.rating_key AND m.removed = 0
+       LEFT JOIN users u ON u.plex_user_id = v.plex_user_id
+       GROUP BY v.rating_key
+       ORDER BY ${order}, m.title COLLATE NOCASE
+       LIMIT @limit OFFSET @offset`
+    )
+    .all({ limit: opts.limit, offset: opts.offset }) as ConsensusRow[];
+}

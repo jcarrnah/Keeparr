@@ -91,9 +91,20 @@ npm run verify            # tests + build must stay green
 git push origin main      # ships a new fork image
 ```
 
+### Matches & consensus (`/swipe/matches`)
+- **Movie night**: titles two or more chosen people saved for later — "You
+  and Sam want to watch this" — with a participant picker and a
+  "nobody's watched it yet" filter.
+- **Consensus**: a per-item rollup of who wants each title, who's keeping it,
+  and who released it, sortable by delete votes or size — the human input for
+  deciding what to tag for deletion.
+
+### Manual tagging in Browse
+Admins (with Deletion enabled) get a **Schedule deletion / Cancel deletion**
+button on Browse cards, using the configured grace period.
+
 ## Not yet built
-- Movie-night matchmaking + per-item verdict consensus (`/swipe/matches`).
 - Overview/genres/runtime on swipe cards (needs new fields through the
   media-server sync seam).
-- A manual "tag for deletion" button in Browse (today: tag via rules or the
-  admin API / `/api-docs`).
+- Live-session swipe rooms (KinoSwipe-style) — the async version covers the
+  household use today.
