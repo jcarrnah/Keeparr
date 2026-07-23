@@ -440,26 +440,49 @@ export async function getCollectionItemIds(
   return items.map((i) => String(i.Id ?? '')).filter(Boolean);
 }
 
-/** Add/remove items (chunked — long id lists would blow the URL length). */
+/** Outcome of a chunked collection edit: which ids the server refused + why. */
+export interface CollectionEditResult {
+  failed: string[];
+  lastError: string | null;
+}
+
+/**
+ * Add/remove items, chunked (long id lists blow the URL length). Jellyfin
+ * rejects a WHOLE batch when any single id displeases it, so on a chunk
+ * failure each id is retried individually — the good ones land, the poison
+ * ones are reported back instead of sinking the entire sync.
+ */
 async function editCollectionItems(
   baseUrl: string,
   token: string,
   collectionId: string,
   itemIds: string[],
   method: 'POST' | 'DELETE'
-): Promise<void> {
+): Promise<CollectionEditResult> {
+  const label = `Jellyfin collection ${method === 'POST' ? 'add' : 'remove'}`;
+  const call = (ids: string[]) =>
+    fetchJson<unknown>(
+      `${base(baseUrl)}/Collections/${encodeURIComponent(collectionId)}/Items?Ids=${ids.map(encodeURIComponent).join(',')}`,
+      { method, headers: authHeaders(token), label, allowEmpty: true } // 204 No Content
+    );
+  const result: CollectionEditResult = { failed: [], lastError: null };
   for (let i = 0; i < itemIds.length; i += 50) {
     const chunk = itemIds.slice(i, i + 50);
-    await fetchJson<unknown>(
-      `${base(baseUrl)}/Collections/${encodeURIComponent(collectionId)}/Items?Ids=${chunk.map(encodeURIComponent).join(',')}`,
-      {
-        method,
-        headers: authHeaders(token),
-        label: `Jellyfin collection ${method === 'POST' ? 'add' : 'remove'}`,
-        allowEmpty: true, // 204 No Content
+    try {
+      await call(chunk);
+    } catch {
+      // Isolate the poison id(s): retry one by one.
+      for (const id of chunk) {
+        try {
+          await call([id]);
+        } catch (e) {
+          result.failed.push(id);
+          result.lastError = String(e);
+        }
       }
-    );
+    }
   }
+  return result;
 }
 
 export const addToCollection = (

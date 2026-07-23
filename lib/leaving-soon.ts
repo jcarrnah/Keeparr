@@ -68,9 +68,27 @@ export async function syncLeavingSoonCollection(): Promise<string | null> {
     const have = new Set(current ?? []);
     const toAdd = [...desired].filter((id) => !have.has(id));
     const toRemove = [...have].filter((id) => !desired.has(id));
-    if (toAdd.length) await addToCollection(baseUrl, token, collectionId, toAdd);
-    if (toRemove.length) await removeFromCollection(baseUrl, token, collectionId, toRemove);
-    return `Leaving Soon: +${toAdd.length}/-${toRemove.length} (${desired.size} total)`;
+    const failed: string[] = [];
+    let lastError: string | null = null;
+    for (const [ids, edit] of [
+      [toAdd, addToCollection],
+      [toRemove, removeFromCollection],
+    ] as const) {
+      if (ids.length === 0) continue;
+      const r = await edit(baseUrl, token, collectionId, ids);
+      failed.push(...r.failed);
+      lastError = r.lastError ?? lastError;
+    }
+    if (failed.length) {
+      // Partial success: the good ids landed; name the refused ones + why.
+      logEvent(
+        'warn',
+        'job:purge',
+        `Leaving Soon: server refused ${failed.length} item(s) (ids: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? ', …' : ''}) — last error: ${lastError}`
+      );
+    }
+    const failNote = failed.length ? `, ${failed.length} refused (see logs)` : '';
+    return `Leaving Soon: +${toAdd.length - failed.filter((f) => toAdd.includes(f)).length}/-${toRemove.length - failed.filter((f) => toRemove.includes(f)).length} (${desired.size} total)${failNote}`;
   } catch (e) {
     logEvent('warn', 'job:purge', `Leaving Soon collection sync failed: ${String(e)}`);
     return 'Leaving Soon: sync failed (see logs)';

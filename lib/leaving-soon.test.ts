@@ -64,8 +64,8 @@ function configureJellyfin() {
 beforeEach(() => {
   __setTestDbToMemory();
   vi.clearAllMocks();
-  mAdd.mockResolvedValue(undefined);
-  mRemove.mockResolvedValue(undefined);
+  mAdd.mockResolvedValue({ failed: [], lastError: null });
+  mRemove.mockResolvedValue({ failed: [], lastError: null });
   upsertMediaBatch([media('a'), media('b'), media('c')]);
 });
 
@@ -142,5 +142,31 @@ describe('FORK: syncLeavingSoonCollection', () => {
     mFind.mockRejectedValue(new Error('JF down'));
     const msg = await syncLeavingSoonCollection();
     expect(msg).toMatch(/sync failed/);
+  });
+
+  it('refused ids are reported as partial failure, not a sync failure', async () => {
+    configureJellyfin();
+    tagForDeletion('a', 'admin', future);
+    tagForDeletion('b', 'admin', future);
+    mFind.mockResolvedValue('col-9');
+    mItems.mockResolvedValue([]);
+    mAdd.mockResolvedValue({ failed: ['b'], lastError: 'Jellyfin collection add → HTTP 400 — bad id' });
+    const msg = await syncLeavingSoonCollection();
+    expect(msg).toMatch(/\+1\/-0 \(2 total\), 1 refused/);
+  });
+
+  it('tombstoned items are excluded from the desired set (dead ids 400 the server)', async () => {
+    configureJellyfin();
+    tagForDeletion('a', 'admin', future);
+    tagForDeletion('b', 'admin', future);
+    // 'b' vanishes from the library: re-sync only a & c, then tombstone stale.
+    upsertMediaBatch([media('a'), media('c')], Math.floor(Date.now() / 1000) + 10);
+    const { tombstoneStale } = await import('./queries');
+    tombstoneStale(Math.floor(Date.now() / 1000) + 5);
+    mFind.mockResolvedValue('col-9');
+    mItems.mockResolvedValue([]);
+    const msg = await syncLeavingSoonCollection();
+    expect(msg).toMatch(/\+1\/-0 \(1 total\)/); // only 'a'
+    expect(mAdd).toHaveBeenCalledWith('http://jf.local', 'admintok', 'col-9', ['a']);
   });
 });

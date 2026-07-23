@@ -2409,10 +2409,16 @@ export function insertRuleTags(
   })();
 }
 
-/** Rating keys of all live 'pending' tags (drives the Leaving Soon collection). */
+/** Rating keys of all live 'pending' tags (drives the Leaving Soon collection).
+ *  Joined to PRESENT items — a tombstoned item's id no longer exists on the
+ *  media server, and one dead id can 400 a whole collection edit. */
 export function pendingDeletionKeys(): string[] {
   const rows = getDb()
-    .prepare(`SELECT rating_key FROM scheduled_deletions WHERE status = 'pending'`)
+    .prepare(
+      `SELECT sd.rating_key FROM scheduled_deletions sd
+       JOIN media_items m ON m.rating_key = sd.rating_key AND m.removed = 0
+       WHERE sd.status = 'pending'`
+    )
     .all() as { rating_key: string }[];
   return rows.map((r) => r.rating_key);
 }

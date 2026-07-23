@@ -35,7 +35,18 @@ export async function fetchJson<T = unknown>(
     }
     throw e;
   }
-  if (!res.ok) throw new Error(`${opts.label} → HTTP ${res.status}`);
+  if (!res.ok) {
+    // Include a snippet of the error body — services like Jellyfin/Sonarr put
+    // the actual reason there (validation details), and "HTTP 400" alone has
+    // proven undiagnosable from the job log.
+    let detail = '';
+    try {
+      detail = (await res.text()).replace(/\s+/g, ' ').trim().slice(0, 300);
+    } catch {
+      /* body unreadable — status alone will have to do */
+    }
+    throw new Error(`${opts.label} → HTTP ${res.status}${detail ? ` — ${detail}` : ''}`);
+  }
   if (opts.allowEmpty) {
     const text = await res.text();
     if (!text.trim()) return undefined as T;
