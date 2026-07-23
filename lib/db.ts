@@ -24,7 +24,14 @@ export function applySchema(database: Database.Database): void {
       guid_tvdb     TEXT,
       guid_imdb     TEXT,                       -- imdb id(s) ("tt…"); extra arr-match axis
       last_synced   INTEGER NOT NULL,
-      removed       INTEGER NOT NULL DEFAULT 0  -- tombstone if gone from Plex
+      removed       INTEGER NOT NULL DEFAULT 0, -- tombstone if gone from Plex
+      -- FORK: OMDb ratings (refreshed by the 'ratings' job). Also present here,
+      -- not just as migrate() ALTERs: a FRESH db must never take the ALTER path
+      -- (parallel next-build prerender workers race through migrate()).
+      imdb_rating   REAL,
+      rt_score      INTEGER,
+      metacritic    INTEGER,
+      ratings_fetched_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_media_section ON media_items(section_id);
     CREATE INDEX IF NOT EXISTS idx_media_size ON media_items(size_bytes DESC);
@@ -281,9 +288,13 @@ function migrate(database: Database.Database): void {
     .prepare(`PRAGMA table_info(scheduled_deletions)`)
     .all() as { name: string }[];
   if (sdCols.length > 0 && !sdCols.some((c) => c.name === 'notified_week')) {
-    database.exec(
-      `ALTER TABLE scheduled_deletions ADD COLUMN notified_week INTEGER NOT NULL DEFAULT 0`
-    );
+    try {
+      database.exec(
+        `ALTER TABLE scheduled_deletions ADD COLUMN notified_week INTEGER NOT NULL DEFAULT 0`
+      );
+    } catch (e) {
+      if (!String(e).includes('duplicate column name')) throw e;
+    }
   }
 
   // media_items gained guid_imdb (an extra arr-match axis). Backfilled to NULL;
@@ -295,8 +306,11 @@ function migrate(database: Database.Database): void {
     database.exec(`ALTER TABLE media_items ADD COLUMN guid_imdb TEXT`);
   }
 
-  // FORK: external ratings from OMDb (keyed by guid_imdb; refreshed by the
-  // 'ratings' job). Guarded ALTERs so upstream's CREATE block stays untouched.
+  // FORK: external ratings from OMDb — ALTERs for databases created before the
+  // columns were in the CREATE block above. try/catch because two processes
+  // opening the same fresh file (next-build prerender workers) can both pass
+  // the PRAGMA guard and race the ALTER; "duplicate column" just means the
+  // other process won.
   for (const [col, type] of [
     ['imdb_rating', 'REAL'], // 0–10
     ['rt_score', 'INTEGER'], // Rotten Tomatoes %
@@ -304,7 +318,11 @@ function migrate(database: Database.Database): void {
     ['ratings_fetched_at', 'INTEGER'], // epoch; set even on a miss (no refetch loop)
   ] as const) {
     if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === col)) {
-      database.exec(`ALTER TABLE media_items ADD COLUMN ${col} ${type}`);
+      try {
+        database.exec(`ALTER TABLE media_items ADD COLUMN ${col} ${type}`);
+      } catch (e) {
+        if (!String(e).includes('duplicate column name')) throw e;
+      }
     }
   }
 
