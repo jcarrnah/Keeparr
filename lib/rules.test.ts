@@ -177,6 +177,21 @@ describe('runRules', () => {
     expect(a?.delete_after).toBe(manualAfter);
   });
 
+  it("deleting a rule cancels its live tags (they mustn't outlive it)", async () => {
+    setDeletionEnabled(true);
+    const id = bigRule(true);
+    await runRules(); // tags 'a' + 'b' as rule:<id>
+    tagForDeletion('c', 'admin', nowSec + 86400); // manual tag — must survive
+    const { cancelDeletionsByTagger, setDeletionResult } = await import('./queries');
+    setDeletionResult('a', 'deleted', 'already purged'); // completed — must survive
+    const cancelled = cancelDeletionsByTagger(`rule:${id}`, `rule ${id} deleted`);
+    expect(cancelled).toBe(1); // only 'b' was still live under the rule
+    const byKey = new Map(listScheduledDeletions().map((r) => [r.rating_key, r]));
+    expect(byKey.get('b')?.status).toBe('cancelled');
+    expect(byKey.get('a')?.status).toBe('deleted'); // audit intact
+    expect(byKey.get('c')?.status).toBe('pending'); // manual tag untouched
+  });
+
   it('an invalid stored rule is reported, not applied', async () => {
     setDeletionEnabled(true);
     createDeletionRule({ name: 'broken', conditions: '[]', enabled: true, graceDays: null });

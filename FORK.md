@@ -46,6 +46,9 @@ library is one of · requested via Seerr* — with a per-rule grace override and
 a live **preview** of exactly what tonight's run would tag. The nightly
 **rules** job (02:00) only *tags* (into the same scheduled-deletions pipeline);
 it never touches kept items and never overwrites an existing tag.
+**Deleting a rule cancels its still-live tags** (they don't keep counting
+down); merely *disabling* a rule stops new tagging but leaves existing tags
+in place.
 
 ### "Leaving Soon" collection + Discord notifications
 - On Jellyfin/Emby, pending tags are mirrored into a **Leaving Soon**
@@ -56,13 +59,14 @@ it never touches kept items and never overwrites an existing tag.
   purge results (items + GB reclaimed, plus failures).
 
 ### Swipe mode ("Tinder for the library")
-**/swipe** (also a PWA shortcut): a card stack over the movie library.
-Right = *want to watch* · up = *loved it* · left = *not interested* ·
+**/swipe** (also a PWA shortcut): a card stack over **movies and whole TV
+series** (a verdict always covers the entire show — never a season).
+Right = *want to watch* · up = *worth keeping* · left = *not interested* ·
 down = *done with it* · Skip = *don't care*. Buttons + arrow keys on desktop,
 U to undo (last 5). Verdicts are persistent and per-user, and write through to
-the normal keep/skip machinery (*want to watch*/*loved it* = a keep — which
-also pauses any pending deletion; *done with it*/*not interested* stand as
-delete votes for rules and future consensus views). Decks support the same
+the normal keep/skip machinery (*want to watch*/*worth keeping* = a keep —
+which also pauses any pending deletion; *done with it*/*not interested* stand
+as delete votes for rules and future consensus views). Decks support the same
 watch-history lists as the feed.
 
 ### Ratings on swipe cards (OMDb)

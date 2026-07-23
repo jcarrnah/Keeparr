@@ -57,9 +57,10 @@ export async function syncLeavingSoonCollection(): Promise<string | null> {
         current = await getCollectionItemIds(baseUrl, token, collectionId);
       } else {
         if (desired.size === 0) return 'Leaving Soon: nothing pending';
-        collectionId = await createCollection(baseUrl, token, LEAVING_SOON_NAME, [...desired]);
-        setLeavingSoonCollectionId(collectionId);
-        return `Leaving Soon: created with ${desired.size} item(s)`;
+        // Create EMPTY, then fall through to the chunked diff below — seeding
+        // hundreds of ids into the create URL blows the server's URL limit (414).
+        collectionId = await createCollection(baseUrl, token, LEAVING_SOON_NAME);
+        current = [];
       }
       setLeavingSoonCollectionId(collectionId);
     }

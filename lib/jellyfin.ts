@@ -404,16 +404,18 @@ export async function findCollectionByName(
   return hit?.Id ? String(hit.Id) : null;
 }
 
-/** Create a collection (optionally seeded with items). Returns its id. */
+/**
+ * Create an EMPTY collection and return its id. Items are added afterwards via
+ * addToCollection — its chunking keeps URLs short (seeding hundreds of ids into
+ * the create URL 414s on real servers).
+ */
 export async function createCollection(
   baseUrl: string,
   token: string,
-  name: string,
-  itemIds: string[] = []
+  name: string
 ): Promise<string> {
-  const ids = itemIds.length ? `&Ids=${itemIds.map(encodeURIComponent).join(',')}` : '';
   const d = await fetchJson<{ Id?: string }>(
-    `${base(baseUrl)}/Collections?Name=${encodeURIComponent(name)}${ids}`,
+    `${base(baseUrl)}/Collections?Name=${encodeURIComponent(name)}`,
     {
       method: 'POST',
       headers: authHeaders(token),

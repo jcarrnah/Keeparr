@@ -191,12 +191,21 @@ export default function DeletionRulesCard() {
 
   async function remove(id: number) {
     setBusy(true);
+    setMsg('');
     try {
-      await fetch('/api/admin/deletion-rules', {
+      const res = await fetch('/api/admin/deletion-rules', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id }),
       });
+      if (res.ok) {
+        const d = await res.json();
+        setMsg(
+          d.cancelledTags > 0
+            ? `Rule deleted — ${d.cancelledTags} scheduled tag(s) cancelled with it.`
+            : 'Rule deleted.'
+        );
+      }
       load();
     } finally {
       setBusy(false);
@@ -419,6 +428,7 @@ export default function DeletionRulesCard() {
           <button className={btnGhost} onClick={() => openEditor()}>
             + Add rule
           </button>
+          {msg && <p className="mt-2 text-xs text-slate-300">{msg}</p>}
         </div>
       )}
     </Card>

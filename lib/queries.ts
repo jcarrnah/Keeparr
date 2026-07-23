@@ -2567,9 +2567,9 @@ export function getVerdict(plexUserId: string, ratingKey: string): Verdict | nul
 }
 
 /**
- * The swipe deck: movies this user hasn't sworn a verdict on, size-weighted
- * like the feed (big titles are the decision-relevant ones), honoring the same
- * section/watch-list filters as the keep loop. Series stay in the classic loop.
+ * The swipe deck: movies AND whole series (rows are series-level — a verdict
+ * covers the show, never a season) this user hasn't sworn a verdict on,
+ * size-weighted like the feed, honoring the same section/watch-list filters.
  */
 export function getSwipeDeck(
   plexUserId: string,
@@ -2579,7 +2579,6 @@ export function getSwipeDeck(
   return weightedPull(
     plexUserId,
     {
-      libraryKind: 'movie',
       sectionId: opts.sectionId,
       watchMode: opts.watchMode,
       excludeMyVerdicts: true,
@@ -2589,7 +2588,7 @@ export function getSwipeDeck(
   );
 }
 
-/** How many movies remain un-swiped for this user (per the same filters). */
+/** How many titles remain un-swiped for this user (per the same filters). */
 export function countSwipeRemaining(
   plexUserId: string,
   opts: { sectionId?: string; watchMode?: FeedWatchMode } = {}
@@ -2604,7 +2603,7 @@ export function countSwipeRemaining(
   const row = getDb()
     .prepare(
       `SELECT COUNT(*) AS n FROM media_items m
-       WHERE ${FEED_ELIGIBILITY} AND m.library_kind = 'movie'
+       WHERE ${FEED_ELIGIBILITY}
          AND m.rating_key NOT IN (SELECT rating_key FROM verdicts WHERE plex_user_id = @uid)
          ${extra}`
     )
@@ -2651,4 +2650,19 @@ export function updateItemRatings(
        WHERE rating_key = ?`
     )
     .run(r.imdbRating, r.rtScore, r.metacritic, now(), ratingKey);
+}
+
+/**
+ * Cancel every LIVE (pending/held) tag created by one tagger (e.g. 'rule:3'
+ * when that rule is deleted — its tags shouldn't outlive it). Rows stay for
+ * audit; completed/cancelled rows are untouched. Returns how many were live.
+ */
+export function cancelDeletionsByTagger(taggedBy: string, detail: string): number {
+  return getDb()
+    .prepare(
+      `UPDATE scheduled_deletions
+       SET status = 'cancelled', status_at = ?, status_detail = ?
+       WHERE tagged_by = ? AND status IN ('pending', 'held')`
+    )
+    .run(now(), detail, taggedBy).changes;
 }

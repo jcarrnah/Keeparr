@@ -84,7 +84,7 @@ describe('FORK: syncLeavingSoonCollection', () => {
     expect(mFind).not.toHaveBeenCalled();
   });
 
-  it('creates the collection seeded with the pending set (and caches its id)', async () => {
+  it('creates the collection EMPTY then chunk-adds (a seeded create URL 414s)', async () => {
     configureJellyfin();
     tagForDeletion('a', 'admin', future);
     tagForDeletion('b', 'admin', future);
@@ -92,11 +92,12 @@ describe('FORK: syncLeavingSoonCollection', () => {
     mCreate.mockResolvedValue('col-1');
 
     const msg = await syncLeavingSoonCollection();
-    expect(msg).toMatch(/created with 2/);
-    expect(mCreate).toHaveBeenCalledWith(
+    expect(msg).toMatch(/\+2\/-0 \(2 total\)/);
+    expect(mCreate).toHaveBeenCalledWith('http://jf.local', 'admintok', 'Leaving Soon');
+    expect(mAdd).toHaveBeenCalledWith(
       'http://jf.local',
       'admintok',
-      'Leaving Soon',
+      'col-1',
       expect.arrayContaining(['a', 'b'])
     );
 

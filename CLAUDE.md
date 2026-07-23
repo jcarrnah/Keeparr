@@ -204,14 +204,18 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   and ANY existing `scheduled_deletions` row (manual tags / cancelled /
   purge outcomes are never overwritten). Matches are INSERT-OR-IGNOREd as
   `pending`, `tagged_by = 'rule:<id>'`. Inert unless `deletion_enabled`.
+  Deleting a rule cancels its live tags (`cancelDeletionsByTagger`); disabling
+  it leaves them counting down.
 - `verdicts` — **FORK-ONLY**: per-user swipe verdicts, PK
   `(plex_user_id, rating_key)`. Values: `want_to_watch`/`loved_it` (imply a
   keep), `dont_care` (maps to `user_skips`), `done_with_it`/`not_interested`
   (clear this user's keep; stand as delete votes). `applyVerdict` writes
   through atomically (keep-implying verdicts also pause a pending scheduled
   deletion, like `applyKeep`); `removeVerdict` (undo) reverses the write-
-  through. The deck (`getSwipeDeck`) is movies-only, feed-eligible, excludes
-  this user's verdicts, honors the `watch=` list modes. UI:
+  through. The deck (`getSwipeDeck`) covers movies AND whole series (rows are
+  series-level; UI up-swipe label is "Worth keeping" — stored value stays
+  `loved_it`), is feed-eligible, excludes this user's verdicts, honors the
+  `watch=` list modes. UI:
   `app/swipe/page.tsx` → `components/SwipeView.tsx` (pointer-event card stack,
   no animation dep; arrows/S/U keys; 5-deep client undo buffer); rail entry
   "Swipe" + a PWA shortcut. Cards show OMDb enrichment when present:

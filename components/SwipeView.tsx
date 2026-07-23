@@ -40,7 +40,9 @@ const VERDICT_DEFS: VerdictDef[] = [
   { verdict: 'done_with_it', label: 'Done with it', color: 'text-amber-400 border-amber-500', dir: 'down' },
   { verdict: 'dont_care', label: 'Skip', color: 'text-slate-300 border-slate-500', dir: null },
   { verdict: 'want_to_watch', label: 'Want to watch', color: 'text-emerald-400 border-emerald-500', dir: 'right' },
-  { verdict: 'loved_it', label: 'Loved it', color: 'text-sky-400 border-sky-500', dir: 'up' },
+  // Stored value stays 'loved_it'; the label covers "seen it, keeping it"
+  // whether or not you loved it (both mean: this stays on the server).
+  { verdict: 'loved_it', label: 'Worth keeping', color: 'text-sky-400 border-sky-500', dir: 'up' },
 ];
 const byDir = (d: 'left' | 'right' | 'up' | 'down') =>
   VERDICT_DEFS.find((v) => v.dir === d)!;
@@ -229,7 +231,7 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
           <h1 className="text-2xl font-bold">Swipe</h1>
           {remaining != null && (
             <span className="text-xs text-slate-500">
-              {remaining.toLocaleString()} movie{remaining === 1 ? '' : 's'} left
+              {remaining.toLocaleString()} title{remaining === 1 ? '' : 's'} left
             </span>
           )}
         </div>
@@ -306,6 +308,11 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 pt-12">
                   <div className="text-lg font-bold text-paper">{item.title}</div>
                   <div className="mt-0.5 flex items-center gap-3 text-xs text-slate-300">
+                    {item.libraryKind === 'show' && (
+                      <span className="rounded bg-slate-700/80 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+                        Series
+                      </span>
+                    )}
                     {item.year && <span>{item.year}</span>}
                     <span className="font-mono">{formatGB(item.sizeBytes)}</span>
                     {item.watched && <span title="You've watched this">👁 watched</span>}
@@ -362,7 +369,7 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
         </button>
       </div>
       <p className="pb-2 text-center text-[11px] text-slate-600">
-        → want to watch · ↑ loved it · ← not interested · ↓ done with it · S skip · U undo
+        → want to watch · ↑ worth keeping · ← not interested · ↓ done with it · S skip · U undo
       </p>
     </div>
   );

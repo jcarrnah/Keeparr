@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
 import {
+  cancelDeletionsByTagger,
   createDeletionRule,
   deleteDeletionRule,
   listDeletionRules,
@@ -87,7 +88,11 @@ export async function PUT(req: Request) {
   }
 }
 
-/** FORK: delete a rule. Body: {id}. */
+/**
+ * FORK: delete a rule. Body: {id}. Also CANCELS the rule's live (pending/held)
+ * tags — a deleted rule's tags must not keep counting down. (Disabling a rule
+ * instead keeps its tags live.) Returns how many tags were cancelled.
+ */
 export async function DELETE(req: Request) {
   try {
     await requireAdmin();
@@ -98,7 +103,11 @@ export async function DELETE(req: Request) {
     if (!deleteDeletionRule(body.id)) {
       return NextResponse.json({ error: 'not_found' }, { status: 404 });
     }
-    return NextResponse.json({ ok: true });
+    const cancelledTags = cancelDeletionsByTagger(
+      `rule:${body.id}`,
+      `rule ${body.id} deleted`
+    );
+    return NextResponse.json({ ok: true, cancelledTags });
   } catch (e) {
     return errorResponse(e);
   }

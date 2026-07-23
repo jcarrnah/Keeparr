@@ -172,7 +172,7 @@
     "/api/swipe/deck": {
       "get": {
         "tags": ["media"],
-        "summary": "FORK: swipe deck — movies this user hasn't sworn a verdict on",
+        "summary": "FORK: swipe deck — movies + whole series this user hasn't sworn a verdict on",
         "parameters": [
           { "name": "limit", "in": "query", "schema": { "type": "integer" } },
           { "name": "section", "in": "query", "schema": { "type": "string" }, "description": "Limit to one library" },
@@ -532,9 +532,9 @@
       },
       "delete": {
         "tags": ["admin"],
-        "summary": "FORK: delete a rule",
+        "summary": "FORK: delete a rule (cancels its live pending/held tags)",
         "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "integer" } }, "required": ["id"] } } } },
-        "responses": { "200": { "description": "`{ok}`" } }
+        "responses": { "200": { "description": "`{ok, cancelledTags}`" } }
       }
     },
     "/api/admin/deletion-rules/preview": {

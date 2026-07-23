@@ -107,15 +107,15 @@ describe('FORK: removeVerdict (undo)', () => {
 });
 
 describe('FORK: swipe deck', () => {
-  it('is movies-only, per-user, and excludes swiped items', () => {
+  it('includes movies AND whole series, per-user, excluding swiped items', () => {
     upsertMediaBatch([media('show1', { libraryKind: 'show' })]);
     applyVerdict('userA', '1', 'not_interested');
     const a = getSwipeDeck('userA', 10).map((m) => m.rating_key).sort();
-    expect(a).toEqual(['2', '3']); // no show, no swiped '1'
+    expect(a).toEqual(['2', '3', 'show1']); // series in, swiped '1' out
     const b = getSwipeDeck('userB', 10).map((m) => m.rating_key).sort();
-    expect(b).toEqual(['1', '2', '3']); // userA's verdicts don't affect userB
-    expect(countSwipeRemaining('userA')).toBe(2);
-    expect(countSwipeRemaining('userB')).toBe(3);
+    expect(b).toEqual(['1', '2', '3', 'show1']); // userA's verdicts don't affect userB
+    expect(countSwipeRemaining('userA')).toBe(3);
+    expect(countSwipeRemaining('userB')).toBe(4);
   });
 
   it('honors the watch-list modes (e.g. never played)', () => {
