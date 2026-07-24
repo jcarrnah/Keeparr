@@ -31,7 +31,13 @@ export function applySchema(database: Database.Database): void {
       imdb_rating   REAL,
       rt_score      INTEGER,
       metacritic    INTEGER,
-      ratings_fetched_at INTEGER
+      ratings_fetched_at INTEGER,
+      -- FORK: card enrichment from the backend sync seam (overview/genres/runtime).
+      -- In the CREATE block AND as guarded migrate() ALTERs for the same
+      -- fresh-db-build race reason as the ratings columns above.
+      overview        TEXT,
+      genres          TEXT,    -- JSON array of genre labels
+      runtime_minutes INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_media_section ON media_items(section_id);
     CREATE INDEX IF NOT EXISTS idx_media_size ON media_items(size_bytes DESC);
@@ -316,6 +322,10 @@ function migrate(database: Database.Database): void {
     ['rt_score', 'INTEGER'], // Rotten Tomatoes %
     ['metacritic', 'INTEGER'], // 0–100
     ['ratings_fetched_at', 'INTEGER'], // epoch; set even on a miss (no refetch loop)
+    // FORK: card enrichment (overview/genres/runtime) from the sync seam.
+    ['overview', 'TEXT'],
+    ['genres', 'TEXT'], // JSON array of labels
+    ['runtime_minutes', 'INTEGER'],
   ] as const) {
     if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === col)) {
       try {

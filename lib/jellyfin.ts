@@ -167,6 +167,10 @@ export interface JfItem {
   DateCreated?: string;
   ProviderIds?: Record<string, string>;
   MediaSources?: { Path?: string; Size?: number }[];
+  Overview?: string;
+  Genres?: string[];
+  /** Runtime in 100-nanosecond ticks (6e8 ticks = 1 minute). */
+  RunTimeTicks?: number;
 }
 
 /** Case-insensitive ProviderIds lookup ("Tmdb"/"tmdb"/"TheMovieDb" vary). Exported for tests. */
@@ -215,6 +219,9 @@ export function toBackendItem(it: JfItem, withSize: boolean): BackendItem {
     guidTvdb: providerId(it.ProviderIds, 'tvdb'),
     guidImdb: providerId(it.ProviderIds, 'imdb'),
     sizeBytes: withSize ? sumMediaSources([it]) : 0,
+    overview: it.Overview ?? null,
+    genres: Array.isArray(it.Genres) ? it.Genres.map(String).filter(Boolean) : [],
+    runtimeMinutes: it.RunTimeTicks ? Math.round(it.RunTimeTicks / 600_000_000) : null,
   };
 }
 
@@ -257,7 +264,7 @@ export async function getItems(
       ParentId: parentId,
       Recursive: 'true',
       IncludeItemTypes: itemTypeFor(kind),
-      fields: 'ProviderIds,MediaSources,DateCreated',
+      fields: 'ProviderIds,MediaSources,DateCreated,Overview,Genres',
       StartIndex: String(start),
       Limit: String(pageSize),
     });

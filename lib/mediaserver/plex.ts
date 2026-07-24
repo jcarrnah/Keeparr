@@ -31,6 +31,9 @@ function mapItem(m: PlexMetadata, sizeBytes: number): BackendItem {
     guidTvdb: tvdb,
     guidImdb: imdb,
     sizeBytes,
+    overview: m.summary ?? null,
+    genres: (m.Genre ?? []).map((g) => g.tag).filter((t): t is string => !!t),
+    runtimeMinutes: m.duration ? Math.round(m.duration / 60000) : null,
   };
 }
 

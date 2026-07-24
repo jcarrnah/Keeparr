@@ -216,16 +216,23 @@ export interface UpsertMediaInput {
   guidTvdb: string | null;
   /** imdb id(s) ("tt…"), CSV when Plex lists several. Optional for back-compat. */
   guidImdb?: string | null;
+  // FORK: card enrichment from the sync seam. Optional for back-compat (tests /
+  // legacy callers) — omitted values store as null/[]/null.
+  overview?: string | null;
+  genres?: string[];
+  runtimeMinutes?: number | null;
 }
 
 const upsertMediaStmt = () =>
   getDb().prepare(
     `INSERT INTO media_items
        (rating_key, section_id, library_kind, title, year, thumb, size_bytes,
-        added_at, guid_tmdb, guid_tvdb, guid_imdb, last_synced, removed)
+        added_at, guid_tmdb, guid_tvdb, guid_imdb, overview, genres,
+        runtime_minutes, last_synced, removed)
      VALUES
        (@ratingKey, @sectionId, @libraryKind, @title, @year, @thumb, @sizeBytes,
-        @addedAt, @guidTmdb, @guidTvdb, @guidImdb, @ts, 0)
+        @addedAt, @guidTmdb, @guidTvdb, @guidImdb, @overview, @genres,
+        @runtimeMinutes, @ts, 0)
      ON CONFLICT(rating_key) DO UPDATE SET
        section_id   = excluded.section_id,
        library_kind = excluded.library_kind,
@@ -237,6 +244,9 @@ const upsertMediaStmt = () =>
        guid_tmdb    = excluded.guid_tmdb,
        guid_tvdb    = excluded.guid_tvdb,
        guid_imdb    = excluded.guid_imdb,
+       overview        = excluded.overview,
+       genres          = excluded.genres,
+       runtime_minutes = excluded.runtime_minutes,
        last_synced  = excluded.last_synced,
        removed      = 0`
   );
@@ -256,7 +266,15 @@ export function upsertMediaBatch(
   const stmt = upsertMediaStmt();
   const run = db.transaction((rows: UpsertMediaInput[]) => {
     for (const r of rows) {
-      stmt.run({ ...r, guidImdb: r.guidImdb ?? null, ts: syncedAt });
+      stmt.run({
+        ...r,
+        guidImdb: r.guidImdb ?? null,
+        overview: r.overview ?? null,
+        // Genres bind as a JSON string (SQLite can't bind arrays).
+        genres: r.genres && r.genres.length ? JSON.stringify(r.genres) : null,
+        runtimeMinutes: r.runtimeMinutes ?? null,
+        ts: syncedAt,
+      });
     }
   });
   run(items);

@@ -27,6 +27,12 @@ export interface BackendItem {
   guidTvdb: string | null;
   guidImdb: string | null;
   sizeBytes: number;
+  /** Plot synopsis (Plex `summary` / Jellyfin `Overview`); null when absent. */
+  overview: string | null;
+  /** Genre labels (Plex `Genre[].tag` / Jellyfin `Genres[]`); [] when absent. */
+  genres: string[];
+  /** Runtime in whole minutes (Plex `duration` ms / Jellyfin `RunTimeTicks`); null when absent. */
+  runtimeMinutes: number | null;
 }
 
 /** One watch-history row (movies by item id; episodes rolled up to their series). */

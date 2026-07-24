@@ -77,7 +77,9 @@ import {
   dueDeletions,
   setDeletionResult,
   arrMatchForItem,
+  getSwipeDeck,
 } from './queries';
+import { toCard, parseGenres } from './cards';
 
 const GB = 1024 ** 3;
 
@@ -404,6 +406,34 @@ describe('media upsert + tombstone', () => {
     const stats = libraryStats();
     expect(stats.totalItems).toBe(1);
     expect(stats.totalBytes).toBe(5 * GB);
+  });
+
+  it('stores + round-trips card enrichment (overview/genres/runtime)', () => {
+    upsertMediaBatch([
+      media('e1', {
+        overview: 'A quiet film about nothing in particular.',
+        genres: ['Drama', 'Comedy'],
+        runtimeMinutes: 107,
+      }),
+    ]);
+    const row = getSwipeDeck('viewer', 10).find((m) => m.rating_key === 'e1');
+    expect(row).toBeTruthy();
+    const card = toCard(row!, false);
+    expect(card.overview).toBe('A quiet film about nothing in particular.');
+    expect(card.genres).toEqual(['Drama', 'Comedy']);
+    expect(card.runtimeMinutes).toBe(107);
+  });
+
+  it('leaves enrichment undefined when absent, and parseGenres tolerates junk', () => {
+    upsertMediaBatch([media('e2')]); // media() sets no enrichment
+    const row = getSwipeDeck('viewer', 10).find((m) => m.rating_key === 'e2');
+    const card = toCard(row!, false);
+    expect(card.overview).toBeUndefined();
+    expect(card.genres).toBeUndefined();
+    expect(card.runtimeMinutes).toBeUndefined();
+    expect(parseGenres('not json')).toEqual([]);
+    expect(parseGenres('{"a":1}')).toEqual([]);
+    expect(parseGenres('["ok",2,null]')).toEqual(['ok']);
   });
 
   it('tombstones items not seen in the latest sync', () => {

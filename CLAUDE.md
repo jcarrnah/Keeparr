@@ -235,7 +235,14 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   >90d-stale entries, and aborts the run on transport/auth errors. OMDb key:
   `omdb_api_key`* (Settings → General "Ratings (OMDb)" card; test via
   `test-connection` service `omdb`; job gated in health checks on
-  `isOmdbConfigured`).
+  `isOmdbConfigured`). Cards also show **backend enrichment** (synopsis / genres /
+  runtime): `media_items` gained `overview`/`genres` (JSON label array)/
+  `runtime_minutes` (CREATE block **and** guarded ALTERs, same fresh-db-build-race
+  reason as the ratings columns). Filled by the normal library/recentlyAdded sync
+  through the `lib/mediaserver/*` seam — `BackendItem` carries `overview`/`genres`/
+  `runtimeMinutes` (Plex `summary`/`Genre[].tag`/`duration`; Jellyfin `Overview`/
+  `Genres`/`RunTimeTicks`), no new job. `toCard` (`lib/cards.ts`, via `parseGenres`)
+  surfaces them on every card DTO; rendered on the swipe card (`components/SwipeView.tsx`).
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
   `requests`/`arr`): last run/status/message/duration/result. Rows stuck at

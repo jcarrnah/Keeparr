@@ -49,7 +49,10 @@
           "markedForDeleteAny": { "type": "boolean" },
           "source": { "type": "string", "enum": ["sonarr", "radarr"] },
           "quality": { "type": "string" },
-          "tags": { "type": "array", "items": { "type": "string" } }
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "overview": { "type": "string", "description": "Plot synopsis from the media server (absent until synced)" },
+          "genres": { "type": "array", "items": { "type": "string" } },
+          "runtimeMinutes": { "type": "integer", "description": "Runtime in whole minutes" }
         }
       },
       "HealthIssue": {

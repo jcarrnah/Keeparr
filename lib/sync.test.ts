@@ -59,6 +59,9 @@ function backendItem(ratingKey: string, over: Partial<BackendItem> = {}): Backen
     guidTvdb: null,
     guidImdb: null,
     sizeBytes: 1 * GB,
+    overview: null,
+    genres: [],
+    runtimeMinutes: null,
     ...over,
   };
 }

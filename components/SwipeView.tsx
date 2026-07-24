@@ -9,7 +9,7 @@
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { formatGB } from '@/lib/format';
+import { formatGB, formatRuntime } from '@/lib/format';
 import {
   FEED_WATCH_MODES,
   type FeedWatchMode,
@@ -41,8 +41,8 @@ interface VerdictDef {
 //   Save for later = unseen, keep to watch · Worth keeping = seen, keep ·
 //   Let it go = never watching, releases my claim · Can go = watched, done.
 const VERDICT_DEFS: VerdictDef[] = [
-  { verdict: 'not_interested', label: 'Let it go', color: 'text-rose-400 border-rose-500', dir: 'left' },
-  { verdict: 'done_with_it', label: 'Can go', color: 'text-amber-400 border-amber-500', dir: 'down' },
+  { verdict: 'not_interested', label: 'Let it go / delete this shit', color: 'text-rose-400 border-rose-500', dir: 'left' },
+  { verdict: 'done_with_it', label: "Wouldn't be mad / OK to delete", color: 'text-amber-400 border-amber-500', dir: 'down' },
   { verdict: 'dont_care', label: 'Skip', color: 'text-slate-300 border-slate-500', dir: null },
   { verdict: 'want_to_watch', label: 'Save for later', color: 'text-emerald-400 border-emerald-500', dir: 'right' },
   { verdict: 'loved_it', label: 'Worth keeping', color: 'text-sky-400 border-sky-500', dir: 'up' },
@@ -315,17 +315,37 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
                 {/* Info gradient */}
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 pt-12">
                   <div className="text-lg font-bold text-paper">{item.title}</div>
-                  <div className="mt-0.5 flex items-center gap-3 text-xs text-slate-300">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-300">
                     {item.libraryKind === 'show' && (
                       <span className="rounded bg-slate-700/80 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
                         Series
                       </span>
                     )}
                     {item.year && <span>{item.year}</span>}
+                    {item.runtimeMinutes != null && (
+                      <span title="Runtime">{formatRuntime(item.runtimeMinutes)}</span>
+                    )}
                     <span className="font-mono">{formatGB(item.sizeBytes)}</span>
                     {item.watched && <span title="You've watched this">👁 watched</span>}
                     {item.requestedByMe && <span className="text-sky-300">requested by you</span>}
                   </div>
+                  {item.genres && item.genres.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {item.genres.slice(0, 3).map((g) => (
+                        <span
+                          key={g}
+                          className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-200"
+                        >
+                          {g}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {item.overview && (
+                    <p className="mt-1.5 line-clamp-3 text-xs leading-snug text-slate-300/90">
+                      {item.overview}
+                    </p>
+                  )}
                   {(item.imdbRating != null || item.rtScore != null || item.metacritic != null) && (
                     <div className="mt-1 flex items-center gap-3 text-xs text-slate-300">
                       {item.imdbRating != null && (
@@ -377,7 +397,7 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
         </button>
       </div>
       <p className="pb-2 text-center text-[11px] text-slate-600">
-        → save for later · ↑ worth keeping · ← let it go · ↓ can go · S skip · U undo
+        → save for later · ↑ worth keeping · ← let it go · ↓ OK to delete · S skip · U undo
       </p>
     </div>
   );

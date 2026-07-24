@@ -365,6 +365,12 @@ export interface PlexMetadata {
    *  "com.plexapp.agents.thetvdb://376459?lang=en". The modern agent uses Guid[]. */
   guid?: string;
   Guid?: { id: string }[];
+  /** Plot synopsis (present in the section listing). */
+  summary?: string;
+  /** Runtime in milliseconds (present in the section listing). */
+  duration?: number;
+  /** Genre tags — present in the section listing for movie/show items. */
+  Genre?: { tag?: string }[];
   Media?: { Part?: { id?: number; file?: string; size?: number }[] }[];
 }
 

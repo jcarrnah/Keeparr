@@ -84,6 +84,11 @@ export interface MediaItem {
   rt_score?: number | null;
   metacritic?: number | null;
   ratings_fetched_at?: number | null;
+  // --- FORK: card enrichment from the sync seam (absent pre-migration) ---
+  overview?: string | null;
+  /** JSON array of genre labels as stored; parse with the card mapper. */
+  genres?: string | null;
+  runtime_minutes?: number | null;
 }
 
 /** A media item enriched with per-request flags for the UI. */
@@ -108,6 +113,13 @@ export interface MediaCardData {
   imdbRating?: number;
   rtScore?: number;
   metacritic?: number;
+  // --- FORK: card enrichment from the backend (undefined when not synced yet) ---
+  /** Plot synopsis. */
+  overview?: string;
+  /** Genre labels. */
+  genres?: string[];
+  /** Runtime in whole minutes. */
+  runtimeMinutes?: number;
   // --- FORK: scheduled deletion (live tag only) ---
   /** Epoch seconds after which the purge may delete it (undefined = untagged). */
   scheduledDeleteAfter?: number;

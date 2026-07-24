@@ -6,6 +6,17 @@ export function thumbUrl(thumb: string | null): string | null {
   return `/api/image?path=${encodeURIComponent(thumb)}&w=300&h=450`;
 }
 
+/** Parse the stored genres JSON (a string[] blob) defensively → string[]. */
+export function parseGenres(genres: string | null | undefined): string[] {
+  if (!genres) return [];
+  try {
+    const v = JSON.parse(genres);
+    return Array.isArray(v) ? v.filter((g): g is string => typeof g === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Map a stored media row (+ kept flags) into the UI card shape. */
 export function toCard(
   item: MediaItem,
@@ -14,6 +25,7 @@ export function toCard(
   skipped?: boolean,
   watched?: boolean
 ): MediaCardData {
+  const genres = parseGenres(item.genres);
   return {
     ratingKey: item.rating_key,
     sectionId: item.section_id,
@@ -26,5 +38,8 @@ export function toCard(
     keptByMe: !!keptByMe,
     skipped: !!skipped,
     watched: !!watched,
+    overview: item.overview ?? undefined,
+    genres: genres.length ? genres : undefined,
+    runtimeMinutes: item.runtime_minutes ?? undefined,
   };
 }

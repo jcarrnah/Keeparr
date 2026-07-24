@@ -126,6 +126,8 @@ function rng(seed: number): number {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
 
+const DEV_GENRES = ['Drama', 'Comedy', 'Sci-Fi', 'Thriller', 'Action', 'Documentary', 'Horror', 'Romance'];
+
 function buildItems(): UpsertMediaInput[] {
   const items: UpsertMediaInput[] = [];
   let n = 0;
@@ -151,6 +153,10 @@ function buildItems(): UpsertMediaInput[] {
       // 13th null to demo the "Plex item missing tmdb/tvdb id" match-health case.
       guidTmdb: kind === 'movie' && n % 13 !== 0 ? String(n) : null,
       guidTvdb: kind === 'show' && n % 13 !== 0 ? String(n) : null,
+      // Card enrichment so swipe cards show synopsis/genres/runtime in the demo.
+      overview: `${title} — a ${kind === 'movie' ? 'film' : 'series'} in the demo library. This synopsis stands in for real ${kind === 'movie' ? 'Radarr/Plex' : 'Sonarr/Plex'} metadata so the swipe card layout is visible offline.`,
+      genres: [DEV_GENRES[n % DEV_GENRES.length], DEV_GENRES[(n + 3) % DEV_GENRES.length]],
+      runtimeMinutes: kind === 'movie' ? 90 + (n % 60) : 22 + (n % 40),
     });
   };
 

@@ -11,6 +11,16 @@ export function formatSize(bytes: number): string {
   return formatGB(bytes);
 }
 
+/** Format a whole-minute runtime as "1h 47m" / "58m" / "2h". */
+export function formatRuntime(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '';
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+}
+
 /**
  * Relative timestamp for list views ("just now", "5m ago", "3h ago",
  * "yesterday", "6d ago"), falling back to the locale date past ~30 days.

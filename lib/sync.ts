@@ -378,5 +378,8 @@ function toInput(
     guidTmdb: item.guidTmdb,
     guidTvdb: item.guidTvdb,
     guidImdb: item.guidImdb,
+    overview: item.overview,
+    genres: item.genres,
+    runtimeMinutes: item.runtimeMinutes,
   };
 }
