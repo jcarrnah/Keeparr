@@ -186,7 +186,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <ToastProvider>
-    <div className="h-screen overflow-hidden bg-app text-slate-200 flex">
+    {/* h-screen (100vh) is a fallback; 100dvh tracks the *visible* viewport so the
+        bottom of the app isn't hidden behind mobile browser chrome. */}
+    <div className="h-screen [height:100dvh] overflow-hidden bg-app text-slate-200 flex">
       {/* Mobile backdrop (tap to close the rail drawer) */}
       {navOpen && (
         <div

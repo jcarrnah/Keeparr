@@ -180,7 +180,7 @@ export default function RoomView({ code }: { code: string }) {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-md flex-col px-4 py-4">
+    <div className="mx-auto flex h-full w-full max-w-md flex-col px-4 pt-4 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:pb-4">
       {/* Header: code + roster */}
       <div className="flex items-start justify-between gap-3">
         <div>

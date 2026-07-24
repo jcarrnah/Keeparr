@@ -228,7 +228,7 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
   const activeDef = drag ? dragVerdict(drag.dx, drag.dy) : null;
 
   return (
-    <div className="h-full flex flex-col items-center px-4 py-4 sm:px-6">
+    <div className="h-full flex flex-col items-center px-4 pt-4 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:px-6 sm:pb-4">
       <div className="w-full max-w-md">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <h1 className="text-2xl font-bold">Swipe</h1>
