@@ -55,6 +55,31 @@
           "runtimeMinutes": { "type": "integer", "description": "Runtime in whole minutes" }
         }
       },
+      "RoomMember": {
+        "type": "object",
+        "description": "FORK: a participant in a live swipe room.",
+        "properties": {
+          "plexUserId": { "type": "string" },
+          "username": { "type": "string", "nullable": true },
+          "active": { "type": "boolean", "description": "Within the presence window (actively polling)" },
+          "votes": { "type": "integer", "description": "Titles this member has swiped" },
+          "isMe": { "type": "boolean" }
+        }
+      },
+      "RoomState": {
+        "type": "object",
+        "description": "FORK: full state of a live movie-night room.",
+        "properties": {
+          "code": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "matched", "closed"] },
+          "isHost": { "type": "boolean" },
+          "sectionId": { "type": "string", "nullable": true },
+          "watchMode": { "type": "string", "nullable": true },
+          "activeCount": { "type": "integer" },
+          "members": { "type": "array", "items": { "$ref": "#/components/schemas/RoomMember" } },
+          "matched": { "allOf": [{ "$ref": "#/components/schemas/MediaCard" }], "nullable": true, "description": "The agreed title once status = matched" }
+        }
+      },
       "HealthIssue": {
         "type": "object",
         "properties": {
@@ -196,6 +221,62 @@
         "summary": "FORK: undo a verdict (reverses its keep/skip side effects)",
         "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" } }, "required": ["ratingKey"] } } } },
         "responses": { "200": { "description": "`{ok, removed}`" }, "404": { "description": "No verdict to undo" } }
+      }
+    },
+    "/api/swipe/rooms": {
+      "post": {
+        "tags": ["media"],
+        "summary": "FORK: create a live movie-night room (host auto-joins)",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "section": { "type": "string" }, "watch": { "type": "string", "enum": ["never_played", "stale_90", "recent_30"] } } } } } },
+        "responses": { "200": { "description": "`{code, state: RoomState}`" } }
+      }
+    },
+    "/api/swipe/rooms/{code}": {
+      "get": {
+        "tags": ["media"],
+        "summary": "FORK: poll a room (~2s heartbeat — bumps presence, re-checks consensus)",
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "`{state: RoomState}`" },
+          "403": { "description": "not_in_room" },
+          "404": { "description": "room_not_found" }
+        }
+      }
+    },
+    "/api/swipe/rooms/{code}/join": {
+      "post": {
+        "tags": ["media"],
+        "summary": "FORK: join a room by code",
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "`{state: RoomState}`" }, "404": { "description": "room_not_found" }, "409": { "description": "room_closed" } }
+      }
+    },
+    "/api/swipe/rooms/{code}/deck": {
+      "get": {
+        "tags": ["media"],
+        "summary": "FORK: this viewer's slice of the shared room deck",
+        "parameters": [
+          { "name": "code", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "`{items: MediaCard[], remaining}`" } }
+      }
+    },
+    "/api/swipe/rooms/{code}/vote": {
+      "post": {
+        "tags": ["media"],
+        "summary": "FORK: cast a want/pass vote (a match lands once everyone present wants the same title)",
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" }, "want": { "type": "boolean" } }, "required": ["ratingKey", "want"] } } } },
+        "responses": { "200": { "description": "`{state: RoomState}` (carries matched card once agreed)" }, "404": { "description": "room_not_found / unknown_item" } }
+      }
+    },
+    "/api/swipe/rooms/{code}/leave": {
+      "post": {
+        "tags": ["media"],
+        "summary": "FORK: leave a room (host leaving an open room closes it)",
+        "parameters": [{ "name": "code", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "`{ok}`" } }
       }
     },
     "/api/swipe/matches": {

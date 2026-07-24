@@ -234,7 +234,7 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
           <h1 className="text-2xl font-bold">Swipe</h1>
           <span className="flex items-baseline gap-3">
             <Link href="/swipe/matches" className="text-xs text-brand underline hover:text-brand-light">
-              Matches →
+              🍿 Movie night · Matches →
             </Link>
             {remaining != null && (
               <span className="text-xs text-slate-500">

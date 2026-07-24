@@ -62,9 +62,12 @@ in place.
 **/swipe** (also a PWA shortcut): a card stack over **movies and whole TV
 series** (a verdict always covers the entire show — never a season).
 Right = **Save for later** (unseen, keep to watch) · up = **Worth keeping**
-(seen, keep) · left = **Let it go** (never watching — releases your claim) ·
-down = **Can go** (watched, done with it) · **Skip** = abstain. Buttons +
-arrow keys on desktop, U to undo (last 5). Verdicts are persistent and
+(seen, keep) · left = **Let it go / delete this shit** (never watching —
+releases your claim) · down = **Wouldn't be mad / OK to delete** (watched, done
+with it) · **Skip** = abstain. Buttons +
+arrow keys on desktop, U to undo (last 5). Cards show the synopsis, genres,
+and runtime (pulled from your media server during the normal library sync).
+Verdicts are persistent and
 per-user, and write through to the normal keep/skip machinery (*Save for
 later*/*Worth keeping* = a keep — which also pauses any pending deletion;
 *Let it go*/*Can go* stand as delete votes for rules and future consensus
@@ -99,12 +102,15 @@ git push origin main      # ships a new fork image
   and who released it, sortable by delete votes or size — the human input for
   deciding what to tag for deletion.
 
+### Movie night — live rooms (`/swipe/rooms`)
+Start a room from **/swipe/matches** ("Start a room"), share the short code, and
+everyone swipes the **same** deck together in real time (right = want, left =
+pass). The room lands on the first title **everyone currently in it** wants to
+watch, then celebrates the match. Live updates use lightweight polling (no
+setup, works behind any reverse proxy); rooms need at least two people to match,
+and someone going idle stops holding up the group. Nothing here deletes or keeps
+anything — it's just for picking what to watch tonight.
+
 ### Manual tagging in Browse
 Admins (with Deletion enabled) get a **Schedule deletion / Cancel deletion**
 button on Browse cards, using the configured grace period.
-
-## Not yet built
-- Overview/genres/runtime on swipe cards (needs new fields through the
-  media-server sync seam).
-- Live-session swipe rooms (KinoSwipe-style) — the async version covers the
-  household use today.

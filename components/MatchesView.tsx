@@ -8,6 +8,7 @@
  *   it), sortable — the human input for deciding what to tag for deletion.
  */
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatGB } from '@/lib/format';
 import { useToast } from './Toaster';
@@ -56,6 +57,11 @@ function wanterSentence(names: string[], ids: string[], me: string): string {
 
 export default function MatchesView() {
   const [tab, setTab] = useState<'night' | 'consensus'>('night');
+
+  // Live-room entry (create / join by code).
+  const router = useRouter();
+  const [joinCode, setJoinCode] = useState('');
+  const [creating, setCreating] = useState(false);
 
   // Movie night state
   const [matches, setMatches] = useState<MatchItem[]>([]);
@@ -137,6 +143,24 @@ export default function MatchesView() {
 
   const names = (list: string[]) => list.join(', ');
 
+  async function createRoom() {
+    setCreating(true);
+    try {
+      const res = await fetch('/api/swipe/rooms', { method: 'POST' });
+      if (!res.ok) throw new Error(String(res.status));
+      const { code } = await res.json();
+      router.push(`/swipe/rooms/${code}`);
+    } catch {
+      toast("Couldn't start a room — try again.", 'error');
+      setCreating(false);
+    }
+  }
+
+  function joinByCode() {
+    const code = joinCode.trim().toUpperCase();
+    if (code.length >= 4) router.push(`/swipe/rooms/${code}`);
+  }
+
   return (
     <div className="h-full overflow-y-auto px-6 py-4">
       <div className="flex items-baseline justify-between gap-4">
@@ -144,6 +168,46 @@ export default function MatchesView() {
         <Link href="/swipe" className="text-sm text-slate-400 underline hover:text-white">
           ← Back to swiping
         </Link>
+      </div>
+
+      {/* FORK: live "movie night" rooms — swipe together in real time. */}
+      <div className="mt-4 rounded-xl border border-slate-800 bg-panel p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-200">🍿 Movie night — live room</h2>
+            <p className="text-xs text-slate-500">
+              Everyone swipes together and lands on the first thing you all want to watch.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={createRoom}
+              disabled={creating}
+              className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-ink hover:bg-brand-light disabled:opacity-50"
+            >
+              {creating ? 'Starting…' : 'Start a room'}
+            </button>
+            <form
+              onSubmit={(e) => { e.preventDefault(); joinByCode(); }}
+              className="flex items-center gap-1"
+            >
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value.toUpperCase().slice(0, 6))}
+                placeholder="CODE"
+                aria-label="Room code"
+                className="w-24 rounded-lg border border-slate-700 bg-app px-2 py-1.5 text-center font-mono text-sm uppercase tracking-widest text-slate-100 placeholder:text-slate-600"
+              />
+              <button
+                type="submit"
+                disabled={joinCode.length < 4}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:border-slate-500 hover:text-white disabled:opacity-40"
+              >
+                Join
+              </button>
+            </form>
+          </div>
+        </div>
       </div>
 
       <div className="mt-3 flex items-center gap-1 rounded-lg bg-rail p-1 w-fit">

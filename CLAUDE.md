@@ -243,6 +243,24 @@ The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expa
   `runtimeMinutes` (Plex `summary`/`Genre[].tag`/`duration`; Jellyfin `Overview`/
   `Genres`/`RunTimeTicks`), no new job. `toCard` (`lib/cards.ts`, via `parseGenres`)
   surfaces them on every card DTO; rendered on the swipe card (`components/SwipeView.tsx`).
+- `swipe_rooms` / `swipe_room_members` / `swipe_room_votes` — **FORK-ONLY**: live
+  "movie night" swipe rooms. A group joins by `code`, swipes the **same** ordered
+  deck, and the room lands on the first title EVERYONE currently present swipes
+  "want to watch". Transport is **short polling** (~2s; no websockets/deps) —
+  `swipe_room_members.last_seen` is presence, bumped by each poll; a member idle
+  past `ACTIVE_WINDOW_SEC` (25s, `lib/rooms.ts`) stops counting toward (or
+  blocking) a match. `swipe_room_votes` is one `want`/pass per (room,user,item) —
+  only wants complete a match; passes just advance that user's deck. Match logic
+  (`computeRoomMatch` → first title with a want from every active member, ≥2
+  present, earliest-completed) is committed atomically by `setRoomMatched` (only
+  the first caller wins, so concurrent pollers don't double-fire). Rooms are
+  DB-backed (survive the restart every push ships); `pruneStaleRooms` closes rooms
+  older than `ROOM_TTL_SEC` (12h) on create. Orchestration + code generation +
+  `RoomState` assembly live in `lib/rooms.ts` (`createUniqueRoom`, `evaluateMatch`,
+  `buildRoomState`); all SQL in `lib/queries.ts`. UI: `components/RoomView.tsx`
+  (a `/swipe/rooms/[code]` page — poll loop, binary want/pass card stack, live
+  roster, match celebration); entry (Start a room / Join by code) on
+  `components/MatchesView.tsx`.
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
   `requests`/`arr`): last run/status/message/duration/result. Rows stuck at
@@ -298,6 +316,17 @@ when it has no tvdb/tmdb **and** no imdb.
   `remaining`; `POST /api/swipe/verdict {ratingKey, verdict}` (validated
   against `VERDICTS`; replaces a previous verdict, transitioning its
   write-through state) / `DELETE {ratingKey}` (undo → `{ok, removed}`).
+- **FORK:** live "movie night" rooms (all `requireUser`, short-poll transport):
+  `POST /api/swipe/rooms {section?, watch?}` → create + host-join → `{code, state}`;
+  `POST /api/swipe/rooms/{code}/join` → `{state}`;
+  `GET /api/swipe/rooms/{code}` → the **poll** (bumps presence, re-checks
+  consensus, returns `{state}`; members only, 403 `not_in_room` / 404
+  `room_not_found`); `GET /api/swipe/rooms/{code}/deck?limit=` → this viewer's
+  shared-order slice + `remaining`; `POST /api/swipe/rooms/{code}/vote
+  {ratingKey, want}` → record + re-evaluate → `{state}` (carries the matched card
+  once the room agrees); `POST /api/swipe/rooms/{code}/leave` → `{ok}` (host
+  leaving an open room closes it). `RoomState` = `{code, status, isHost,
+  members[], activeCount, matched}`.
 - `POST/DELETE /api/keep` `{ratingKey}` — toggle **this user's** keep. POST also
   clears their "don't care" + "OK to delete" (one transaction — the keep/skip/
   mark-delete POSTs each use an atomic `apply*` query, and all three 404 on an

@@ -239,6 +239,44 @@ export function applySchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_verdicts_item ON verdicts(rating_key);
 
+    -- FORK: live "movie night" swipe rooms. A group joins by code, swipes the
+    -- SAME ordered deck, and the room lands on the first title EVERYONE currently
+    -- present wants to watch. Ephemeral in feel but DB-backed so it survives the
+    -- container restart that ships on every push. Presence is last_seen (bumped
+    -- by the ~2s poll); a member idle past the active window stops blocking a match.
+    CREATE TABLE IF NOT EXISTS swipe_rooms (
+      code               TEXT PRIMARY KEY,   -- short join code (e.g. "K4QX")
+      created_by         TEXT NOT NULL,      -- plex_user_id of the host
+      created_at         INTEGER NOT NULL,
+      section_id         TEXT,               -- optional library filter (null = all)
+      watch_mode         TEXT,               -- optional feed watch-list filter (null = everything)
+      status             TEXT NOT NULL DEFAULT 'open', -- open | matched | closed
+      matched_rating_key TEXT,               -- set once the room agrees
+      matched_at         INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS swipe_room_members (
+      code         TEXT NOT NULL REFERENCES swipe_rooms(code) ON DELETE CASCADE,
+      plex_user_id TEXT NOT NULL,
+      username     TEXT,                      -- display snapshot
+      joined_at    INTEGER NOT NULL,
+      last_seen    INTEGER NOT NULL,          -- presence; bumped each poll
+      PRIMARY KEY (code, plex_user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_room_members_code ON swipe_room_members(code);
+
+    -- One want/pass vote per (room, user, item). Only "want" votes can complete a
+    -- match; passes are stored so a user's deck excludes what they've seen.
+    CREATE TABLE IF NOT EXISTS swipe_room_votes (
+      code         TEXT NOT NULL REFERENCES swipe_rooms(code) ON DELETE CASCADE,
+      plex_user_id TEXT NOT NULL,
+      rating_key   TEXT NOT NULL,
+      want         INTEGER NOT NULL DEFAULT 0, -- 1 = wants to watch, 0 = pass
+      voted_at     INTEGER NOT NULL,
+      PRIMARY KEY (code, plex_user_id, rating_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_room_votes_item ON swipe_room_votes(code, rating_key);
+
     -- App event log (shown on the Settings → Logs page).
     CREATE TABLE IF NOT EXISTS logs (
       id      INTEGER PRIMARY KEY AUTOINCREMENT,

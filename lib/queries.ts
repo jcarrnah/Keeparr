@@ -2789,3 +2789,254 @@ export function verdictConsensus(
     )
     .all({ limit: opts.limit, offset: opts.offset }) as ConsensusRow[];
 }
+
+// ---------------------------------------------------------------------------
+// FORK: live "movie night" swipe rooms (short-poll transport; everyone-agrees
+// match). All SQL lives here; the routes compose RoomState + the matched card.
+// ---------------------------------------------------------------------------
+
+/** Server-wide watch modes valid for a shared room deck (my_unwatched is
+ *  per-user, so it's meaningless for a group — dropped at creation). */
+export const ROOM_WATCH_MODES: FeedWatchMode[] = [
+  'never_played',
+  'stale_90',
+  'recent_30',
+];
+
+export interface RoomRow {
+  code: string;
+  created_by: string;
+  created_at: number;
+  section_id: string | null;
+  watch_mode: FeedWatchMode | null;
+  status: 'open' | 'matched' | 'closed';
+  matched_rating_key: string | null;
+  matched_at: number | null;
+}
+
+export interface RoomMemberRow {
+  plex_user_id: string;
+  username: string | null;
+  active: number; // 0/1 from the presence comparison
+  votes: number;
+}
+
+export function getRoomRow(code: string): RoomRow | null {
+  return (
+    (getDb()
+      .prepare('SELECT * FROM swipe_rooms WHERE code = ?')
+      .get(code) as RoomRow | undefined) ?? null
+  );
+}
+
+/** Create a room and auto-join the host. Watch mode is coerced to a room-valid
+ *  one (null otherwise). Caller supplies a collision-free code. */
+export function createRoom(input: {
+  code: string;
+  hostId: string;
+  hostName: string | null;
+  sectionId: string | null;
+  watchMode: FeedWatchMode | null;
+}): void {
+  const ts = now();
+  const watch =
+    input.watchMode && ROOM_WATCH_MODES.includes(input.watchMode)
+      ? input.watchMode
+      : null;
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO swipe_rooms (code, created_by, created_at, section_id, watch_mode, status)
+       VALUES (@code, @hostId, @ts, @sectionId, @watchMode, 'open')`
+    ).run({ ...input, watchMode: watch, ts });
+    db.prepare(
+      `INSERT INTO swipe_room_members (code, plex_user_id, username, joined_at, last_seen)
+       VALUES (@code, @hostId, @hostName, @ts, @ts)`
+    ).run({ code: input.code, hostId: input.hostId, hostName: input.hostName, ts });
+  })();
+}
+
+/** Add (or refresh) a member and mark them present now. No-op if already in. */
+export function joinRoom(code: string, userId: string, username: string | null): void {
+  const ts = now();
+  getDb()
+    .prepare(
+      `INSERT INTO swipe_room_members (code, plex_user_id, username, joined_at, last_seen)
+       VALUES (@code, @userId, @username, @ts, @ts)
+       ON CONFLICT(code, plex_user_id) DO UPDATE SET
+         username = excluded.username,
+         last_seen = excluded.last_seen`
+    )
+    .run({ code, userId, username, ts });
+}
+
+/** Bump a member's presence timestamp (called by the poll). */
+export function touchRoomMember(code: string, userId: string): void {
+  getDb()
+    .prepare(
+      'UPDATE swipe_room_members SET last_seen = ? WHERE code = ? AND plex_user_id = ?'
+    )
+    .run(now(), code, userId);
+}
+
+export function leaveRoom(code: string, userId: string): void {
+  getDb()
+    .prepare('DELETE FROM swipe_room_members WHERE code = ? AND plex_user_id = ?')
+    .run(code, userId);
+}
+
+export function isRoomMember(code: string, userId: string): boolean {
+  return !!getDb()
+    .prepare('SELECT 1 FROM swipe_room_members WHERE code = ? AND plex_user_id = ?')
+    .get(code, userId);
+}
+
+/** All members with a live presence flag + how many titles each has swiped. */
+export function roomMembers(code: string, activeSince: number): RoomMemberRow[] {
+  return getDb()
+    .prepare(
+      `SELECT mem.plex_user_id, mem.username,
+              (mem.last_seen >= @activeSince) AS active,
+              (SELECT COUNT(*) FROM swipe_room_votes v
+                 WHERE v.code = mem.code AND v.plex_user_id = mem.plex_user_id) AS votes
+       FROM swipe_room_members mem
+       WHERE mem.code = @code
+       ORDER BY mem.joined_at ASC`
+    )
+    .all({ code, activeSince }) as RoomMemberRow[];
+}
+
+export function roomActiveCount(code: string, activeSince: number): number {
+  const row = getDb()
+    .prepare(
+      'SELECT COUNT(*) AS n FROM swipe_room_members WHERE code = ? AND last_seen >= ?'
+    )
+    .get(code, activeSince) as { n: number };
+  return row.n;
+}
+
+/** Record a want/pass vote (idempotent per item). */
+export function recordRoomVote(
+  code: string,
+  userId: string,
+  ratingKey: string,
+  want: boolean
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO swipe_room_votes (code, plex_user_id, rating_key, want, voted_at)
+       VALUES (@code, @userId, @ratingKey, @want, @ts)
+       ON CONFLICT(code, plex_user_id, rating_key) DO UPDATE SET
+         want = excluded.want, voted_at = excluded.voted_at`
+    )
+    .run({ code, userId, ratingKey, want: want ? 1 : 0, ts: now() });
+}
+
+/**
+ * The first title EVERYONE currently present wants (>=2 present), or null.
+ * "Completed first" = the earliest moment its final needed want-vote arrived.
+ * Pure read — the caller commits the result with setRoomMatched.
+ */
+export function computeRoomMatch(code: string, activeSince: number): string | null {
+  const active = roomActiveCount(code, activeSince);
+  if (active < 2) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT v.rating_key AS rk
+       FROM swipe_room_votes v
+       JOIN swipe_room_members mem
+         ON mem.code = v.code AND mem.plex_user_id = v.plex_user_id
+       JOIN media_items m ON m.rating_key = v.rating_key AND m.removed = 0
+       WHERE v.code = @code AND v.want = 1 AND mem.last_seen >= @activeSince
+       GROUP BY v.rating_key
+       HAVING COUNT(*) >= @active
+       ORDER BY MAX(v.voted_at) ASC
+       LIMIT 1`
+    )
+    .get({ code, activeSince, active }) as { rk: string } | undefined;
+  return row?.rk ?? null;
+}
+
+/** Atomically land the room on a title; true only for the call that wins the
+ *  still-open room (so concurrent pollers don't double-fire). */
+export function setRoomMatched(code: string, ratingKey: string): boolean {
+  const info = getDb()
+    .prepare(
+      `UPDATE swipe_rooms SET status = 'matched', matched_rating_key = ?, matched_at = ?
+       WHERE code = ? AND status = 'open'`
+    )
+    .run(ratingKey, now(), code);
+  return info.changes > 0;
+}
+
+export function closeRoom(code: string): void {
+  getDb()
+    .prepare("UPDATE swipe_rooms SET status = 'closed' WHERE code = ?")
+    .run(code);
+}
+
+/** Close open rooms older than `olderThan` (epoch). Housekeeping; called on
+ *  create so stale rows don't accumulate. Returns rooms closed. */
+export function pruneStaleRooms(olderThan: number): number {
+  return getDb()
+    .prepare(
+      "UPDATE swipe_rooms SET status = 'closed' WHERE status = 'open' AND created_at < ?"
+    )
+    .run(olderThan).changes;
+}
+
+/**
+ * The shared, deterministic deck for a room: non-removed items in the room's
+ * section/watch filter, newest first, minus what THIS viewer already swiped in
+ * the room. Everyone sees the same order, so votes converge on the same titles.
+ */
+export function getRoomDeck(
+  room: RoomRow,
+  userId: string,
+  limit: number
+): MediaItem[] {
+  const params: Record<string, unknown> = { code: room.code, uid: userId, limit };
+  const clauses: string[] = ['m.removed = 0'];
+  if (room.section_id) {
+    clauses.push('m.section_id = @sectionId');
+    params.sectionId = room.section_id;
+  }
+  if (room.watch_mode && ROOM_WATCH_MODES.includes(room.watch_mode)) {
+    clauses.push(feedWatchClause(room.watch_mode, params));
+  }
+  clauses.push(
+    `m.rating_key NOT IN (
+       SELECT rating_key FROM swipe_room_votes WHERE code = @code AND plex_user_id = @uid
+     )`
+  );
+  return getDb()
+    .prepare(
+      `SELECT m.* FROM media_items m
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY m.added_at DESC, m.rating_key ASC
+       LIMIT @limit`
+    )
+    .all(params) as MediaItem[];
+}
+
+/** Remaining un-swiped titles for this viewer in the room (for the deck count). */
+export function countRoomDeckRemaining(room: RoomRow, userId: string): number {
+  const params: Record<string, unknown> = { code: room.code, uid: userId };
+  const clauses: string[] = ['m.removed = 0'];
+  if (room.section_id) {
+    clauses.push('m.section_id = @sectionId');
+    params.sectionId = room.section_id;
+  }
+  if (room.watch_mode && ROOM_WATCH_MODES.includes(room.watch_mode)) {
+    clauses.push(feedWatchClause(room.watch_mode, params));
+  }
+  clauses.push(
+    `m.rating_key NOT IN (
+       SELECT rating_key FROM swipe_room_votes WHERE code = @code AND plex_user_id = @uid
+     )`
+  );
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) AS n FROM media_items m WHERE ${clauses.join(' AND ')}`)
+    .get(params) as { n: number };
+  return row.n;
+}

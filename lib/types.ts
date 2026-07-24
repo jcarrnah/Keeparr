@@ -152,6 +152,33 @@ export interface MediaCardData {
   sizeMismatch?: boolean;
 }
 
+/** FORK: one participant in a live swipe room, as the poll surfaces them. */
+export interface RoomMember {
+  plexUserId: string;
+  username: string | null;
+  /** True when last_seen is within the presence window (actively polling). */
+  active: boolean;
+  /** How many titles this member has swiped in the room. */
+  votes: number;
+  /** True for the current viewer (so the UI can label "you"). */
+  isMe?: boolean;
+}
+
+/** FORK: full state of a live swipe room, returned by create/join/poll. */
+export interface RoomState {
+  code: string;
+  status: 'open' | 'matched' | 'closed';
+  /** True when the current viewer created the room. */
+  isHost: boolean;
+  sectionId: string | null;
+  watchMode: FeedWatchMode | null;
+  members: RoomMember[];
+  /** Count of members currently within the presence window. */
+  activeCount: number;
+  /** The agreed title once status === 'matched' (else null). */
+  matched: MediaCardData | null;
+}
+
 export interface SessionUser {
   plexUserId: string;
   username: string | null;
