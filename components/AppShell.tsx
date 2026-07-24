@@ -56,6 +56,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [health, setHealth] = useState<HealthIssue[]>(shellCache.health);
   const [browseOpen, setBrowseOpen] = useState(pathname.startsWith('/library'));
   const [menuOpen, setMenuOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false); // mobile rail drawer
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -104,6 +105,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     document.addEventListener('mousedown', onClick);
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
+
+  // Close the mobile rail drawer whenever the route (or library filter) changes,
+  // so tapping a nav item dismisses it.
+  const routeKey = pathname + '?' + searchParams.toString();
+  useEffect(() => {
+    setNavOpen(false);
+  }, [routeKey]);
 
   // Global shortcuts: `?` toggles the cheat sheet, `/` focuses search,
   // Escape closes the overlay. Ignored while typing in a field.
@@ -179,8 +187,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <ToastProvider>
     <div className="h-screen overflow-hidden bg-app text-slate-200 flex">
-      {/* Left rail */}
-      <aside className="w-60 shrink-0 bg-rail border-r border-slate-800 flex flex-col">
+      {/* Mobile backdrop (tap to close the rail drawer) */}
+      {navOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 md:hidden"
+          onClick={() => setNavOpen(false)}
+          aria-hidden
+        />
+      )}
+      {/* Left rail — docked on desktop, slide-in drawer on mobile */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-60 shrink-0 transform bg-rail border-r border-slate-800 flex flex-col transition-transform duration-200 md:static md:z-auto md:translate-x-0 ${
+          navOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         <Link
           href="/"
           className="flex items-center gap-2 h-14 px-4 border-b border-slate-800 shrink-0"
@@ -266,7 +286,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Main column */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 shrink-0 bg-rail border-b border-slate-800 flex items-center gap-4 px-4">
+        <header className="h-14 shrink-0 bg-rail border-b border-slate-800 flex items-center gap-3 px-3 sm:gap-4 sm:px-4">
+          <button
+            onClick={() => setNavOpen(true)}
+            aria-label="Open menu"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-white md:hidden"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
           <div className="flex-1 min-w-0">
             <SearchBox />
           </div>

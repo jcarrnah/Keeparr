@@ -228,9 +228,9 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
   const activeDef = drag ? dragVerdict(drag.dx, drag.dy) : null;
 
   return (
-    <div className="h-full flex flex-col items-center px-6 py-4">
+    <div className="h-full flex flex-col items-center px-4 py-4 sm:px-6">
       <div className="w-full max-w-md">
-        <div className="flex items-baseline justify-between gap-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <h1 className="text-2xl font-bold">Swipe</h1>
           <span className="flex items-baseline gap-3">
             <Link href="/swipe/matches" className="text-xs text-brand underline hover:text-brand-light">
@@ -244,12 +244,12 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
           </span>
         </div>
         {watchAvailable && (
-          <div className="mt-2 flex flex-wrap items-center gap-1 rounded-lg bg-rail p-1">
+          <div className="mt-2 flex items-center gap-1 overflow-x-auto rounded-lg bg-rail p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {(Object.keys(WATCH_LABELS) as WatchSelection[]).map((m) => (
               <button
                 key={m}
                 onClick={() => chooseWatch(m)}
-                className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+                className={`shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-xs transition-colors ${
                   watchMode === m ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'
                 }`}
               >
@@ -374,15 +374,16 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
         )}
       </div>
 
-      {/* Action buttons (desktop + accessibility path) */}
-      <div className="mt-4 flex w-full max-w-md items-center justify-center gap-2 pb-2">
+      {/* Action buttons (touch + desktop + accessibility path). On mobile they
+          wrap 3-per-row so the long labels stay readable; one row on sm+. */}
+      <div className="mt-4 flex w-full max-w-md flex-wrap items-stretch justify-center gap-2 pb-2">
         {VERDICT_DEFS.map((v) => (
           <button
             key={v.verdict}
             onClick={() => commit(v)}
             disabled={!top || !!leaving}
             title={`${v.label}${v.dir ? ` (swipe ${v.dir} / ${v.dir} arrow)` : ' (S)'}`}
-            className={`flex-1 rounded-lg border bg-panel px-2 py-2 text-xs font-semibold transition-colors hover:bg-slate-800 disabled:opacity-40 ${v.color}`}
+            className={`grow basis-[calc(33.333%-0.5rem)] rounded-lg border bg-panel px-2 py-2 text-xs font-semibold leading-tight transition-colors hover:bg-slate-800 disabled:opacity-40 sm:basis-0 ${v.color}`}
           >
             {v.label}
           </button>
@@ -391,12 +392,13 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
           onClick={undo}
           disabled={undoStack.length === 0}
           title="Undo last swipe (U)"
-          className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:border-slate-500 hover:text-white disabled:opacity-40"
+          aria-label="Undo last swipe"
+          className="shrink-0 basis-auto rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:border-slate-500 hover:text-white disabled:opacity-40"
         >
           ↺
         </button>
       </div>
-      <p className="pb-2 text-center text-[11px] text-slate-600">
+      <p className="hidden pb-2 text-center text-[11px] text-slate-600 sm:block">
         → save for later · ↑ worth keeping · ← let it go · ↓ OK to delete · S skip · U undo
       </p>
     </div>
