@@ -122,6 +122,13 @@ components/          AppShell (rail + top bar + user menu), MediaCard (grid), Me
 The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expand
 → libraries] / Big Picture / Settings) + a top bar (search + user menu). `AppShell`
 (client) wraps every page; the Keep page renders inside it with no page scroll.
+**Responsive:** the rail is docked on `md:`+ but a slide-in drawer on mobile
+(hamburger in the top bar + tap-to-close backdrop, auto-closes on route change).
+The shell root is sized `[height:100dvh]` (with `h-screen` as fallback) so the
+no-scroll pages fit the *visible* mobile viewport, not behind the browser chrome;
+the full-height single-screen pages (Swipe/Room) add `env(safe-area-inset-bottom)`
+padding so their bottom action buttons clear the gesture bar. Keep both when
+touching that layout.
 
 ## Database schema (`lib/db.ts`)
 
