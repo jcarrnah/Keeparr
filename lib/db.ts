@@ -23,6 +23,12 @@ export function applySchema(database: Database.Database): void {
       guid_tmdb     TEXT,                       -- external ids (CSV when Plex lists several)
       guid_tvdb     TEXT,
       guid_imdb     TEXT,                       -- imdb id(s) ("tt…"); extra arr-match axis
+      dir_name      TEXT,                       -- on-disk folder name(s) (disk-orphan matching; shows: newline-joined)
+      file_name     TEXT,                       -- movie file basename (loose files)
+      dir_path      TEXT,                       -- full server-side folder path (Problems Location)
+      disk_size_bytes INTEGER,                  -- MEASURED folder size (diskScan; size-mismatch tiebreaker)
+      disk_checked_at INTEGER,                  -- when it was measured
+      file_count    INTEGER,                    -- movie: video files in the item (>1 = merged multi-part); shows NULL
       last_synced   INTEGER NOT NULL,
       removed       INTEGER NOT NULL DEFAULT 0, -- tombstone if gone from Plex
       -- FORK: OMDb ratings (refreshed by the 'ratings' job). Also present here,
@@ -156,6 +162,7 @@ export function applySchema(database: Database.Database): void {
       root_folder    TEXT,
       arr_size_bytes INTEGER,                   -- arr-reported sizeOnDisk (cross-check)
       tags           TEXT,                      -- JSON array of resolved tag labels
+      folder_name    TEXT,                      -- title's own *arr folder basename
       last_synced    INTEGER NOT NULL
     );
 
@@ -170,8 +177,55 @@ export function applySchema(database: Database.Database): void {
       title         TEXT NOT NULL,
       ext_kind      TEXT NOT NULL,              -- 'tvdb' | 'tmdb'
       ext_id        TEXT NOT NULL,
-      size_bytes    INTEGER NOT NULL DEFAULT 0, -- on-disk size in *arr (only "downloaded" rows are stored)
+      size_bytes    INTEGER NOT NULL DEFAULT 0, -- on-disk size in *arr (0 when not downloaded)
+      folder_name   TEXT,                       -- title's own *arr folder basename
+      path          TEXT,                       -- full folder path as the *arr sees it
+      downloaded    INTEGER NOT NULL DEFAULT 1, -- sizeOnDisk > 0 in the *arr (fileless rows feed identity matching only)
+      on_disk       INTEGER,                    -- reality check: NULL not verified, 0 folder missing, 1 found
+      disk_size_bytes INTEGER,                  -- measured size when found (walked, not claimed)
       last_synced   INTEGER NOT NULL
+    );
+
+    -- Disk-orphan scan results: top-level entries under the mapped library
+    -- paths that neither the media server nor Sonarr/Radarr account for.
+    -- Rebuilt per-section by the 'diskScan' job (sections it skips — safety
+    -- guard, unreadable root — keep their prior rows). mtime is the entry's
+    -- mtime at scan time and keys the size cache: an unchanged orphan isn't
+    -- re-walked. size_skipped marks circuit-breaker rows (most of a root
+    -- looked orphaned → the mapping is suspect → names recorded, sizing skipped).
+    CREATE TABLE IF NOT EXISTS disk_orphans (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      section_id   TEXT NOT NULL,
+      name         TEXT NOT NULL,
+      path         TEXT NOT NULL,               -- Keeparr-container absolute path
+      is_dir       INTEGER NOT NULL DEFAULT 1,
+      size_bytes   INTEGER NOT NULL DEFAULT 0,
+      size_skipped INTEGER NOT NULL DEFAULT 0,
+      mtime        INTEGER,
+      last_synced  INTEGER NOT NULL
+    );
+
+    -- Cross-instance *arr conflicts: a second instance claimed a rating_key the
+    -- first had already matched in the same 'arr' run (two instances managing
+    -- one title, or two arr entries resolving to one merged Plex item). Rows are
+    -- scoped to the LOSING claimant's instance_id for the per-instance preserve
+    -- (same semantics as arr_unmatched). A conflict is only observable in a run
+    -- where BOTH claimants were fetched — if the winner instance fails a later
+    -- run the loser simply wins it and the row vanishes until the next
+    -- full-success run (transient, self-healing). Surfaced on the admin
+    -- Problems page; replaced wholesale by the 'arr' job.
+    CREATE TABLE IF NOT EXISTS arr_conflicts (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      rating_key          TEXT NOT NULL,
+      title               TEXT NOT NULL,             -- losing record's title
+      first_source        TEXT NOT NULL,             -- winner: 'sonarr' | 'radarr'
+      first_instance_id   TEXT NOT NULL,
+      first_instance_name TEXT NOT NULL,
+      source              TEXT NOT NULL,             -- loser (this row's owner)
+      instance_id         TEXT NOT NULL,             -- scopes the per-instance replace
+      instance_name       TEXT NOT NULL,
+      size_on_disk        INTEGER NOT NULL DEFAULT 0,-- loser's sizeOnDisk
+      last_synced         INTEGER NOT NULL
     );
 
     -- Append-only history of scheduled-job runs (for the admin activity log).
@@ -341,6 +395,42 @@ function migrate(database: Database.Database): void {
     }
   }
 
+  // arr_unmatched gained folder_name (the title's own *arr folder basename, for
+  // the disk-orphan scan's known-name set). Cache table; NULL until the next run.
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'folder_name')) {
+    database.exec(`ALTER TABLE arr_unmatched ADD COLUMN folder_name TEXT`);
+  }
+  // arr_unmatched gained path (the FULL *arr-side folder path — the Problems
+  // page's Location cell). Cache table; NULL until the next arr run.
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'path')) {
+    database.exec(`ALTER TABLE arr_unmatched ADD COLUMN path TEXT`);
+  }
+  // arr_unmatched gained downloaded: fileless unmatched titles are now recorded
+  // too (they feed the identity-mismatch check). Old rows were all downloaded
+  // by construction (the sync used to skip fileless ones) → default 1.
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'downloaded')) {
+    database.exec(
+      `ALTER TABLE arr_unmatched ADD COLUMN downloaded INTEGER NOT NULL DEFAULT 1`
+    );
+  }
+  // arr_unmatched gained the disk reality check (verified by the arr + diskScan
+  // jobs): on_disk NULL = not verified yet, 0 = folder not found under any
+  // mapped root, 1 = found (disk_size_bytes = walked size).
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'on_disk')) {
+    database.exec(`ALTER TABLE arr_unmatched ADD COLUMN on_disk INTEGER`);
+  }
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'disk_size_bytes')) {
+    database.exec(`ALTER TABLE arr_unmatched ADD COLUMN disk_size_bytes INTEGER`);
+  }
+
+  // arr_items gained folder_name for the same reason (rebuilt by the arr job).
+  const arrItemCols = database
+    .prepare(`PRAGMA table_info(arr_items)`)
+    .all() as { name: string }[];
+  if (arrItemCols.length > 0 && !arrItemCols.some((c) => c.name === 'folder_name')) {
+    database.exec(`ALTER TABLE arr_items ADD COLUMN folder_name TEXT`);
+  }
+
   // media_items gained guid_imdb (an extra arr-match axis). Backfilled to NULL;
   // the next library scan populates it. Additive, no data touched.
   const mediaCols = database
@@ -372,6 +462,36 @@ function migrate(database: Database.Database): void {
         if (!String(e).includes('duplicate column name')) throw e;
       }
     }
+  }
+
+  // media_items gained dir_name/file_name (on-disk names for the disk-orphan
+  // scan). NULL until the next library scan recaptures them; the scan's safety
+  // guard skips sections whose items are mostly unnamed, so stale NULLs can't
+  // mass-flag a library as orphaned.
+  if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === 'dir_name')) {
+    database.exec(`ALTER TABLE media_items ADD COLUMN dir_name TEXT`);
+  }
+  if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === 'file_name')) {
+    database.exec(`ALTER TABLE media_items ADD COLUMN file_name TEXT`);
+  }
+  // media_items gained dir_path (the FULL server-side folder path — the
+  // Problems page's Location cells). NULL until the next library scan.
+  if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === 'dir_path')) {
+    database.exec(`ALTER TABLE media_items ADD COLUMN dir_path TEXT`);
+  }
+  // media_items gained the measured on-disk size (diskScan walks the folders of
+  // size-mismatched titles — the tiebreaker between the Plex and *arr claims).
+  if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === 'disk_size_bytes')) {
+    database.exec(`ALTER TABLE media_items ADD COLUMN disk_size_bytes INTEGER`);
+  }
+  if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === 'disk_checked_at')) {
+    database.exec(`ALTER TABLE media_items ADD COLUMN disk_checked_at INTEGER`);
+  }
+  // media_items gained file_count (movies: number of video files in the item —
+  // >1 means the server merged several files, e.g. a two-part movie, so its
+  // size legitimately exceeds the *arr's). NULL until the next library scan.
+  if (mediaCols.length > 0 && !mediaCols.some((c) => c.name === 'file_count')) {
+    database.exec(`ALTER TABLE media_items ADD COLUMN file_count INTEGER`);
   }
 
   // Migrate the legacy global keeps table (rating_key PK, kept_by) to per-user

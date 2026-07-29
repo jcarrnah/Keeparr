@@ -55,6 +55,9 @@ export const DEFAULT_JOB_SCHEDULES: Record<string, JobSchedule> = {
   purge: { type: 'daily', hour: 2, minute: 30 },
   // FORK: OMDb ratings — after the morning refresh cycle, off the busy window.
   ratings: { type: 'daily', hour: 9, minute: 0 },
+  // Disk-orphan scan: walks orphan folders on the media mount, so weekly (after
+  // Sunday's overnight cycle has refreshed the known-name sets it matches against).
+  diskScan: { type: 'weekly', weekday: 0, hour: 9, minute: 0 },
 };
 
 /** How many backup files to keep (oldest pruned first). Overridable in Settings. */

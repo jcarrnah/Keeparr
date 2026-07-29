@@ -70,6 +70,21 @@ lib/
   seerr.ts           requests client
   arr.ts             Sonarr/Radarr v3 client (shared) + pure normalize fns (fetchSonarr/fetchRadarr/testArr)
   quality.ts         pure resolutionBucket()/RES_ORDER (shared by Browse + Big Picture quality grouping)
+  paths.ts           pure separator-agnostic path-string helpers (lastSegment/
+                     parentSegment/normalizeName) — foreign server-side paths may be
+                     Windows-style, so never node:path
+  diskscan.ts        the diskScan job — the REALITY-CHECK pass: (1) per mapped
+                     library root, readdir top-level entries and flag names no
+                     media item or *arr title claims (orphans get a recursive
+                     size walk — known entries are never descended into);
+                     (2) verifyArrUnmatchedOnDisk(): does each unmatched *arr
+                     title's folder actually exist, and how big is it really
+                     (arr_unmatched.on_disk/disk_size_bytes — also called after
+                     every syncArr); (3) measure the real on-disk size of every
+                     size-mismatched title (media_items.disk_size_bytes — the
+                     Plex-vs-arr tiebreaker). Safety guard (skip mostly-unnamed
+                     sections), wrong-mapping circuit breaker (record names,
+                     skip sizing), mtime size cache, junk skip-list (JUNK_NAMES)
   version.ts         update check vs GitHub Releases (compareSemver + getVersionInfo,
                      in-memory ~6h cache, never throws — /api/about + health check)
   health.ts          healthIssues(): standing admin warnings derived from job_state/
@@ -88,6 +103,11 @@ lib/
                      (+ syncSeerrRequestsForUser: warm one user's request cache on first login).
                      syncLibrary aborts on zero sections + skips tombstoning
                      empty-but-200 sections; syncArr keeps a failed instance's cache
+                     + records cross-instance claim collisions into arr_conflicts
+                     (first instance to claim a rating_key wins arr_items; later
+                     claimants are recorded, not silently dropped) + reality-checks
+                     the fresh unmatched rows on disk (verifyArrUnmatchedOnDisk,
+                     non-fatal)
   jobs.ts            job registry + runJob/runWithState (single-flight) + isDue/dueJobs
   scheduler.ts       per-job scheduler (interval or daily HH:MM); fires due jobs each
                      minute; resets stale 'running' job rows at boot (resetInterruptedJobs)
@@ -102,6 +122,8 @@ app/
                      selection via rail, + Sonarr/Radarr quality/tag/monitored filters)
   search/            AppShell → SearchResults
   stats/             AppShell → StatsView (full-width dashboard)
+  problems/          AppShell → ProblemsView (admin-only problem-file dashboard:
+                     category pills + per-category tables; non-admins → /)
   api-docs/          interactive API reference (Scalar over /api/openapi.json;
                      session-gated server component + client dynamic import)
   settings/<tab>/    admin Settings sub-tabs: general, users, connections, libraries,
@@ -110,7 +132,8 @@ app/
 components/          AppShell (rail + top bar + user menu), MediaCard (grid), MediaRow
                      (Browse List view), MultiSelect (grouped checkbox-dropdown filter),
                      useKeepState (shared keep/skip hook), KeepView,
-                     LibraryBrowser, StatsView, UsersManager, SearchBox, SearchResults;
+                     LibraryBrowser, StatsView, ProblemsView (admin Problems page),
+                     UsersManager, SearchBox, SearchResults;
                      breakdown.tsx (shared keep/reclaim visual language: StackedBar,
                        Donut, LegendRow + the TONE palette — used by KeepView's totals
                        column and the StatsView dashboard);
@@ -120,8 +143,9 @@ components/          AppShell (rail + top bar + user menu), MediaCard (grid), Me
 ```
 
 The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expand
-→ libraries] / Big Picture / Settings) + a top bar (search + user menu). `AppShell`
-(client) wraps every page; the Keep page renders inside it with no page scroll.
+→ libraries] / **Swipe** / Big Picture / Problems[admin] / Settings[admin]) + a
+top bar (search + user menu). `AppShell` (client) wraps every page; the Keep page
+renders inside it with no page scroll.
 **Responsive:** the rail is docked on `md:`+ but a slide-in drawer on mobile
 (hamburger in the top bar + tap-to-close backdrop, auto-closes on route change).
 The shell root is sized `[height:100dvh]` (with `h-screen` as fallback) so the
@@ -133,7 +157,30 @@ touching that layout.
 ## Database schema (`lib/db.ts`)
 
 - `media_items` — one row per **series or movie** (no episodes). `size_bytes` is
-  the summed total. Tombstoned with `removed=1` when gone from Plex. The full
+  the summed total. `dir_name`/`file_name` are the item's on-disk names as the
+  media server reports them (movie: Part.file / item Path; show: Location /
+  series Path) — the disk-orphan scan's known-name set; `dir_path` is the FULL
+  server-side folder path (the Problems page's clickable Location cells). All
+  NULL until a library scan captures them. **Some PMS versions omit `Location`
+  from show listings entirely** — shows then get dir_path/dir_name DERIVED from
+  episode file paths (`deriveShowDirPaths` in lib/paths.ts: first segment under a
+  known section root, else parent-of-file hopping season folders) via
+  `backend.showSize()`, which returns `{sizeBytes, dirPath, dirNames}`: new
+  shows fill at scan time, existing shows are backfilled by the `sizes` job.
+  A show's `dir_name` is **newline-joined** when its episodes span several root
+  folders (the server merges multi-folder shows; every folder must count as
+  known to the disk scan — split on '\n' when consuming).
+  `disk_size_bytes`/`disk_checked_at` = the MEASURED size (diskScan walks
+  size-mismatched titles' folders — the tiebreaker column). `file_count` =
+  movies only: distinct video files merged into the item (>1 = a multi-part/
+  multi-version item, so its Plex-vs-arr size mismatch is BY DESIGN — the
+  Problems page badges those "likely fine" instead of "rescan"); NULL for
+  shows and until a library scan captures it. ALL disk-name
+  writes are COALESCE-style (upsertMediaBatch + updateItemSize): an incoming
+  NULL keeps the stored value — scans that don't recompute a show (known size →
+  no showSize call) must not wipe the sizes-job backfill (recentlyAdded runs
+  every 5 min and did exactly that). Tombstoned with `removed=1` when
+  gone from Plex. The full
   Library sweep aborts if the backend reports zero sections, and skips the
   removal check for scanned sections that returned zero items — an empty-but-200
   hiccup (e.g. PMS mid-restart) must not tombstone a whole library.
@@ -171,20 +218,52 @@ touching that layout.
   "Requested by me" works without waiting for the daily job.
 - `arr_items` — one row per matched media item with its Sonarr/Radarr metadata
   (`source`, `instance_id/name`, `arr_id`, `monitored`, `status`, `quality` +
-  `quality_kind` file|profile, `root_folder`, `arr_size_bytes`, `tags` JSON). Keyed
+  `quality_kind` file|profile, `root_folder`, `arr_size_bytes`, `tags` JSON,
+  `folder_name` — the title's own *arr folder basename, part of the disk-orphan
+  known-name set). Keyed
   by `rating_key`; replaced per-instance by the `arr` job — instances that failed
   a run keep their cached rows; instances removed from settings drop out next
   run. LEFT-JOINed by `queryLibrary`
   to power Browse's List view + quality/tag/monitored/status/size-mismatch filters.
-- `arr_unmatched` — Sonarr/Radarr titles that matched no Plex item. Only
-  **downloaded** ones (`sizeOnDisk > 0`, stored as `size_bytes`) are recorded — they're
-  media on disk Plex can't see (actionable); wanted-but-not-downloaded titles are skipped
-  (just missing media). Replaced per-instance by the `arr` job (like
-  `arr_items`); surfaced in Settings → Match health
-  largest-first with sizes + a total. (`mediaMissingExternalIds()` reports the inverse:
+- `arr_unmatched` — Sonarr/Radarr titles that matched no Plex item. ALL of them
+  are recorded with a `downloaded` flag (`sizeOnDisk > 0`): downloaded ones are
+  media on disk Plex can't see (the "In *arr, not in <server>" category +
+  Match health count — `getArrUnmatched()` defaults to downloaded-only);
+  fileless ones only feed the identityMismatch folder-name join.
+  `on_disk`/`disk_size_bytes` are the disk reality check (NULL = not verified;
+  written by verifyArrUnmatchedOnDisk after each arr sync + diskScan) — the
+  "In *arr, not in <server>" table's On-disk column ("not found"/"empty" =
+  stale *arr record). Replaced
+  per-instance by the `arr` job (like
+  `arr_items`); full list on the Problems page ("In *arr, not in <server>",
+  largest-first with sizes); Settings → Match health shows only summary counts +
+  a link there. (`mediaMissingExternalIds()` reports the inverse:
   Plex items with a null `guid_tvdb`/`guid_tmdb` that can never match.) Matched via
   `media_items.guid_tvdb`/`guid_tmdb` (indexed). `size_bytes` + `instance_id`
-  (scopes the per-instance replace) added via guarded `ALTER`s.
+  (scopes the per-instance replace) + `folder_name` (disk-orphan known-name set —
+  an *arr title invisible to the media server still occupies disk) + `path`
+  (the full *arr-side folder path, shown as the category's Location cell) added
+  via guarded `ALTER`s.
+- `arr_conflicts` — *arr claim collisions: during the `arr` job the
+  first record to claim a rating_key wins `arr_items`; each later claimant is
+  recorded here (winner `first_*` cols + loser `source/instance_*` cols + the
+  loser's `size_on_disk`). TWO flavors, distinguished by `getArrConflicts()`'s
+  computed `sameInstance` flag: cross-instance (two instances manage one title
+  — remove it from one) and SAME-instance (two titles of one instance resolve
+  to one media item — usually a merged multi-part entry in Plex carrying both
+  ids, e.g. a two-part film; the fix is splitting the item apart in Plex, and
+  the UI badges it that way). Replaced per-instance like `arr_unmatched` (rows are
+  scoped to the LOSER's `instance_id`; failed instances keep their rows). Only
+  observable in a run where both claimants were fetched — transient, self-healing.
+  Surfaced on the admin Problems page.
+- `disk_orphans` — the `diskScan` job's results: top-level entries under mapped
+  library paths that neither the media server nor Sonarr/Radarr account for
+  (matched by NAME per root — absolute paths differ across containers). Rebuilt
+  per-section per run; sections the scan skips (safety guard: mostly-unnamed
+  items; unreadable root) keep their prior rows. `mtime` keys the size cache
+  (unchanged orphans aren't re-walked); `size_skipped=1` marks circuit-breaker
+  rows (most of a root looked orphaned → suspect mapping → sizing skipped).
+  Surfaced as the Problems page "On disk, in neither" category.
 - `scheduled_deletions` — **FORK-ONLY** (crosses upstream's "never deletes"
   line): one row per tagged item (`rating_key` PK), `tagged_by`/`tagged_at`,
   `delete_after` (epoch), `status` (`pending`|`held`|`deleted`|`failed`|
@@ -270,7 +349,7 @@ touching that layout.
   `components/MatchesView.tsx`.
 - `settings` — key/value; secret values encrypted.
 - `job_state` — one row per scheduled job (`recentlyAdded`/`library`/`sizes`/`watch`/
-  `requests`/`arr`): last run/status/message/duration/result. Rows stuck at
+  `requests`/`arr`/`diskScan`/`backup`): last run/status/message/duration/result. Rows stuck at
   `running` (process killed mid-job) are flipped to `error` at boot by
   `startScheduler()` → `resetInterruptedJobs()` — the persisted flag would
   otherwise gate that job out of the scheduler AND manual runs forever.
@@ -448,6 +527,57 @@ when it has no tvdb/tmdb **and** no imdb.
   `GET /api/admin/arr-health` (`{matched, unmatched[], missing, arrJob}` — Match
   health panel; `unmatched[]` = titles DOWNLOADED in *arr but not in Plex, with
   `sizeBytes`, largest-first),
+  `GET /api/admin/problems/summary` (`{arrConfigured, serverType, categories[]}` —
+  `serverType` lets the UI name the connected media server in labels; the Problems
+  page pill strip: per-category `{type, available, reason?, titles, bytes}` in
+  display order; arr-gated categories are `available:false` zeroed without
+  Sonarr/Radarr, `notInArr` also waits for `arrMatchedCount() > 0`, and
+  `diskOrphans` needs storage mappings + a completed diskScan run — until then
+  `available:false` with `reason: storage_not_configured|not_scanned`, which the
+  UI renders as a dimmed pill with a fix-it tooltip) +
+  `GET /api/admin/problems?type=&offset=&includeMissingIds=&sort=&dir=&sections=&kind=`
+  (paged list for one category — `notInArr` hides titles with no external id by
+  DEFAULT (they can never match *arr and have their own missingIds category; the
+  pill count matches via `unmatchedMediaSummary(true)`), `includeMissingIds=1`
+  opts back in; `sort`/`dir` per-category allow-lists (unknown → default order;
+  SQL categories via `problemOrder`, JS-sliced via route comparators),
+  `sections` (comma library ids) + `kind` (movie|show) filter where rows are
+  media items (duplicates keep groups with ANY matching member; missingFromPlex
+  filters kind via extKind; diskOrphans sections only; arrConflicts none);
+  categories:
+  `sizeMismatch|notInArr|missingFromPlex|identityMismatch|duplicates|arrConflicts|`
+  `zeroSize|removedButKept|missingIds|diskOrphans`; NO default view:
+  missing/unknown type
+  → 400 `unknown_type`, arr-gated type without arr → 400 `arr_not_configured`,
+  `diskOrphans` without mappings → 400 `storage_not_configured`; returns
+  `{type, items, hasMore, nextOffset}`, item shape varies per category —
+  `duplicates` items are groups, `identityMismatch` items pair `{media, arr}`
+  claims on one folder, `diskOrphans` items are filesystem entries
+  `{name, sectionId, path, isDir, sizeBytes, sizeSkipped, likely}` (`likely` =
+  the library title the orphan looks like — usually a leftover copy);
+  diagnosis fields: `sizeMismatch` rows carry `diskSizeBytes/diskCheckedAt`
+  (measured tiebreaker) + `fileCount` (movies; >1 = merged multi-part item, the
+  mismatch is by design → badge "likely fine"), `missingFromPlex` rows carry
+  `onDisk/diskSizeBytes`
+  (reality check) + `claimedByTitle`, `notInArr` rows carry `identityArrTitle`
+  (both = "this row is half of an identity-mismatch pair — fix the match
+  there"), `identityMismatch` rows carry the media side's own
+  `guidTmdb/guidTvdb/guidImdb` (rendered beside the *arr's id so the
+  disagreement is visible), `arrConflicts` rows carry `sameInstance` (+
+  `instanceId` on winner/loser; true = two titles of ONE instance resolve to
+  one item — merged multi-part entry → badge "split apart in Plex"),
+  `zeroSize` rows carry `arrBytes/instanceName` (*arr context: the
+  server sees no files but the *arr has N GB). Every table's last column is a
+  **"What to do" ActionBadge** (client-derived from these fields; amber = fix
+  needed, slate = informational/judgment). Zero-size items are EXCLUDED from
+  sizeMismatch (SIZE_MISMATCH_EXPR requires size_bytes > 0 — affects the
+  Browse filter identically, by design); they carry their diagnosis in
+  zeroSize instead. Categories are ordered/grouped into three families
+  (server↔*arr / within-server / on-disk; PILL_GROUPS in ProblemsView renders
+  labeled clusters); media-item rows
+  carry `dirPath` (full server-side folder path; `path` on missingFromPlex) →
+  the UI's Location cells: tail display, full path on hover, click-to-copy,
+  and duplicates dim the group's common prefix so the differing folder pops),
   `GET/PUT /api/admin/users` (list + grant/revoke admin + enable/disable + the
   `openSignin` toggle; Owner can't be demoted or disabled),
   `POST /api/admin/users/import` (import the Plex shared-user list),
@@ -660,16 +790,19 @@ A fuller source-verified reference is in the planning doc
   SearchResults / StatsView / KeepView / SearchBox — new fetchers follow suit.
 - Refresh work is split into scheduled jobs (`lib/jobs.ts`): `recentlyAdded` (cheap,
   newest items only), `library` (full inventory + movie sizes + new-show sizing),
-  `sizes` (expensive per-series `getAllLeaves` recompute), `watch` (Tautulli),
-  `requests` (Seerr cache), `arr` (Sonarr/Radarr quality+tags cache), `backup`
+  `sizes` (expensive per-series `getAllLeaves` recompute; also backfills show
+  `dir_path` derived from episode paths), `watch` (Tautulli),
+  `requests` (Seerr cache), `arr` (Sonarr/Radarr quality+tags cache), `diskScan`
+  (disk-orphan scan over the mapped library paths, `lib/diskscan.ts` — gated in
+  `lib/health.ts jobRelevant` on storage mappings existing), `backup`
   (db snapshot + retention prune, `lib/backup.ts`). Each is
   single-flight per `job_state`, fire-and-forget from `/api/admin/jobs`, auto-run by
   `lib/scheduler.ts` on its `job_schedules` entry (`isDue`: every N minutes/hours, daily
   at a local HH:MM, or weekly on a local weekday at HH:MM). Defaults in `config.ts` (`DEFAULT_JOB_SCHEDULES`): recentlyAdded
   5 min; library 03:00; watch 04:00; requests 05:00; sizes 06:00; arr 07:00;
-  backup 08:00; **FORK:** rules 02:00 then purge 02:30 (before the library
-  scan so it reflects deletions; both inert unless `deletion_enabled`; bodies
-  in `lib/rules.ts` / `lib/purge.ts`).
+  backup 08:00; diskScan weekly Sunday 09:00; **FORK:** rules 02:00 then purge
+  02:30 (before the library scan so it reflects deletions; both inert unless
+  `deletion_enabled`; bodies in `lib/rules.ts` / `lib/purge.ts`).
 - **Releases + images (continuous delivery)**: every push to `main` ships one
   release via `.github/workflows/release.yml`: test (tsc + vitest + `next
   build`) → **version** → build (native amd64 + arm64, no QEMU) → publish

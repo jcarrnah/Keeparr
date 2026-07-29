@@ -77,6 +77,13 @@ export interface MediaItem {
   added_at: number | null;
   guid_tmdb: string | null;
   guid_tvdb: string | null;
+  /** On-disk names/path captured from the media server (NULL until a library
+   *  scan records them). Optional: older row casts predate the columns. */
+  dir_name?: string | null;
+  file_name?: string | null;
+  dir_path?: string | null;
+  /** Movie: distinct video files merged into the item (>1 = multi-part). */
+  file_count?: number | null;
   last_synced: number;
   removed: number;
   // --- FORK: OMDb ratings (guarded-ALTER columns; absent pre-migration) ---
@@ -242,6 +249,40 @@ export interface JobState {
   lastMessage: string | null;
   lastDurationMs: number | null;
   lastResult: number | null;
+}
+
+// --- Problems page (admin) ---
+
+/** The problem categories the admin Problems page can show. */
+export type ProblemType =
+  | 'sizeMismatch' // Plex vs *arr size diverges >10% AND >1 GB
+  | 'notInArr' // in the media server, matched by no Sonarr/Radarr instance
+  | 'missingFromPlex' // downloaded in *arr but not in the media server (arr_unmatched)
+  | 'identityMismatch' // same folder claimed under two different external ids (server vs *arr)
+  | 'duplicates' // two+ media items sharing an external id
+  | 'arrConflicts' // two *arr instances claiming the same media item
+  | 'zeroSize' // media server reports the title but no file bytes
+  | 'removedButKept' // gone from the media server while someone still keeps it
+  | 'missingIds' // no tvdb/tmdb/imdb id — can never match *arr
+  | 'diskOrphans'; // reserved stub (disk-scan job not built yet) — never queryable
+
+/** One pill on the Problems page.
+ *  `bytes` semantics vary per category: sizeMismatch = summed |Plex−arr| delta;
+ *  missingFromPlex/arrConflicts = summed *arr size on disk; duplicates = summed
+ *  member bytes (and `titles` = GROUP count, not item count); zeroSize = always 0;
+ *  removedButKept = summed last-known sizes; notInArr/missingIds = summed Plex sizes. */
+export interface ProblemCategorySummary {
+  type: ProblemType;
+  /** False = category can't run (arr not configured / storage unmapped / never scanned). */
+  available: boolean;
+  /** Reserved for future not-yet-built categories — the UI shows a dimmed
+   *  "Planned" pill. (No category sets it today; kept for API stability.) */
+  planned?: boolean;
+  /** Why an otherwise-buildable category is unavailable — the UI shows a dimmed
+   *  pill with a fix-it tooltip instead of hiding it. */
+  reason?: 'storage_not_configured' | 'not_scanned';
+  titles: number;
+  bytes: number;
 }
 
 /** A Plex library as the UI sees it. */

@@ -8,7 +8,8 @@ import {
   sumPartSizes,
   type PlexMetadata,
 } from '../plex';
-import { getPlexBaseUrl, getServerToken } from '../settings';
+import { getPlexBaseUrl, getPlexSections, getServerToken } from '../settings';
+import { deriveShowDirPaths, lastSegment, parentPath, parentSegment } from '../paths';
 import type { LibraryKind } from '../types';
 import type { BackendItem, BackendSection, MediaBackend } from './types';
 
@@ -19,8 +20,36 @@ function creds(): { baseUrl: string; token: string } {
   return { baseUrl, token };
 }
 
-function mapItem(m: PlexMetadata, sizeBytes: number): BackendItem {
+/** Exported for tests. Movies derive their on-disk names from Part.file (Media
+ *  is inline in section listings); shows from their Location (series folder). */
+export function mapItem(m: PlexMetadata, kind: LibraryKind, sizeBytes: number): BackendItem {
   const { tmdb, tvdb, imdb } = extractGuids(m);
+  let dirName: string | null = null;
+  let fileName: string | null = null;
+  let dirPath: string | null = null;
+  let fileCount: number | null = null;
+  if (kind === 'movie') {
+    const file = m.Media?.[0]?.Part?.[0]?.file ?? null;
+    dirName = parentSegment(file);
+    fileName = lastSegment(file);
+    dirPath = parentPath(file);
+    // Distinct video files merged into this item (multi-part movies, extra
+    // versions). Counted like sumPartSizes counts bytes: every Part, deduped
+    // by file path.
+    const files = new Set<string>();
+    let parts = 0;
+    for (const media of m.Media ?? []) {
+      for (const part of media.Part ?? []) {
+        parts += 1;
+        if (part.file) files.add(part.file);
+      }
+    }
+    fileCount = files.size > 0 ? files.size : parts > 0 ? parts : null;
+  } else {
+    const loc = m.Location?.[0]?.path ?? null;
+    dirName = lastSegment(loc);
+    dirPath = loc;
+  }
   return {
     ratingKey: String(m.ratingKey),
     title: m.title,
@@ -34,6 +63,10 @@ function mapItem(m: PlexMetadata, sizeBytes: number): BackendItem {
     overview: m.summary ?? null,
     genres: (m.Genre ?? []).map((g) => g.tag).filter((t): t is string => !!t),
     runtimeMinutes: m.duration ? Math.round(m.duration / 60000) : null,
+    dirName,
+    fileName,
+    dirPath,
+    fileCount,
   };
 }
 
@@ -54,16 +87,30 @@ export const plexBackend: MediaBackend = {
   async listSectionItems(sectionId, kind) {
     const { baseUrl, token } = creds();
     const items = await getSectionItems(baseUrl, token, sectionId, kind === 'movie' ? 1 : 2);
-    return items.map((m) => mapItem(m, kind === 'movie' ? sumPartSizes(m) : 0));
+    return items.map((m) => mapItem(m, kind, kind === 'movie' ? sumPartSizes(m) : 0));
   },
   async recentItems(sectionId, kind, limit) {
     const { baseUrl, token } = creds();
     const items = await getRecentlyAdded(baseUrl, token, sectionId, kind === 'movie' ? 1 : 2, limit);
-    return items.map((m) => mapItem(m, kind === 'movie' ? sumPartSizes(m) : 0));
+    return items.map((m) => mapItem(m, kind, kind === 'movie' ? sumPartSizes(m) : 0));
   },
   async showSize(ratingKey) {
     const { baseUrl, token } = creds();
-    return sumLeafSizes(await getAllLeaves(baseUrl, token, ratingKey));
+    const leaves = await getAllLeaves(baseUrl, token, ratingKey);
+    // Derive the show folder from episode paths — some PMS versions omit the
+    // show's own Location from section listings, so this is the reliable source.
+    const files: string[] = [];
+    for (const leaf of leaves) {
+      const file = leaf.Media?.[0]?.Part?.[0]?.file;
+      if (file) files.push(file);
+    }
+    const roots = getPlexSections().flatMap((s) => s.paths ?? []);
+    const dirs = deriveShowDirPaths(files, roots);
+    return {
+      sizeBytes: sumLeafSizes(leaves),
+      dirPath: dirs[0] ?? null,
+      dirNames: dirs.map((d) => lastSegment(d)).filter((n): n is string => !!n),
+    };
   },
   // Plex watch history comes from Tautulli (separate connector), not Plex itself.
   async getWatchData() {
