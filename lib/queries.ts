@@ -1,5 +1,6 @@
 import { getDb } from './db';
 import { FEED_MOVIE_RESERVE_MIN, FEED_MOVIE_RESERVE_RATIO } from './config';
+import { lastSegment, normalizeName, titleKey } from './paths';
 import type {
   AdminUserRow,
   FeedWatchMode,
@@ -221,6 +222,16 @@ export interface UpsertMediaInput {
   overview?: string | null;
   genres?: string[];
   runtimeMinutes?: number | null;
+  /** On-disk folder name (server-side basename) — the disk-orphan scan's
+   *  known-name key. Optional for back-compat. */
+  dirName?: string | null;
+  /** Movie file basename (covers loose files in the library root). */
+  fileName?: string | null;
+  /** FULL server-side path of the item's folder (Problems page Location cells). */
+  dirPath?: string | null;
+  /** Movie: distinct video files merged into the item (>1 = multi-part).
+   *  Null/omitted for shows — COALESCE keeps any stored value. */
+  fileCount?: number | null;
 }
 
 const upsertMediaStmt = () =>
@@ -228,11 +239,13 @@ const upsertMediaStmt = () =>
     `INSERT INTO media_items
        (rating_key, section_id, library_kind, title, year, thumb, size_bytes,
         added_at, guid_tmdb, guid_tvdb, guid_imdb, overview, genres,
-        runtime_minutes, last_synced, removed)
+        runtime_minutes, dir_name, file_name, dir_path, file_count,
+        last_synced, removed)
      VALUES
        (@ratingKey, @sectionId, @libraryKind, @title, @year, @thumb, @sizeBytes,
         @addedAt, @guidTmdb, @guidTvdb, @guidImdb, @overview, @genres,
-        @runtimeMinutes, @ts, 0)
+        @runtimeMinutes, @dirName, @fileName, @dirPath, @fileCount,
+        @ts, 0)
      ON CONFLICT(rating_key) DO UPDATE SET
        section_id   = excluded.section_id,
        library_kind = excluded.library_kind,
@@ -247,6 +260,10 @@ const upsertMediaStmt = () =>
        overview        = excluded.overview,
        genres          = excluded.genres,
        runtime_minutes = excluded.runtime_minutes,
+       dir_name     = COALESCE(excluded.dir_name, dir_name),
+       file_name    = COALESCE(excluded.file_name, file_name),
+       dir_path     = COALESCE(excluded.dir_path, dir_path),
+       file_count   = COALESCE(excluded.file_count, file_count),
        last_synced  = excluded.last_synced,
        removed      = 0`
   );
@@ -257,6 +274,12 @@ const upsertMediaStmt = () =>
  * Pass a single `syncedAt` for the whole sync so every touched item shares one
  * last_synced value; then call tombstoneStale(syncedAt) afterwards to remove
  * anything not re-touched. Defaults to now() for ad-hoc writes.
+ *
+ * On-disk name/path columns update COALESCE-style: a NULL in the incoming row
+ * keeps the stored value. Scans that don't recompute a show (known size →
+ * showSize skipped, so no episode-derived path) must not wipe the backfill the
+ * sizes job wrote — recentlyAdded runs every 5 minutes and was doing exactly
+ * that on servers that omit Location from listings.
  */
 export function upsertMediaBatch(
   items: UpsertMediaInput[],
@@ -273,6 +296,10 @@ export function upsertMediaBatch(
         // Genres bind as a JSON string (SQLite can't bind arrays).
         genres: r.genres && r.genres.length ? JSON.stringify(r.genres) : null,
         runtimeMinutes: r.runtimeMinutes ?? null,
+        dirName: r.dirName ?? null,
+        fileName: r.fileName ?? null,
+        dirPath: r.dirPath ?? null,
+        fileCount: r.fileCount ?? null,
         ts: syncedAt,
       });
     }
@@ -896,6 +923,17 @@ export interface LibraryRow extends MediaWithKeep {
   scheduled_delete_status: string | null; // 'pending' | 'held'
 }
 
+/** Arr-matched titles whose Plex vs arr size differ by >10% AND >1 GB (the
+ *  "size mismatch" definition — shared by the Browse filter and the Problems
+ *  page so the two can't drift). Zero-size items are EXCLUDED: 0 bytes isn't a
+ *  mismatch, it's "the server sees no files" — the Zero size category's
+ *  diagnosis (which shows the *arr size as context). Expects media_items
+ *  aliased `m`, arr_items `a`. */
+const SIZE_MISMATCH_EXPR = `a.rating_key IS NOT NULL AND a.arr_size_bytes IS NOT NULL
+       AND m.size_bytes > 0
+       AND ABS(m.size_bytes - a.arr_size_bytes) > 1073741824
+       AND ABS(m.size_bytes - a.arr_size_bytes) > 0.1 * m.size_bytes`;
+
 export function queryLibrary(q: LibraryQuery): LibraryRow[] {
   const where: string[] = ['m.removed = 0'];
   const params: Record<string, unknown> = {
@@ -989,14 +1027,7 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
   if (q.statuses && q.statuses.length) inClause('a.status', q.statuses, 'st');
   if (q.matchFilter === 'matched') where.push('a.rating_key IS NOT NULL');
   else if (q.matchFilter === 'unmatched') where.push('a.rating_key IS NULL');
-  if (q.sizeMismatch) {
-    // Flag arr-matched titles whose Plex vs arr size differ by >10% AND >1 GB.
-    where.push(
-      `a.rating_key IS NOT NULL AND a.arr_size_bytes IS NOT NULL
-       AND ABS(m.size_bytes - a.arr_size_bytes) > 1073741824
-       AND ABS(m.size_bytes - a.arr_size_bytes) > 0.1 * m.size_bytes`
-    );
-  }
+  if (q.sizeMismatch) where.push(SIZE_MISMATCH_EXPR);
   if (q.tags && q.tags.length) {
     const named = q.tags.map((_, i) => `@tg${i}`);
     q.tags.forEach((t, i) => (params[`tg${i}`] = t));
@@ -1788,6 +1819,9 @@ export interface ArrItemInput {
   rootFolder: string | null;
   arrSizeBytes: number;
   tags: string[];
+  /** Basename of the title's own *arr folder (disk-orphan known-name set).
+   *  Optional for back-compat. */
+  folderName?: string | null;
 }
 
 /** Replace the arr_items cache atomically (small dataset; avoids stale).
@@ -1801,16 +1835,17 @@ export function replaceArrItems(
   const ins = db.prepare(
     `INSERT INTO arr_items
        (rating_key, source, instance_id, instance_name, arr_id, monitored, status,
-        quality, quality_kind, root_folder, arr_size_bytes, tags, last_synced)
+        quality, quality_kind, root_folder, arr_size_bytes, tags, folder_name, last_synced)
      VALUES (@rating_key, @source, @instance_id, @instance_name, @arr_id, @monitored,
-        @status, @quality, @quality_kind, @root_folder, @arr_size_bytes, @tags, @ts)
+        @status, @quality, @quality_kind, @root_folder, @arr_size_bytes, @tags,
+        @folder_name, @ts)
      ON CONFLICT(rating_key) DO UPDATE SET
        source=excluded.source, instance_id=excluded.instance_id,
        instance_name=excluded.instance_name, arr_id=excluded.arr_id,
        monitored=excluded.monitored, status=excluded.status, quality=excluded.quality,
        quality_kind=excluded.quality_kind, root_folder=excluded.root_folder,
        arr_size_bytes=excluded.arr_size_bytes, tags=excluded.tags,
-       last_synced=excluded.last_synced`
+       folder_name=excluded.folder_name, last_synced=excluded.last_synced`
   );
   const del = preserveInstanceIds.length
     ? db.prepare(
@@ -1836,6 +1871,7 @@ export function replaceArrItems(
         root_folder: r.rootFolder,
         arr_size_bytes: r.arrSizeBytes,
         tags: JSON.stringify(r.tags ?? []),
+        folder_name: r.folderName ?? null,
         ts,
       });
     }
@@ -1929,11 +1965,26 @@ export interface ArrUnmatchedInput {
   title: string;
   extKind: 'tvdb' | 'tmdb';
   extId: string;
-  /** On-disk size in *arr. Only "downloaded" titles (size > 0) are recorded. */
+  /** On-disk size in *arr (0 when not downloaded). */
   sizeBytes: number;
+  /** sizeOnDisk > 0 in the *arr. Fileless (wanted-but-not-downloaded) titles
+   *  are recorded too — they feed the identity-mismatch check — but the
+   *  "downloaded, not in server" surfaces only count downloaded ones.
+   *  Optional for back-compat (defaults to true). */
+  downloaded?: boolean;
+  /** Basename of the title's own *arr folder (disk-orphan known-name set).
+   *  Optional for back-compat. */
+  folderName?: string | null;
+  /** FULL folder path as the *arr sees it (Problems page Location cell). */
+  path?: string | null;
 }
 export interface ArrUnmatchedRow extends ArrUnmatchedInput {
   lastSynced: number;
+  /** Disk reality check (arr + diskScan jobs): null = not verified yet,
+   *  false = folder not found under any mapped root, true = found. */
+  onDisk: boolean | null;
+  /** Measured (walked) size when found — not the *arr's claim. */
+  diskSizeBytes: number | null;
 }
 
 /** Replace the unmatched-arr list atomically (rebuilt by the 'arr' job).
@@ -1944,8 +1995,8 @@ export function replaceArrUnmatched(
 ): number {
   const db = getDb();
   const ins = db.prepare(
-    `INSERT INTO arr_unmatched (source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, last_synced)
-     VALUES (@source, @instanceId, @instanceName, @title, @extKind, @extId, @sizeBytes, @ts)`
+    `INSERT INTO arr_unmatched (source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, folder_name, path, downloaded, last_synced)
+     VALUES (@source, @instanceId, @instanceName, @title, @extKind, @extId, @sizeBytes, @folderName, @path, @downloaded, @ts)`
   );
   const del = preserveInstanceIds.length
     ? db.prepare(
@@ -1957,21 +2008,55 @@ export function replaceArrUnmatched(
   const ts = now();
   db.transaction(() => {
     del.run(...preserveInstanceIds);
-    for (const r of rows) ins.run({ ...r, ts });
+    for (const r of rows)
+      ins.run({
+        ...r,
+        folderName: r.folderName ?? null,
+        path: r.path ?? null,
+        downloaded: r.downloaded === false ? 0 : 1,
+        ts,
+      });
   })();
   return rows.length;
+}
+
+/** Persist the disk reality-check results for unmatched *arr titles (keyed by
+ *  instance + external id; one transaction). Written by verifyArrUnmatchedOnDisk. */
+export function updateArrUnmatchedDisk(
+  rows: {
+    instanceId: string;
+    extKind: 'tvdb' | 'tmdb';
+    extId: string;
+    onDisk: boolean;
+    diskSizeBytes: number | null;
+  }[]
+): void {
+  const db = getDb();
+  const upd = db.prepare(
+    `UPDATE arr_unmatched SET on_disk = @onDisk, disk_size_bytes = @diskSizeBytes
+     WHERE instance_id = @instanceId AND ext_kind = @extKind AND ext_id = @extId`
+  );
+  db.transaction(() => {
+    for (const r of rows) {
+      upd.run({ ...r, onDisk: r.onDisk ? 1 : 0, diskSizeBytes: r.diskSizeBytes });
+    }
+  })();
 }
 
 export function clearArrUnmatched(): number {
   return getDb().prepare('DELETE FROM arr_unmatched').run().changes;
 }
 
-/** Unmatched titles, largest first (so the biggest orphaned downloads lead). */
-export function getArrUnmatched(): ArrUnmatchedRow[] {
+/** Unmatched titles, largest first (so the biggest orphaned downloads lead).
+ *  Default = downloaded only (media on disk the server can't see — the Match
+ *  health / "In *arr, not in server" semantics); pass false to include the
+ *  fileless rows too. */
+export function getArrUnmatched(downloadedOnly = true): ArrUnmatchedRow[] {
   const rows = getDb()
     .prepare(
-      `SELECT source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, last_synced
-       FROM arr_unmatched ORDER BY size_bytes DESC, title COLLATE NOCASE`
+      `SELECT source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, folder_name, path, downloaded, on_disk, disk_size_bytes, last_synced
+       FROM arr_unmatched ${downloadedOnly ? 'WHERE downloaded = 1' : ''}
+       ORDER BY size_bytes DESC, title COLLATE NOCASE`
     )
     .all() as {
     source: string;
@@ -1981,6 +2066,11 @@ export function getArrUnmatched(): ArrUnmatchedRow[] {
     ext_kind: 'tvdb' | 'tmdb';
     ext_id: string;
     size_bytes: number;
+    folder_name: string | null;
+    path: string | null;
+    downloaded: number;
+    on_disk: number | null;
+    disk_size_bytes: number | null;
     last_synced: number;
   }[];
   return rows.map((r) => ({
@@ -1991,8 +2081,121 @@ export function getArrUnmatched(): ArrUnmatchedRow[] {
     extKind: r.ext_kind,
     extId: r.ext_id,
     sizeBytes: r.size_bytes,
+    folderName: r.folder_name,
+    path: r.path,
+    downloaded: !!r.downloaded,
+    onDisk: r.on_disk == null ? null : !!r.on_disk,
+    diskSizeBytes: r.disk_size_bytes,
     lastSynced: r.last_synced,
   }));
+}
+
+// --- Cross-instance *arr conflicts (two instances claiming one item) ---
+
+export interface ArrConflictInput {
+  ratingKey: string;
+  /** Losing record's title. */
+  title: string;
+  /** The winner — the instance whose record was kept in arr_items. */
+  firstSource: string;
+  firstInstanceId: string;
+  firstInstanceName: string;
+  /** The loser — the instance whose record was dropped (owns this row). */
+  source: string;
+  instanceId: string;
+  instanceName: string;
+  /** Loser's sizeOnDisk. */
+  sizeOnDisk: number;
+}
+
+/** Replace the conflict list atomically (rebuilt by the 'arr' job).
+ *  `preserveInstanceIds` keeps rows of instances that failed this run. */
+export function replaceArrConflicts(
+  rows: ArrConflictInput[],
+  preserveInstanceIds: string[] = []
+): number {
+  const db = getDb();
+  const ins = db.prepare(
+    `INSERT INTO arr_conflicts (rating_key, title, first_source, first_instance_id, first_instance_name,
+                                source, instance_id, instance_name, size_on_disk, last_synced)
+     VALUES (@ratingKey, @title, @firstSource, @firstInstanceId, @firstInstanceName,
+             @source, @instanceId, @instanceName, @sizeOnDisk, @ts)`
+  );
+  const del = preserveInstanceIds.length
+    ? db.prepare(
+        `DELETE FROM arr_conflicts WHERE instance_id NOT IN (${preserveInstanceIds
+          .map(() => '?')
+          .join(',')})`
+      )
+    : db.prepare('DELETE FROM arr_conflicts');
+  const ts = now();
+  db.transaction(() => {
+    del.run(...preserveInstanceIds);
+    for (const r of rows) ins.run({ ...r, ts });
+  })();
+  return rows.length;
+}
+
+export interface ArrConflictRow {
+  ratingKey: string;
+  title: string;
+  /** Poster path from media_items (the item IS in the media server). */
+  thumb: string | null;
+  winner: { source: string; instanceId: string; instanceName: string };
+  loser: { source: string; instanceId: string; instanceName: string };
+  /** Both claims from ONE instance = two *arr titles resolve to one media item
+   *  (usually a merged multi-part entry on the server), not an instance overlap. */
+  sameInstance: boolean;
+  sizeOnDisk: number;
+  lastSynced: number;
+}
+
+/** Conflicts, biggest loser-side download first (the route paginates). */
+export function getArrConflicts(): ArrConflictRow[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT c.rating_key, c.title, m.thumb,
+              c.first_source, c.first_instance_id, c.first_instance_name,
+              c.source, c.instance_id, c.instance_name, c.size_on_disk, c.last_synced
+       FROM arr_conflicts c
+       LEFT JOIN media_items m ON m.rating_key = c.rating_key
+       ORDER BY c.size_on_disk DESC, c.title COLLATE NOCASE`
+    )
+    .all() as {
+    rating_key: string;
+    title: string;
+    thumb: string | null;
+    first_source: string;
+    first_instance_id: string;
+    first_instance_name: string;
+    source: string;
+    instance_id: string;
+    instance_name: string;
+    size_on_disk: number;
+    last_synced: number;
+  }[];
+  return rows.map((r) => ({
+    ratingKey: r.rating_key,
+    title: r.title,
+    thumb: r.thumb,
+    winner: {
+      source: r.first_source,
+      instanceId: r.first_instance_id,
+      instanceName: r.first_instance_name,
+    },
+    loser: { source: r.source, instanceId: r.instance_id, instanceName: r.instance_name },
+    sameInstance: r.first_instance_id === r.instance_id,
+    sizeOnDisk: r.size_on_disk,
+    lastSynced: r.last_synced,
+  }));
+}
+
+export function arrConflictsSummary(): { titles: number; bytes: number } {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) AS titles, COALESCE(SUM(size_on_disk), 0) AS bytes FROM arr_conflicts`
+    )
+    .get() as { titles: number; bytes: number };
 }
 
 /** Managed, non-removed Plex items with no external id (so they can never match
@@ -2063,8 +2266,13 @@ export function arrQualitySummary(): QualitySummaryRow[] {
     .all() as QualitySummaryRow[];
 }
 
-/** Single aggregate for non-removed media with NO arr match ("Not in *arr"). */
-export function unmatchedMediaSummary(): Omit<QualitySummaryRow, 'quality'> {
+/** Single aggregate for non-removed media with NO arr match ("Not in *arr").
+ *  `excludeMissingIds` mirrors notInArrItems' filter (the Problems pill counts
+ *  the DEFAULT view); Big Picture calls without it (its table spans everything). */
+export function unmatchedMediaSummary(
+  excludeMissingIds = false
+): Omit<QualitySummaryRow, 'quality'> {
+  const missingIdFilter = excludeMissingIds ? ` AND NOT (${MISSING_ID_EXPR})` : '';
   return getDb()
     .prepare(
       `SELECT COUNT(*) AS titles,
@@ -2073,7 +2281,7 @@ export function unmatchedMediaSummary(): Omit<QualitySummaryRow, 'quality'> {
               COALESCE(SUM(CASE WHEN ${notWatchedAnyExpr} THEN m.size_bytes ELSE 0 END), 0) AS unwatchedBytes
        FROM media_items m
        WHERE m.removed = 0
-         AND NOT EXISTS (SELECT 1 FROM arr_items a WHERE a.rating_key = m.rating_key)`
+         AND NOT EXISTS (SELECT 1 FROM arr_items a WHERE a.rating_key = m.rating_key)${missingIdFilter}`
     )
     .get() as Omit<QualitySummaryRow, 'quality'>;
 }
@@ -2099,11 +2307,948 @@ export function showRatingKeys(): string[] {
   return rows.map((r) => r.rating_key);
 }
 
-/** Update a single item's size on disk (used by the size-recompute job). */
-export function updateItemSize(ratingKey: string, sizeBytes: number): void {
+/** Update a single item's size on disk (used by the size-recompute job).
+ *  `dirPath`/`dirNames` (derived from episode paths) also refresh the on-disk
+ *  folder fields when present — the backfill for servers that omit a show's
+ *  Location from listings. `dirNames` covers multi-folder shows and is stored
+ *  newline-joined. Null/empty leaves the stored values untouched. */
+export function updateItemSize(
+  ratingKey: string,
+  sizeBytes: number,
+  dirPath?: string | null,
+  dirNames?: string[]
+): void {
   getDb()
-    .prepare('UPDATE media_items SET size_bytes = ? WHERE rating_key = ?')
-    .run(sizeBytes, ratingKey);
+    .prepare(
+      `UPDATE media_items SET
+         size_bytes = @sizeBytes,
+         dir_path   = COALESCE(@dirPath, dir_path),
+         dir_name   = COALESCE(@dirName, dir_name)
+       WHERE rating_key = @ratingKey`
+    )
+    .run({
+      ratingKey,
+      sizeBytes,
+      dirPath: dirPath ?? null,
+      dirName: dirNames?.length ? dirNames.join('\n') : lastSegment(dirPath ?? null),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Problems page (admin) — per-category detectors. Categories overlap
+// deliberately (e.g. a zero-size item with >1 GB in *arr also passes the size
+// mismatch check); never sum them into a grand total.
+// ---------------------------------------------------------------------------
+
+/** View options for the paged problem lists: sort key (per-category
+ *  allow-list; unknown → default), direction, and library/kind filters. */
+export interface ProblemListOpts {
+  sort?: string;
+  dir?: 'asc' | 'desc';
+  sectionIds?: string[];
+  kind?: LibraryKind;
+}
+
+/** ORDER BY from a per-category allow-list — user input NEVER lands in SQL
+ *  directly. Untitled dir defaults: asc for name-ish keys, desc otherwise. */
+function problemOrder(
+  allow: Record<string, string>,
+  def: string,
+  opts: ProblemListOpts | undefined,
+  tiebreak: string
+): string {
+  const key = opts?.sort && allow[opts.sort] ? opts.sort : def;
+  const dir =
+    opts?.dir ?? (key === 'title' || key === 'name' ? 'asc' : 'desc');
+  return `${allow[key]} ${dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, ${tiebreak}`;
+}
+
+/** Section/kind WHERE additions (named params added to `params`). `pre` is the
+ *  media_items alias prefix ('m.' or ''). */
+function problemFilterSql(
+  opts: ProblemListOpts | undefined,
+  params: Record<string, unknown>,
+  pre = ''
+): string {
+  if (!opts) return '';
+  let sql = '';
+  if (opts.sectionIds?.length) {
+    const named = opts.sectionIds.map((_, i) => `@fsec${i}`);
+    opts.sectionIds.forEach((v, i) => (params[`fsec${i}`] = v));
+    sql += ` AND ${pre}section_id IN (${named.join(', ')})`;
+  }
+  if (opts.kind) {
+    params.fkind = opts.kind;
+    sql += ` AND ${pre}library_kind = @fkind`;
+  }
+  return sql;
+}
+
+/** One arr-matched title whose Plex vs *arr sizes diverge (per SIZE_MISMATCH_EXPR). */
+export interface SizeMismatchItem {
+  ratingKey: string;
+  title: string;
+  year: number | null;
+  libraryKind: LibraryKind;
+  sectionId: string;
+  thumb: string | null;
+  dirPath: string | null;
+  plexBytes: number;
+  arrBytes: number;
+  /** Signed: plex − arr (positive = Plex sees more than *arr). */
+  deltaBytes: number;
+  source: string;
+  instanceName: string;
+  /** The tiebreaker: MEASURED size on disk (diskScan walks the folder).
+   *  Null until the Disk scan job has measured it. */
+  diskSizeBytes: number | null;
+  diskCheckedAt: number | null;
+  /** Movie: distinct video files merged into the item (>1 = multi-part — the
+   *  server sums them all, so exceeding the *arr's single file is expected).
+   *  Null for shows / until a library scan captures it. */
+  fileCount: number | null;
+}
+
+const SIZE_MISMATCH_SORT: Record<string, string> = {
+  delta: 'ABS(m.size_bytes - a.arr_size_bytes)',
+  title: 'm.title COLLATE NOCASE',
+  size: 'm.size_bytes',
+  arrSize: 'a.arr_size_bytes',
+};
+
+/** Size mismatches, biggest divergence first (sort/filter via opts). */
+export function sizeMismatchItems(
+  limit: number,
+  offset: number,
+  opts?: ProblemListOpts
+): SizeMismatchItem[] {
+  const params: Record<string, unknown> = { limit, offset };
+  const rows = getDb()
+    .prepare(
+      `SELECT m.rating_key, m.title, m.year, m.library_kind, m.section_id, m.thumb,
+              m.dir_path, m.size_bytes, m.disk_size_bytes, m.disk_checked_at,
+              m.file_count, a.arr_size_bytes, a.source, a.instance_name
+       FROM media_items m
+       JOIN arr_items a ON a.rating_key = m.rating_key
+       WHERE m.removed = 0 AND ${SIZE_MISMATCH_EXPR}${problemFilterSql(opts, params, 'm.')}
+       ORDER BY ${problemOrder(SIZE_MISMATCH_SORT, 'delta', opts, 'm.title COLLATE NOCASE ASC')}
+       LIMIT @limit OFFSET @offset`
+    )
+    .all(params) as {
+    rating_key: string;
+    title: string;
+    year: number | null;
+    library_kind: LibraryKind;
+    section_id: string;
+    thumb: string | null;
+    dir_path: string | null;
+    size_bytes: number;
+    disk_size_bytes: number | null;
+    disk_checked_at: number | null;
+    file_count: number | null;
+    arr_size_bytes: number;
+    source: string;
+    instance_name: string;
+  }[];
+  return rows.map((r) => ({
+    ratingKey: r.rating_key,
+    title: r.title,
+    year: r.year,
+    libraryKind: r.library_kind,
+    sectionId: r.section_id,
+    thumb: r.thumb,
+    dirPath: r.dir_path,
+    plexBytes: r.size_bytes,
+    arrBytes: r.arr_size_bytes,
+    deltaBytes: r.size_bytes - r.arr_size_bytes,
+    source: r.source,
+    instanceName: r.instance_name,
+    diskSizeBytes: r.disk_size_bytes,
+    diskCheckedAt: r.disk_checked_at,
+    fileCount: r.file_count,
+  }));
+}
+
+/** The current size-mismatch rows' disk-lookup keys (for the diskScan measure
+ *  pass): every folder name the title spans + the loose-file name, per section. */
+export function sizeMismatchDiskTargets(): {
+  ratingKey: string;
+  sectionId: string;
+  dirNames: string[];
+  fileName: string | null;
+}[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT m.rating_key, m.section_id, m.dir_name, m.file_name
+       FROM media_items m
+       JOIN arr_items a ON a.rating_key = m.rating_key
+       WHERE m.removed = 0 AND ${SIZE_MISMATCH_EXPR}`
+    )
+    .all() as {
+    rating_key: string;
+    section_id: string;
+    dir_name: string | null;
+    file_name: string | null;
+  }[];
+  return rows.map((r) => ({
+    ratingKey: r.rating_key,
+    sectionId: r.section_id,
+    dirNames: r.dir_name ? r.dir_name.split('\n').filter(Boolean) : [],
+    fileName: r.file_name,
+  }));
+}
+
+/** Persist a measured on-disk size for one item (null = couldn't locate it). */
+export function updateItemDiskCheck(
+  ratingKey: string,
+  diskSizeBytes: number | null,
+  checkedAt: number = now()
+): void {
+  getDb()
+    .prepare(
+      `UPDATE media_items SET disk_size_bytes = ?, disk_checked_at = ? WHERE rating_key = ?`
+    )
+    .run(diskSizeBytes, checkedAt, ratingKey);
+}
+
+/** Count + summed |Plex − arr| delta over all size mismatches. */
+export function sizeMismatchSummary(): { titles: number; bytes: number } {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) AS titles,
+              COALESCE(SUM(ABS(m.size_bytes - a.arr_size_bytes)), 0) AS bytes
+       FROM media_items m
+       JOIN arr_items a ON a.rating_key = m.rating_key
+       WHERE m.removed = 0 AND ${SIZE_MISMATCH_EXPR}`
+    )
+    .get() as { titles: number; bytes: number };
+}
+
+/** One title in the media server that no Sonarr/Radarr instance matched. */
+export interface NotInArrItem {
+  ratingKey: string;
+  title: string;
+  year: number | null;
+  libraryKind: LibraryKind;
+  sectionId: string;
+  thumb: string | null;
+  dirPath: string | null;
+  sizeBytes: number;
+  addedAt: number | null;
+}
+
+/** Non-removed items with no arr match, largest first.
+ *  `excludeMissingIds` drops items with no external id at all — they can NEVER
+ *  match *arr, so they'd flood this view (they have their own Missing IDs
+ *  category). (Aggregate counterpart: unmatchedMediaSummary().) */
+const NOT_IN_ARR_SORT: Record<string, string> = {
+  size: 'm.size_bytes',
+  title: 'm.title COLLATE NOCASE',
+  added: 'm.added_at',
+};
+
+export function notInArrItems(
+  limit: number,
+  offset: number,
+  excludeMissingIds = false,
+  opts?: ProblemListOpts
+): NotInArrItem[] {
+  const missingIdFilter = excludeMissingIds ? ` AND NOT (${MISSING_ID_EXPR})` : '';
+  const params: Record<string, unknown> = { limit, offset };
+  const rows = getDb()
+    .prepare(
+      `SELECT rating_key, title, year, library_kind, section_id, thumb, dir_path, size_bytes, added_at
+       FROM media_items m
+       WHERE m.removed = 0
+         AND NOT EXISTS (SELECT 1 FROM arr_items a WHERE a.rating_key = m.rating_key)${missingIdFilter}${problemFilterSql(opts, params, 'm.')}
+       ORDER BY ${problemOrder(NOT_IN_ARR_SORT, 'size', opts, 'm.title COLLATE NOCASE ASC')}
+       LIMIT @limit OFFSET @offset`
+    )
+    .all(params) as {
+    rating_key: string;
+    title: string;
+    year: number | null;
+    library_kind: LibraryKind;
+    section_id: string;
+    thumb: string | null;
+    dir_path: string | null;
+    size_bytes: number;
+    added_at: number | null;
+  }[];
+  return rows.map((r) => ({
+    ratingKey: r.rating_key,
+    title: r.title,
+    year: r.year,
+    libraryKind: r.library_kind,
+    sectionId: r.section_id,
+    thumb: r.thumb,
+    dirPath: r.dir_path,
+    sizeBytes: r.size_bytes,
+    addedAt: r.added_at,
+  }));
+}
+
+/** Count + bytes of DOWNLOADED arr_unmatched rows without loading them
+ *  (Problems summary — fileless rows aren't "media the server can't see"). */
+export function arrUnmatchedSummary(): { titles: number; bytes: number } {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) AS titles, COALESCE(SUM(size_bytes), 0) AS bytes
+       FROM arr_unmatched WHERE downloaded = 1`
+    )
+    .get() as { titles: number; bytes: number };
+}
+
+export interface DuplicateMember {
+  ratingKey: string;
+  title: string;
+  year: number | null;
+  libraryKind: LibraryKind;
+  sectionId: string;
+  thumb: string | null;
+  /** Where this copy lives — the whole point of the duplicates comparison. */
+  dirPath: string | null;
+  sizeBytes: number;
+  addedAt: number | null;
+}
+
+/** Two+ non-removed items sharing one external id. */
+export interface DuplicateGroup {
+  idKind: 'tvdb' | 'tmdb' | 'imdb';
+  idValue: string;
+  totalBytes: number;
+  /** Size DESC within the group. */
+  items: DuplicateMember[];
+}
+
+interface DuplicateScanRow {
+  rating_key: string;
+  title: string;
+  year: number | null;
+  library_kind: LibraryKind;
+  section_id: string;
+  thumb: string | null;
+  dir_path: string | null;
+  size_bytes: number;
+  added_at: number | null;
+  guid_tvdb: string | null;
+  guid_tmdb: string | null;
+  guid_imdb: string | null;
+}
+
+/**
+ * Groups of non-removed items sharing an external id — the same title imported
+ * into two libraries, or one entry Plex should have merged. CSV guid values are
+ * split like ratingKeysByGuid (an item can carry several ids of a kind); the
+ * kind-scoped axes run first so a pair sharing tmdb AND imdb is reported once,
+ * labeled by its primary id. An item whose ids pair it with two DIFFERENT
+ * partners legitimately appears in two groups. Ordered by totalBytes DESC.
+ */
+export function duplicateGroups(): DuplicateGroup[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT rating_key, title, year, library_kind, section_id, thumb, dir_path,
+              size_bytes, added_at, guid_tvdb, guid_tmdb, guid_imdb
+       FROM media_items
+       WHERE removed = 0
+         AND (guid_tvdb IS NOT NULL OR guid_tmdb IS NOT NULL OR guid_imdb IS NOT NULL)`
+    )
+    .all() as DuplicateScanRow[];
+
+  const toMember = (r: DuplicateScanRow): DuplicateMember => ({
+    ratingKey: r.rating_key,
+    title: r.title,
+    year: r.year,
+    libraryKind: r.library_kind,
+    sectionId: r.section_id,
+    thumb: r.thumb,
+    dirPath: r.dir_path,
+    sizeBytes: r.size_bytes,
+    addedAt: r.added_at,
+  });
+
+  // Same scoping as arr matching: tvdb ids only mean anything on shows, tmdb on
+  // movies; imdb spans both kinds.
+  const axes: {
+    kind: DuplicateGroup['idKind'];
+    col: 'guid_tvdb' | 'guid_tmdb' | 'guid_imdb';
+    scope?: LibraryKind;
+  }[] = [
+    { kind: 'tvdb', col: 'guid_tvdb', scope: 'show' },
+    { kind: 'tmdb', col: 'guid_tmdb', scope: 'movie' },
+    { kind: 'imdb', col: 'guid_imdb' },
+  ];
+
+  const groups: DuplicateGroup[] = [];
+  const seenMemberSets = new Set<string>();
+  for (const axis of axes) {
+    const byId = new Map<string, DuplicateScanRow[]>();
+    for (const r of rows) {
+      if (axis.scope && r.library_kind !== axis.scope) continue;
+      const guid = r[axis.col];
+      if (!guid) continue;
+      for (const raw of guid.split(',')) {
+        const id = raw.trim();
+        if (!id) continue;
+        const list = byId.get(id);
+        if (list) list.push(r);
+        else byId.set(id, [r]);
+      }
+    }
+    for (const [id, members] of byId) {
+      const distinct = [...new Map(members.map((m) => [m.rating_key, m])).values()];
+      if (distinct.length < 2) continue;
+      // The same member set is often reachable via several ids/axes (a pair
+      // sharing tmdb + imdb, or both halves of a CSV) — report it once.
+      const setKey = distinct
+        .map((m) => m.rating_key)
+        .sort()
+        .join('|');
+      if (seenMemberSets.has(setKey)) continue;
+      seenMemberSets.add(setKey);
+      distinct.sort(
+        (a, b) => b.size_bytes - a.size_bytes || a.title.localeCompare(b.title)
+      );
+      groups.push({
+        idKind: axis.kind,
+        idValue: id,
+        totalBytes: distinct.reduce((s, m) => s + m.size_bytes, 0),
+        items: distinct.map(toMember),
+      });
+    }
+  }
+  groups.sort((a, b) => b.totalBytes - a.totalBytes || a.idValue.localeCompare(b.idValue));
+  return groups;
+}
+
+/** One media-server title with no file bytes (broken/missing files, or a dead
+ *  metadata-only entry). */
+export interface ZeroSizeItem {
+  ratingKey: string;
+  title: string;
+  year: number | null;
+  libraryKind: LibraryKind;
+  sectionId: string;
+  thumb: string | null;
+  dirPath: string | null;
+  addedAt: number | null;
+  /** *arr context when matched: "the *arr has 19 GB for this — the server sees
+   *  nothing" is a very different fix than a dead metadata-only entry. */
+  arrBytes: number | null;
+  instanceName: string | null;
+}
+
+const ZERO_SIZE_SORT: Record<string, string> = {
+  added: 'm.added_at',
+  title: 'm.title COLLATE NOCASE',
+};
+
+/** Zero-size items, newest first (a fresh one is likely a broken import). */
+export function zeroSizeItems(
+  limit: number,
+  offset: number,
+  opts?: ProblemListOpts
+): ZeroSizeItem[] {
+  const params: Record<string, unknown> = { limit, offset };
+  const rows = getDb()
+    .prepare(
+      `SELECT m.rating_key, m.title, m.year, m.library_kind, m.section_id, m.thumb,
+              m.dir_path, m.added_at, a.arr_size_bytes, a.instance_name
+       FROM media_items m
+       LEFT JOIN arr_items a ON a.rating_key = m.rating_key
+       WHERE m.removed = 0 AND m.size_bytes = 0${problemFilterSql(opts, params, 'm.')}
+       ORDER BY ${problemOrder(ZERO_SIZE_SORT, 'added', opts, 'm.title COLLATE NOCASE ASC')}
+       LIMIT @limit OFFSET @offset`
+    )
+    .all(params) as {
+    rating_key: string;
+    title: string;
+    year: number | null;
+    library_kind: LibraryKind;
+    section_id: string;
+    thumb: string | null;
+    dir_path: string | null;
+    added_at: number | null;
+    arr_size_bytes: number | null;
+    instance_name: string | null;
+  }[];
+  return rows.map((r) => ({
+    ratingKey: r.rating_key,
+    title: r.title,
+    year: r.year,
+    libraryKind: r.library_kind,
+    sectionId: r.section_id,
+    thumb: r.thumb,
+    dirPath: r.dir_path,
+    addedAt: r.added_at,
+    arrBytes: r.arr_size_bytes,
+    instanceName: r.instance_name,
+  }));
+}
+
+export function zeroSizeCount(): number {
+  return (
+    getDb()
+      .prepare('SELECT COUNT(*) AS n FROM media_items WHERE removed = 0 AND size_bytes = 0')
+      .get() as { n: number }
+  ).n;
+}
+
+/** A tombstoned item someone still keeps — something protected got deleted anyway. */
+export interface RemovedButKeptItem {
+  ratingKey: string;
+  title: string;
+  year: number | null;
+  libraryKind: LibraryKind;
+  sectionId: string;
+  /** Last-known size — the item is gone from the media server, so this is stale. */
+  sizeBytes: number;
+  /** Last-known folder path (stale for the same reason — but it answers "did
+   *  the files actually get deleted?"). */
+  dirPath: string | null;
+  keptBy: { plexUserId: string; username: string | null }[];
+}
+
+/** Removed items with surviving keeps, largest last-known size first
+ *  (grouped like markedForDeleteItems; the route paginates). */
+export function removedButKeptItems(): RemovedButKeptItem[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT m.rating_key, m.title, m.year, m.library_kind, m.section_id, m.size_bytes,
+              m.dir_path, k.plex_user_id AS keeper_id, u.username AS keeper_name
+       FROM keeps k
+       JOIN media_items m ON m.rating_key = k.rating_key AND m.removed = 1
+       LEFT JOIN users u ON u.plex_user_id = k.plex_user_id
+       ORDER BY m.size_bytes DESC, m.title COLLATE NOCASE ASC, k.plex_user_id ASC`
+    )
+    .all() as {
+    rating_key: string;
+    title: string;
+    year: number | null;
+    library_kind: LibraryKind;
+    section_id: string;
+    size_bytes: number;
+    dir_path: string | null;
+    keeper_id: string;
+    keeper_name: string | null;
+  }[];
+  // Group keepers per item; Map preserves the size-DESC insertion order.
+  const byItem = new Map<string, RemovedButKeptItem>();
+  for (const r of rows) {
+    let item = byItem.get(r.rating_key);
+    if (!item) {
+      item = {
+        ratingKey: r.rating_key,
+        title: r.title,
+        year: r.year,
+        libraryKind: r.library_kind,
+        sectionId: r.section_id,
+        sizeBytes: r.size_bytes,
+        dirPath: r.dir_path,
+        keptBy: [],
+      };
+      byItem.set(r.rating_key, item);
+    }
+    item.keptBy.push({ plexUserId: r.keeper_id, username: r.keeper_name });
+  }
+  return [...byItem.values()];
+}
+
+/** Distinct removed-but-kept titles + their summed last-known bytes. */
+export function removedButKeptSummary(): { titles: number; bytes: number } {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) AS titles, COALESCE(SUM(m.size_bytes), 0) AS bytes
+       FROM media_items m
+       WHERE m.removed = 1
+         AND EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = m.rating_key)`
+    )
+    .get() as { titles: number; bytes: number };
+}
+
+/** One item with no external id at all (see mediaMissingExternalIds). */
+export interface MissingIdItem {
+  ratingKey: string;
+  title: string;
+  year: number | null;
+  libraryKind: LibraryKind;
+  sectionId: string;
+  thumb: string | null;
+  /** Often the diagnosis: a misnamed folder is why the match failed. */
+  dirPath: string | null;
+  sizeBytes: number;
+}
+
+// The "can never match *arr" predicate — no kind-primary id AND no imdb
+// (mirrors mediaMissingExternalIds, whose count/sample shape still backs the
+// arr-health endpoint; the Match health card shows the counts and links to the
+// Problems page for the full list).
+const MISSING_ID_EXPR = `guid_imdb IS NULL AND (
+         (library_kind = 'show' AND guid_tvdb IS NULL) OR
+         (library_kind = 'movie' AND guid_tmdb IS NULL))`;
+
+const MISSING_ID_SORT: Record<string, string> = {
+  size: 'size_bytes',
+  title: 'title COLLATE NOCASE',
+};
+
+/** Items with no external id, largest first (full paged list). */
+export function missingExternalIdItems(
+  limit: number,
+  offset: number,
+  opts?: ProblemListOpts
+): MissingIdItem[] {
+  const params: Record<string, unknown> = { limit, offset };
+  const rows = getDb()
+    .prepare(
+      `SELECT rating_key, title, year, library_kind, section_id, thumb, dir_path, size_bytes
+       FROM media_items
+       WHERE removed = 0 AND ${MISSING_ID_EXPR}${problemFilterSql(opts, params)}
+       ORDER BY ${problemOrder(MISSING_ID_SORT, 'size', opts, 'title COLLATE NOCASE ASC')}
+       LIMIT @limit OFFSET @offset`
+    )
+    .all(params) as {
+    rating_key: string;
+    title: string;
+    year: number | null;
+    library_kind: LibraryKind;
+    section_id: string;
+    thumb: string | null;
+    dir_path: string | null;
+    size_bytes: number;
+  }[];
+  return rows.map((r) => ({
+    ratingKey: r.rating_key,
+    title: r.title,
+    year: r.year,
+    libraryKind: r.library_kind,
+    sectionId: r.section_id,
+    thumb: r.thumb,
+    dirPath: r.dir_path,
+    sizeBytes: r.size_bytes,
+  }));
+}
+
+export function missingExternalIdsSummary(): { titles: number; bytes: number } {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) AS titles, COALESCE(SUM(size_bytes), 0) AS bytes
+       FROM media_items
+       WHERE removed = 0 AND ${MISSING_ID_EXPR}`
+    )
+    .get() as { titles: number; bytes: number };
+}
+
+// --- Identity mismatch (same folder, two identities) ---
+
+/** One folder claimed by BOTH a media-server item and an unmatched *arr title
+ *  under different external ids — Plex/JF matched the folder to one thing,
+ *  Sonarr/Radarr tracks another. One side's match is wrong (usually the
+ *  server's). */
+export interface IdentityMismatchItem {
+  media: {
+    ratingKey: string;
+    title: string;
+    year: number | null;
+    libraryKind: LibraryKind;
+    sectionId: string;
+    thumb: string | null;
+    dirPath: string | null;
+    sizeBytes: number;
+    /** The server's OWN external ids (CSV when it lists several; null = none of
+     *  that kind) — shown beside the *arr's id so the disagreement is visible. */
+    guidTmdb: string | null;
+    guidTvdb: string | null;
+    guidImdb: string | null;
+  };
+  arr: {
+    title: string;
+    source: string;
+    instanceName: string;
+    extKind: 'tvdb' | 'tmdb';
+    extId: string;
+    /** False = the *arr entry has no files ("added but never imported"). */
+    downloaded: boolean;
+    path: string | null;
+  };
+}
+
+/**
+ * Join unmatched *arr titles to media items by normalized FOLDER NAME (the
+ * duplicateGroups pattern: load both sides, match in JS — names need unicode
+ * NFC + case-fold comparison SQLite can't do). The ids disagree by
+ * construction: a title whose id matched a media item wouldn't be in
+ * arr_unmatched. Multi-folder shows store newline-joined dir_names — every
+ * folder counts. Ordered by media size DESC.
+ */
+export function identityMismatchItems(): IdentityMismatchItem[] {
+  const arrRows = getArrUnmatched(false).filter((u) => u.folderName);
+  if (arrRows.length === 0) return [];
+  const mediaRows = getDb()
+    .prepare(
+      `SELECT rating_key, title, year, library_kind, section_id, thumb, dir_path,
+              dir_name, size_bytes, guid_tmdb, guid_tvdb, guid_imdb
+       FROM media_items WHERE removed = 0 AND dir_name IS NOT NULL`
+    )
+    .all() as {
+    rating_key: string;
+    title: string;
+    year: number | null;
+    library_kind: LibraryKind;
+    section_id: string;
+    thumb: string | null;
+    dir_path: string | null;
+    dir_name: string;
+    size_bytes: number;
+    guid_tmdb: string | null;
+    guid_tvdb: string | null;
+    guid_imdb: string | null;
+  }[];
+
+  // folder name (normalized) → media items claiming it.
+  const byFolder = new Map<string, typeof mediaRows>();
+  for (const m of mediaRows) {
+    for (const name of m.dir_name.split('\n')) {
+      if (!name) continue;
+      const key = normalizeName(name);
+      const list = byFolder.get(key);
+      if (list) list.push(m);
+      else byFolder.set(key, [m]);
+    }
+  }
+
+  const out: IdentityMismatchItem[] = [];
+  for (const u of arrRows) {
+    const claims = byFolder.get(normalizeName(u.folderName!)) ?? [];
+    for (const m of claims) {
+      out.push({
+        media: {
+          ratingKey: m.rating_key,
+          title: m.title,
+          year: m.year,
+          libraryKind: m.library_kind,
+          sectionId: m.section_id,
+          thumb: m.thumb,
+          dirPath: m.dir_path,
+          sizeBytes: m.size_bytes,
+          guidTmdb: m.guid_tmdb,
+          guidTvdb: m.guid_tvdb,
+          guidImdb: m.guid_imdb,
+        },
+        arr: {
+          title: u.title,
+          source: u.source,
+          instanceName: u.instanceName,
+          extKind: u.extKind,
+          extId: u.extId,
+          downloaded: u.downloaded ?? true,
+          path: u.path ?? null,
+        },
+      });
+    }
+  }
+  out.sort(
+    (a, b) =>
+      b.media.sizeBytes - a.media.sizeBytes ||
+      a.media.title.localeCompare(b.media.title)
+  );
+  return out;
+}
+
+export function identityMismatchSummary(): { titles: number; bytes: number } {
+  const items = identityMismatchItems();
+  return {
+    titles: items.length,
+    bytes: items.reduce((s, i) => s + i.media.sizeBytes, 0),
+  };
+}
+
+// --- Disk orphans (the diskScan job's results) ---
+
+export interface DiskOrphanInput {
+  name: string;
+  /** Keeparr-container absolute path (mapping root + entry name). */
+  path: string;
+  isDir: boolean;
+  sizeBytes: number;
+  /** True when the circuit breaker recorded the name but skipped sizing. */
+  sizeSkipped: boolean;
+  /** Entry mtime (sec) at scan time — the size-cache key. */
+  mtime: number | null;
+}
+
+export interface DiskOrphanRow extends DiskOrphanInput {
+  sectionId: string;
+  lastSynced: number;
+}
+
+/** Replace one section's orphan rows atomically. Sections the scan skips
+ *  (safety guard, unreadable root) are simply not replaced — prior rows stay. */
+export function replaceDiskOrphansForSection(
+  sectionId: string,
+  rows: DiskOrphanInput[]
+): number {
+  const db = getDb();
+  const ins = db.prepare(
+    `INSERT INTO disk_orphans (section_id, name, path, is_dir, size_bytes, size_skipped, mtime, last_synced)
+     VALUES (@sectionId, @name, @path, @isDir, @sizeBytes, @sizeSkipped, @mtime, @ts)`
+  );
+  const ts = now();
+  db.transaction(() => {
+    db.prepare('DELETE FROM disk_orphans WHERE section_id = ?').run(sectionId);
+    for (const r of rows) {
+      ins.run({
+        ...r,
+        sectionId,
+        isDir: r.isDir ? 1 : 0,
+        sizeSkipped: r.sizeSkipped ? 1 : 0,
+        ts,
+      });
+    }
+  })();
+  return rows.length;
+}
+
+const mapOrphanRow = (r: {
+  section_id: string;
+  name: string;
+  path: string;
+  is_dir: number;
+  size_bytes: number;
+  size_skipped: number;
+  mtime: number | null;
+  last_synced: number;
+}): DiskOrphanRow => ({
+  sectionId: r.section_id,
+  name: r.name,
+  path: r.path,
+  isDir: !!r.is_dir,
+  sizeBytes: r.size_bytes,
+  sizeSkipped: !!r.size_skipped,
+  mtime: r.mtime,
+  lastSynced: r.last_synced,
+});
+
+/** All orphans, largest first (the route paginates). */
+export function getDiskOrphans(): DiskOrphanRow[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT section_id, name, path, is_dir, size_bytes, size_skipped, mtime, last_synced
+       FROM disk_orphans ORDER BY size_bytes DESC, name COLLATE NOCASE ASC`
+    )
+    .all() as Parameters<typeof mapOrphanRow>[0][];
+  return rows.map(mapOrphanRow);
+}
+
+/** An orphan annotated with the library title it LOOKS like (exact titleKey
+ *  match) — usually a leftover old copy: the library already has the title in
+ *  another folder, so the orphan is safe to verify-and-delete. */
+export interface DiskOrphanAnnotated extends DiskOrphanRow {
+  likely: {
+    ratingKey: string;
+    title: string;
+    year: number | null;
+    sizeBytes: number;
+    libraryKind: LibraryKind;
+  } | null;
+}
+
+/** getDiskOrphans + the "Looks like" diagnosis. When several items share a
+ *  title key, the biggest one wins (that's the copy worth keeping). */
+export function getDiskOrphansAnnotated(): DiskOrphanAnnotated[] {
+  const orphans = getDiskOrphans();
+  if (orphans.length === 0) return [];
+  const items = getDb()
+    .prepare(
+      `SELECT rating_key, title, year, size_bytes, library_kind
+       FROM media_items WHERE removed = 0`
+    )
+    .all() as {
+    rating_key: string;
+    title: string;
+    year: number | null;
+    size_bytes: number;
+    library_kind: LibraryKind;
+  }[];
+  const byKey = new Map<string, (typeof items)[number]>();
+  for (const it of items) {
+    const key = titleKey(it.title);
+    if (!key) continue;
+    const cur = byKey.get(key);
+    if (!cur || it.size_bytes > cur.size_bytes) byKey.set(key, it);
+  }
+  return orphans.map((o) => {
+    const hit = byKey.get(titleKey(o.name));
+    return {
+      ...o,
+      likely: hit
+        ? {
+            ratingKey: hit.rating_key,
+            title: hit.title,
+            year: hit.year,
+            sizeBytes: hit.size_bytes,
+            libraryKind: hit.library_kind,
+          }
+        : null,
+    };
+  });
+}
+
+/** One section's prior rows (feeds the scan's mtime size cache). */
+export function diskOrphansForSection(sectionId: string): DiskOrphanRow[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT section_id, name, path, is_dir, size_bytes, size_skipped, mtime, last_synced
+       FROM disk_orphans WHERE section_id = ?`
+    )
+    .all(sectionId) as Parameters<typeof mapOrphanRow>[0][];
+  return rows.map(mapOrphanRow);
+}
+
+export function diskOrphansSummary(): { titles: number; bytes: number } {
+  return getDb()
+    .prepare(
+      `SELECT COUNT(*) AS titles, COALESCE(SUM(size_bytes), 0) AS bytes FROM disk_orphans`
+    )
+    .get() as { titles: number; bytes: number };
+}
+
+/** One section's captured on-disk names (+ coverage counts for the safety
+ *  guard: `named` = items with at least one name captured). */
+export function sectionDiskNameStats(sectionId: string): {
+  total: number;
+  named: number;
+  names: string[];
+} {
+  const rows = getDb()
+    .prepare(
+      `SELECT dir_name, file_name FROM media_items
+       WHERE removed = 0 AND section_id = ?`
+    )
+    .all(sectionId) as { dir_name: string | null; file_name: string | null }[];
+  const names: string[] = [];
+  let named = 0;
+  for (const r of rows) {
+    if (r.dir_name || r.file_name) named++;
+    // dir_name is newline-joined for multi-folder shows — every folder counts.
+    if (r.dir_name) names.push(...r.dir_name.split('\n').filter(Boolean));
+    if (r.file_name) names.push(r.file_name);
+  }
+  return { total: rows.length, named, names };
+}
+
+/** Every *arr folder basename we know of — matched (arr_items) AND unmatched
+ *  (arr_unmatched: on disk per *arr but invisible to the media server). Global,
+ *  not section-scoped: arr instances don't map to library sections. */
+export function arrFolderNames(): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT folder_name AS name FROM arr_items WHERE folder_name IS NOT NULL
+       UNION
+       SELECT folder_name AS name FROM arr_unmatched WHERE folder_name IS NOT NULL`
+    )
+    .all() as { name: string }[];
+  return rows.map((r) => r.name);
 }
 
 // ---------------------------------------------------------------------------

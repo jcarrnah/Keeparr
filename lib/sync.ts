@@ -22,6 +22,7 @@ import {
   listUsers,
   ratingKeysByGuid,
   replaceArrItems,
+  replaceArrConflicts,
   replaceArrUnmatched,
   replaceSeerrRequests,
   showRatingKeys,
@@ -29,10 +30,13 @@ import {
   updateItemSize,
   upsertMediaBatch,
   upsertWatchBatch,
+  type ArrConflictInput,
   type ArrItemInput,
   type ArrUnmatchedInput,
   type UpsertMediaInput,
 } from './queries';
+import { lastSegment } from './paths';
+import { verifyArrUnmatchedOnDisk } from './diskscan';
 import type { LibraryKind } from './types';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -98,15 +102,36 @@ export async function syncLibrary(): Promise<JobResult> {
       const batch: UpsertMediaInput[] = [];
       for (const show of items) {
         let size = knownSizes.get(show.ratingKey);
+        let derivedDir: string | null = null;
+        let derivedNames: string[] = [];
         if (size == null) {
           // New show — compute its size now so it never shows as 0 GB.
           try {
-            size = await backend.showSize(show.ratingKey);
+            const disk = await backend.showSize(show.ratingKey);
+            size = disk.sizeBytes;
+            derivedDir = disk.dirPath;
+            derivedNames = disk.dirNames;
           } catch {
             size = 0;
           }
         }
-        batch.push(toInput({ ...show, sizeBytes: size }, section.id, 'show'));
+        // Some servers omit the show's Location from listings — fall back to
+        // the folder(s) derived from episode paths (existing shows get theirs
+        // backfilled by the sizes job). Multi-folder shows store EVERY folder
+        // name, newline-joined.
+        batch.push(
+          toInput(
+            {
+              ...show,
+              sizeBytes: size,
+              dirPath: show.dirPath ?? derivedDir,
+              dirName:
+                show.dirName ?? (derivedNames.length ? derivedNames.join('\n') : null),
+            },
+            section.id,
+            'show'
+          )
+        );
       }
       itemsSynced += upsertMediaBatch(batch, syncStart);
     }
@@ -145,17 +170,34 @@ export async function syncRecentlyAdded(): Promise<JobResult> {
     const batch: UpsertMediaInput[] = [];
     for (const node of items) {
       let size = node.sizeBytes;
+      let derivedDir: string | null = null;
+      let derivedNames: string[] = [];
       if (kind === 'show') {
         size = knownSizes.get(node.ratingKey) ?? 0;
         if (size === 0) {
           try {
-            size = await backend.showSize(node.ratingKey);
+            const disk = await backend.showSize(node.ratingKey);
+            size = disk.sizeBytes;
+            derivedDir = disk.dirPath;
+            derivedNames = disk.dirNames;
           } catch {
             size = 0;
           }
         }
       }
-      batch.push(toInput({ ...node, sizeBytes: size }, section.id, kind));
+      batch.push(
+        toInput(
+          {
+            ...node,
+            sizeBytes: size,
+            dirPath: node.dirPath ?? derivedDir,
+            dirName:
+              node.dirName ?? (derivedNames.length ? derivedNames.join('\n') : null),
+          },
+          section.id,
+          kind
+        )
+      );
     }
     added += upsertMediaBatch(batch, syncStart);
   }
@@ -174,7 +216,11 @@ export async function syncSizes(): Promise<JobResult> {
   let updated = 0;
   for (const rk of keys) {
     try {
-      updateItemSize(rk, await backend.showSize(rk));
+      const disk = await backend.showSize(rk);
+      // Also backfill the show's on-disk folder(s) — servers that omit
+      // Location from listings leave dir_path NULL until this derives it from
+      // episodes. Multi-folder shows record every folder name.
+      updateItemSize(rk, disk.sizeBytes, disk.dirPath, disk.dirNames);
       updated++;
     } catch {
       // a single failing show shouldn't abort the recompute
@@ -264,6 +310,7 @@ function toArrInput(ratingKey: string, r: ArrRecord): ArrItemInput {
     rootFolder: r.rootFolder,
     arrSizeBytes: r.sizeOnDisk,
     tags: r.tags,
+    folderName: lastSegment(r.path),
   };
 }
 
@@ -282,7 +329,14 @@ export async function syncArr(): Promise<JobResult> {
   const imdbMap = ratingKeysByGuid('imdb'); // secondary axis (spans movies + shows)
   const matched: ArrItemInput[] = [];
   const unmatchedRecs: ArrUnmatchedInput[] = [];
-  const seen = new Set<string>();
+  const conflictRecs: ArrConflictInput[] = [];
+  // First instance to claim a rating_key wins; later claimants are recorded as
+  // conflicts (two instances managing one title, or two arr entries resolving
+  // to one merged Plex item) instead of being silently dropped.
+  const seen = new Map<
+    string,
+    { source: string; instanceId: string; instanceName: string }
+  >();
   let total = 0;
   let errors = 0;
   let ok = 0;
@@ -294,25 +348,44 @@ export async function syncArr(): Promise<JobResult> {
       // matched to IMDb (no tmdb/tvdb) still resolve.
       const rk = idMap.get(r.matchId) ?? (r.imdbId ? imdbMap.get(r.imdbId) : undefined);
       if (!rk) {
-        // No Plex item carries this title's tvdb/tmdb id. Only record it if it's
-        // actually DOWNLOADED (has files on disk) — that's media on disk Plex
-        // can't see (actionable). Wanted-but-not-downloaded titles are just
-        // missing media and aren't Keeparr's concern, so we skip them.
-        if (r.sizeOnDisk > 0) {
-          unmatchedRecs.push({
-            source: r.source,
-            instanceId: r.instanceId,
-            instanceName: r.instanceName,
-            title: r.title,
-            extKind: r.source === 'sonarr' ? 'tvdb' : 'tmdb',
-            extId: r.matchId,
-            sizeBytes: r.sizeOnDisk,
-          });
-        }
+        // No Plex item carries this title's tvdb/tmdb id. Downloaded ones are
+        // media on disk the server can't see (the "In *arr, not in <server>"
+        // category); fileless ones are recorded too but only feed the
+        // identity-mismatch check (folder-name collisions with server items).
+        unmatchedRecs.push({
+          source: r.source,
+          instanceId: r.instanceId,
+          instanceName: r.instanceName,
+          title: r.title,
+          extKind: r.source === 'sonarr' ? 'tvdb' : 'tmdb',
+          extId: r.matchId,
+          sizeBytes: r.sizeOnDisk,
+          folderName: lastSegment(r.path),
+          path: r.path,
+          downloaded: r.sizeOnDisk > 0,
+        });
         continue;
       }
-      if (seen.has(rk)) continue;
-      seen.add(rk);
+      const first = seen.get(rk);
+      if (first) {
+        conflictRecs.push({
+          ratingKey: rk,
+          title: r.title,
+          firstSource: first.source,
+          firstInstanceId: first.instanceId,
+          firstInstanceName: first.instanceName,
+          source: r.source,
+          instanceId: r.instanceId,
+          instanceName: r.instanceName,
+          sizeOnDisk: r.sizeOnDisk,
+        });
+        continue;
+      }
+      seen.set(rk, {
+        source: r.source,
+        instanceId: r.instanceId,
+        instanceName: r.instanceName,
+      });
       matched.push(toArrInput(rk, r));
     }
   };
@@ -351,13 +424,25 @@ export async function syncArr(): Promise<JobResult> {
 
   replaceArrItems(matched, failedInstanceIds);
   replaceArrUnmatched(unmatchedRecs, failedInstanceIds);
-  const unmatched = unmatchedRecs.length;
+  replaceArrConflicts(conflictRecs, failedInstanceIds);
+  // Reality-check the fresh unmatched rows against the mapped library roots
+  // (the replace wiped the previous verdicts). Non-fatal: a filesystem hiccup
+  // must not fail the arr sync — the diskScan job re-verifies anyway.
+  try {
+    await verifyArrUnmatchedOnDisk();
+  } catch {
+    /* verified next diskScan run */
+  }
+  const unmatched = unmatchedRecs.filter((u) => u.downloaded).length;
+  const conflictNote = conflictRecs.length
+    ? `, ${conflictRecs.length} cross-instance conflict(s)`
+    : '';
   const errNote = errors
     ? ` (${errors} instance error(s); their cached data kept)`
     : '';
   return {
     result: matched.length,
-    message: `Matched ${matched.length} of ${total} titles (${unmatched} downloaded but not in Plex)${errNote}.`,
+    message: `Matched ${matched.length} of ${total} titles (${unmatched} downloaded but not in Plex${conflictNote})${errNote}.`,
   };
 }
 
@@ -381,5 +466,9 @@ function toInput(
     overview: item.overview,
     genres: item.genres,
     runtimeMinutes: item.runtimeMinutes,
+    dirName: item.dirName,
+    fileName: item.fileName,
+    dirPath: item.dirPath,
+    fileCount: item.fileCount,
   };
 }

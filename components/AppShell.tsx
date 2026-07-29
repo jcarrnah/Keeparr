@@ -277,6 +277,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           {navItem('/swipe', 'Swipe', pathname.startsWith('/swipe'), '⇄')}
           {navItem('/stats', 'Big Picture', pathname.startsWith('/stats'), '◴')}
           {user?.isAdmin &&
+            navItem('/problems', 'Problems', pathname.startsWith('/problems'), '⚠')}
+          {user?.isAdmin &&
             navItem(
               '/settings/general',
               'Settings',

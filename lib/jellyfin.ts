@@ -1,5 +1,6 @@
 import { fetchJson } from './http';
 import { getMediaDeviceId, type MediaServerType } from './settings';
+import { deriveShowDirPaths, lastSegment, parentPath, parentSegment } from './paths';
 import type { LibraryKind } from './types';
 import type { BackendItem, BackendSection } from './mediaserver/types';
 
@@ -165,6 +166,8 @@ export interface JfItem {
   Name?: string;
   ProductionYear?: number;
   DateCreated?: string;
+  /** Movie: the video file path; Series: the series folder. */
+  Path?: string;
   ProviderIds?: Record<string, string>;
   MediaSources?: { Path?: string; Size?: number }[];
   Overview?: string;
@@ -207,8 +210,29 @@ export function sumMediaSources(items: JfItem[]): number {
   return total;
 }
 
-/** Map a raw Jellyfin item to our generic BackendItem. Exported for tests. */
+/** Map a raw Jellyfin item to our generic BackendItem. Exported for tests.
+ *  `withSize` doubles as the movie/series discriminator (movies carry size). */
 export function toBackendItem(it: JfItem, withSize: boolean): BackendItem {
+  // On-disk names for the disk-orphan scan. Movie Path is the video FILE (fall
+  // back to MediaSources); Series Path is the series FOLDER itself.
+  let dirName: string | null = null;
+  let fileName: string | null = null;
+  let dirPath: string | null = null;
+  let fileCount: number | null = null;
+  if (withSize) {
+    const file = it.Path ?? it.MediaSources?.[0]?.Path ?? null;
+    dirName = parentSegment(file);
+    fileName = lastSegment(file);
+    dirPath = parentPath(file);
+    // Distinct video files merged into this movie (multi-part/multi-version),
+    // deduped by Path like sumMediaSources.
+    const sources = it.MediaSources ?? [];
+    const paths = new Set(sources.map((ms) => ms.Path).filter(Boolean));
+    fileCount = paths.size > 0 ? paths.size : sources.length > 0 ? sources.length : null;
+  } else {
+    dirName = lastSegment(it.Path ?? null);
+    dirPath = it.Path ?? null;
+  }
   return {
     ratingKey: String(it.Id),
     title: String(it.Name ?? ''),
@@ -222,6 +246,10 @@ export function toBackendItem(it: JfItem, withSize: boolean): BackendItem {
     overview: it.Overview ?? null,
     genres: Array.isArray(it.Genres) ? it.Genres.map(String).filter(Boolean) : [],
     runtimeMinutes: it.RunTimeTicks ? Math.round(it.RunTimeTicks / 600_000_000) : null,
+    dirName,
+    fileName,
+    dirPath,
+    fileCount,
   };
 }
 
@@ -264,7 +292,7 @@ export async function getItems(
       ParentId: parentId,
       Recursive: 'true',
       IncludeItemTypes: itemTypeFor(kind),
-      fields: 'ProviderIds,MediaSources,DateCreated,Overview,Genres',
+      fields: 'ProviderIds,MediaSources,DateCreated,Overview,Genres,Path',
       StartIndex: String(start),
       Limit: String(pageSize),
     });
@@ -372,12 +400,13 @@ export async function getWatchHistory(
   return [...agg.values()];
 }
 
-/** Total on-disk size of a series: sum every episode's media, file-deduped. */
+/** Total on-disk size of a series (every episode's media, file-deduped) plus
+ *  the series folder(s) derived from episode paths. */
 export async function getSeriesSize(
   baseUrl: string,
   token: string,
   seriesId: string
-): Promise<number> {
+): Promise<{ sizeBytes: number; dirPath: string | null; dirNames: string[] }> {
   const qs = new URLSearchParams({
     ParentId: seriesId,
     Recursive: 'true',
@@ -389,7 +418,20 @@ export async function getSeriesSize(
     token,
     'Jellyfin episodes'
   );
-  return sumMediaSources(items);
+  // Derive the series folder from episode paths — the fallback for servers
+  // that omit the series' own Path from listings. JF sections report no
+  // library roots, so this relies on deriveShowDirPath's season-folder hop.
+  const files: string[] = [];
+  for (const it of items) {
+    const p = it.MediaSources?.[0]?.Path;
+    if (p) files.push(p);
+  }
+  const dirs = deriveShowDirPaths(files, []);
+  return {
+    sizeBytes: sumMediaSources(items),
+    dirPath: dirs[0] ?? null,
+    dirNames: dirs.map((d) => lastSegment(d)).filter((n): n is string => !!n),
+  };
 }
 
 // ---------------------------------------------------------------------------

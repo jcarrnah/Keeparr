@@ -10,10 +10,15 @@ import {
   addSkip,
   libraryStats,
   recordJobRun,
+  replaceArrConflicts,
   replaceArrItems,
   replaceArrUnmatched,
+  replaceDiskOrphansForSection,
+  updateArrUnmatchedDisk,
+  updateItemDiskCheck,
   replaceSeerrRequests,
   setJobState,
+  tombstoneStale,
   upsertMediaBatch,
   upsertUser,
   upsertWatchBatch,
@@ -157,6 +162,15 @@ function buildItems(): UpsertMediaInput[] {
       overview: `${title} — a ${kind === 'movie' ? 'film' : 'series'} in the demo library. This synopsis stands in for real ${kind === 'movie' ? 'Radarr/Plex' : 'Sonarr/Plex'} metadata so the swipe card layout is visible offline.`,
       genres: [DEV_GENRES[n % DEV_GENRES.length], DEV_GENRES[(n + 3) % DEV_GENRES.length]],
       runtimeMinutes: kind === 'movie' ? 90 + (n % 60) : 22 + (n % 40),
+      // On-disk names (disk-orphan matching) — lets a real local Disk scan pass
+      // the safety guard if you map a section to a scratch folder.
+      dirName: title,
+      fileName: kind === 'movie' ? `${title}.mkv` : null,
+      dirPath: `/media/${SECTIONS.find((s) => s.id === sectionId)!.title}/${title}`,
+      // Movies carry their file count. n=34 is the SECOND 17-multiple (17
+      // itself is the measured-disk demo): a merged two-part movie, so its
+      // divergent arr size demos the "Multi-part item — likely fine" badge.
+      fileCount: kind === 'movie' ? (n === 34 ? 2 : 1) : null,
     });
   };
 
@@ -218,10 +232,10 @@ function buildArrItems(items: UpsertMediaInput[]): ArrItemInput[] {
 
 /** A few fake unmatched arr titles (downloaded but no Plex match) for Match health. */
 const ARR_UNMATCHED = [
-  { source: 'sonarr', instanceId: SONARR_MAIN.id, instanceName: 'Sonarr', title: 'Some Obscure Show', extKind: 'tvdb' as const, extId: '999001', sizeBytes: Math.round(42 * GB) },
-  { source: 'sonarr', instanceId: SONARR_ANIME.id, instanceName: 'Sonarr (Anime)', title: 'Niche OVA', extKind: 'tvdb' as const, extId: '999002', sizeBytes: Math.round(3.5 * GB) },
-  { source: 'radarr', instanceId: RADARR_MAIN.id, instanceName: 'Radarr', title: 'Unreleased Indie Film', extKind: 'tmdb' as const, extId: '999003', sizeBytes: Math.round(8 * GB) },
-  { source: 'radarr', instanceId: RADARR_MAIN.id, instanceName: 'Radarr', title: 'Festival Short', extKind: 'tmdb' as const, extId: '999004', sizeBytes: Math.round(0.9 * GB) },
+  { source: 'sonarr', instanceId: SONARR_MAIN.id, instanceName: 'Sonarr', title: 'Some Obscure Show', extKind: 'tvdb' as const, extId: '999001', sizeBytes: Math.round(42 * GB), path: '/tv/Some Obscure Show', folderName: 'Some Obscure Show', downloaded: true },
+  { source: 'sonarr', instanceId: SONARR_ANIME.id, instanceName: 'Sonarr (Anime)', title: 'Niche OVA', extKind: 'tvdb' as const, extId: '999002', sizeBytes: Math.round(3.5 * GB), path: '/anime/Niche OVA', folderName: 'Niche OVA', downloaded: true },
+  { source: 'radarr', instanceId: RADARR_MAIN.id, instanceName: 'Radarr', title: 'Unreleased Indie Film', extKind: 'tmdb' as const, extId: '999003', sizeBytes: Math.round(8 * GB), path: '/movies/Unreleased Indie Film', folderName: 'Unreleased Indie Film', downloaded: true },
+  { source: 'radarr', instanceId: RADARR_MAIN.id, instanceName: 'Radarr', title: 'Festival Short', extKind: 'tmdb' as const, extId: '999004', sizeBytes: Math.round(0.9 * GB), path: '/movies/Festival Short', folderName: 'Festival Short', downloaded: true },
 ];
 
 export interface SeedResult {
@@ -300,9 +314,210 @@ export function seedDevData(opts: { reset?: boolean } = {}): SeedResult {
   const seededMedia = opts.reset || libraryStats().totalItems === 0;
   if (seededMedia) {
     const mediaItems = buildItems();
-    upsertMediaBatch(mediaItems, Math.floor(Date.now() / 1000));
-    replaceArrItems(buildArrItems(mediaItems));
+    const seedTs = Math.floor(Date.now() / 1000);
+    upsertMediaBatch(mediaItems, seedTs);
     replaceArrUnmatched(ARR_UNMATCHED);
+
+    // --- Problems-page demo rows (mismatch/notInArr/unmatched/missingIds are
+    // already covered by the modular seeding above) ---
+    // Duplicates: re-import an existing movie + show under new rating keys but
+    // the SAME external ids, so the Duplicates check groups them. The movie
+    // copy lives in a DIFFERENT folder (the two-real-copies case); the show
+    // copy keeps the original's path (the split-entry case).
+    const dupMovieSrc = mediaItems.find((m) => m.libraryKind === 'movie' && m.guidTmdb)!;
+    const dupShowSrc = mediaItems.find((m) => m.libraryKind === 'show' && m.guidTvdb)!;
+    upsertMediaBatch(
+      [
+        {
+          ...dupMovieSrc,
+          ratingKey: 'dev-dup-movie',
+          sectionId: '2',
+          sizeBytes: Math.round(48 * GB),
+          // A DIFFERENT folder than the source copy (whatever library it's in)
+          // so the two-real-copies case is visible in the Location diff.
+          dirPath: dupMovieSrc.dirPath?.startsWith('/media/4K Movies/')
+            ? `/media/Movies/${dupMovieSrc.title}`
+            : `/media/4K Movies/${dupMovieSrc.title}`,
+        },
+        { ...dupShowSrc, ratingKey: 'dev-dup-show', sizeBytes: Math.round(0.8 * dupShowSrc.sizeBytes) },
+        // Zero size: the server lists it but reports no file bytes.
+        {
+          ratingKey: 'dev-zero-1',
+          sectionId: '1',
+          libraryKind: 'movie',
+          title: 'Corrupted Import Demo',
+          year: 2024,
+          thumb: null,
+          sizeBytes: 0,
+          addedAt: seedTs - 3 * 86400,
+          guidTmdb: '990001',
+          guidTvdb: null,
+          dirPath: '/media/Movies/Corrupted Import Demo',
+        },
+      ],
+      seedTs
+    );
+    // arr_items (after the extra media rows above exist — FK on rating_key).
+    // Radarr still holds bytes for the zero-size demo item, so its Problems row
+    // shows the "Plex sees no files — rescan" action.
+    replaceArrItems([
+      ...buildArrItems(mediaItems),
+      {
+        ratingKey: 'dev-zero-1',
+        source: 'radarr',
+        instanceId: RADARR_MAIN.id,
+        instanceName: 'Radarr',
+        arrId: 990001,
+        monitored: true,
+        status: 'released',
+        quality: 'Bluray-1080p',
+        qualityKind: 'file',
+        rootFolder: '/movies',
+        arrSizeBytes: Math.round(19 * GB),
+        tags: [],
+        folderName: 'Corrupted Import Demo',
+      },
+    ]);
+    // Removed but kept: seed it slightly "older", keep it, then tombstone it —
+    // the same path a real deletion takes (full sync tombstones stale rows).
+    upsertMediaBatch(
+      [
+        {
+          ratingKey: 'dev-removed-1',
+          sectionId: '3',
+          libraryKind: 'show',
+          title: 'Deleted Anyway',
+          year: 2019,
+          thumb: null,
+          sizeBytes: Math.round(64 * GB),
+          addedAt: seedTs - 400 * 86400,
+          guidTmdb: null,
+          guidTvdb: '990002',
+          dirPath: '/media/TV Shows/Deleted Anyway',
+        },
+      ],
+      seedTs - 100
+    );
+    addKeep('dev-friend', 'dev-removed-1');
+    tombstoneStale(seedTs - 50);
+    // Disk orphans: fake scan results so the "On disk, in neither" pill/table
+    // demo offline (no real filesystem walk happens in the seed).
+    replaceDiskOrphansForSection('3', [
+      {
+        name: 'Cancelled Show (2017)',
+        path: '/media/TV Shows/Cancelled Show (2017)',
+        isDir: true,
+        sizeBytes: Math.round(18 * GB),
+        sizeSkipped: false,
+        mtime: seedTs - 90 * 86400,
+      },
+      {
+        name: 'random-rip-backup',
+        path: '/media/TV Shows/random-rip-backup',
+        isDir: true,
+        sizeBytes: Math.round(2.4 * GB),
+        sizeSkipped: false,
+        mtime: seedTs - 30 * 86400,
+      },
+    ]);
+    const leftoverSrc = mediaItems.find((m) => m.libraryKind === 'movie')!;
+    replaceDiskOrphansForSection('1', [
+      {
+        name: 'Some.Movie.2019.1080p.WEB-DL.mkv',
+        path: '/media/Movies/Some.Movie.2019.1080p.WEB-DL.mkv',
+        isDir: false,
+        sizeBytes: Math.round(4.2 * GB),
+        sizeSkipped: false,
+        mtime: seedTs - 200 * 86400,
+      },
+      {
+        // A leftover old copy of a title the library already has — demos the
+        // "Looks like" diagnosis.
+        name: `${leftoverSrc.title} (2004) [XviD]`,
+        path: `/media/Movies/${leftoverSrc.title} (2004) [XviD]`,
+        isDir: true,
+        sizeBytes: Math.round(0.7 * GB),
+        sizeSkipped: false,
+        mtime: seedTs - 300 * 86400,
+      },
+    ]);
+
+
+    // Identity mismatch: a fileless Radarr entry claims the SAME folder as a
+    // seeded movie but under a different tmdb id (the "Plex misidentified the
+    // folder" case). Also a multi-folder show (episodes span two root folders,
+    // newline-joined dir_name) so the disk scan treats both as known.
+    // Pick an arr-UNMATCHED movie (every 9th is skipped by buildArrItems) that
+    // still carries a tmdb id — its "In Plex, not in *arr" row then shows the
+    // "Fix match — see Identity mismatch" cross-link badge.
+    const idMismatchSrc = mediaItems.find(
+      (m, i) =>
+        (i + 1) % 9 === 0 && m.libraryKind === 'movie' && m.guidTmdb && m.ratingKey !== dupMovieSrc.ratingKey
+    )!;
+    replaceArrUnmatched(
+      [
+        ...ARR_UNMATCHED,
+        {
+          source: 'radarr',
+          instanceId: RADARR_MAIN.id,
+          instanceName: 'Radarr',
+          title: `${idMismatchSrc.title} (Director's Cut)`,
+          extKind: 'tmdb',
+          extId: '999006',
+          sizeBytes: 0,
+          folderName: idMismatchSrc.dirName!,
+          path: `/movies/${idMismatchSrc.dirName}`,
+          downloaded: false,
+        },
+      ]
+    );
+    const multiDirSrc = mediaItems.find((m) => m.libraryKind === 'show' && m.sectionId === '3')!;
+    upsertMediaBatch(
+      [{ ...multiDirSrc, dirName: `${multiDirSrc.title}\n${multiDirSrc.title} Specials` }],
+      seedTs
+    );
+
+    // Disk reality-check demos (AFTER the final replaceArrUnmatched above so
+    // the verdicts survive): one *arr orphan's folder is MISSING on disk
+    // (stale record), one is really there; and one size-mismatch title gets a
+    // measured size agreeing with the *arr (verdict: rescan the server).
+    updateArrUnmatchedDisk([
+      { instanceId: SONARR_MAIN.id, extKind: 'tvdb', extId: '999001', onDisk: false, diskSizeBytes: null },
+      { instanceId: RADARR_MAIN.id, extKind: 'tmdb', extId: '999003', onDisk: true, diskSizeBytes: Math.round(8 * GB) },
+    ]);
+    const mmDemo = mediaItems.find((_, i) => (i + 1) % 17 === 0)!; // buildArrItems' mismatch rule
+    updateItemDiskCheck(mmDemo.ratingKey, Math.round(mmDemo.sizeBytes * 0.3), seedTs);
+
+    // Cross-instance conflict: both Sonarr instances manage the first anime
+    // title; the Anime instance won the match (it owns the arr_items row).
+    // Plus a SAME-instance conflict: two Radarr titles resolve to one movie —
+    // the merged multi-part case ("split apart in Plex" badge).
+    const conflictSrc = mediaItems.find((m) => m.sectionId === '4')!;
+    const mergedSrc = mediaItems.find((m) => m.libraryKind === 'movie' && m.fileCount === 2)!;
+    replaceArrConflicts([
+      {
+        ratingKey: conflictSrc.ratingKey,
+        title: conflictSrc.title,
+        firstSource: 'sonarr',
+        firstInstanceId: SONARR_ANIME.id,
+        firstInstanceName: SONARR_ANIME.name,
+        source: 'sonarr',
+        instanceId: SONARR_MAIN.id,
+        instanceName: SONARR_MAIN.name,
+        sizeOnDisk: conflictSrc.sizeBytes,
+      },
+      {
+        ratingKey: mergedSrc.ratingKey,
+        title: `${mergedSrc.title}, Part II`,
+        firstSource: 'radarr',
+        firstInstanceId: RADARR_MAIN.id,
+        firstInstanceName: RADARR_MAIN.name,
+        source: 'radarr',
+        instanceId: RADARR_MAIN.id,
+        instanceName: RADARR_MAIN.name,
+        sizeOnDisk: Math.round(mergedSrc.sizeBytes / 2),
+      },
+    ]);
 
     addKeep(DEV_USER_ID, 'dev-1');
     addKeep(DEV_USER_ID, 'dev-210');
@@ -393,6 +608,7 @@ export function seedDevData(opts: { reset?: boolean } = {}): SeedResult {
     ['watch', 'ok', 'Refreshed 8 watch-history rows.', 8],
     ['requests', 'ok', 'Cached Seerr requests for 1 user(s).', 1],
     ['arr', 'ok', 'Matched 300 of 300 titles (0 unmatched).', 300],
+    ['diskScan', 'ok', 'Found 3 orphaned item(s) (24.60 GB) across 4 mapped root(s).', 3],
   ];
   for (const [jobId, status, msg, result] of jobStates) {
     setJobState(jobId, {
@@ -429,6 +645,7 @@ export function seedDevData(opts: { reset?: boolean } = {}): SeedResult {
   runs.push({ jobId: 'watch', startedAt: nowSec - 9000, status: 'ok', message: 'Refreshed 8 watch-history rows.', result: 8 });
   runs.push({ jobId: 'requests', startedAt: nowSec - 11000, status: 'ok', message: 'Cached Seerr requests for 1 user(s).', result: 1 });
   runs.push({ jobId: 'library', startedAt: nowSec - 13000, status: 'ok', message: `Synced ${stats.totalItems} items.`, result: stats.totalItems });
+  runs.push({ jobId: 'diskScan', startedAt: nowSec - 15000, status: 'ok', message: 'Found 3 orphaned item(s) (24.60 GB) across 4 mapped root(s).', result: 3 });
   for (const r of runs) {
     recordJobRun({
       jobId: r.jobId,

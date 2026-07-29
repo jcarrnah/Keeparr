@@ -11,6 +11,7 @@ import { runBackup } from './backup';
 import { runPurge } from './purge';
 import { runRules } from './rules';
 import { runRatings } from './ratings';
+import { runDiskScan } from './diskscan';
 import {
   getAllJobState,
   getJobState,
@@ -30,6 +31,7 @@ export type JobId =
   | 'watch'
   | 'requests'
   | 'arr'
+  | 'diskScan'
   | 'backup'
   | 'rules'
   | 'purge'
@@ -51,6 +53,7 @@ export const JOBS: JobDef[] = [
   { id: 'watch', label: 'Watch history', run: syncWatchHistory },
   { id: 'requests', label: 'Requests', run: syncSeerrRequests },
   { id: 'arr', label: 'Sonarr / Radarr', run: syncArr },
+  { id: 'diskScan', label: 'Disk scan', run: runDiskScan },
   { id: 'backup', label: 'Backup', run: runBackup },
   // FORK: rules only TAG (into scheduled_deletions); purge is the only job
   // that changes anything outside Keeparr. Both are inert unless the Deletion

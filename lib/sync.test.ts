@@ -1,8 +1,14 @@
 import { beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { __setTestDbToMemory, __closeDb } from './db';
 import {
+  arrFolderNames,
+  getArrConflicts,
   getArrUnmatched,
   getMediaItem,
+  replaceArrConflicts,
   libraryStats,
   replaceArrItems,
   replaceArrUnmatched,
@@ -19,6 +25,7 @@ import {
   setPlexSections,
   setRadarrInstances,
   setSonarrInstances,
+  setStorageMappings,
   writeSetting,
 } from './settings';
 import type { BackendItem, BackendSection, MediaBackend } from './mediaserver';
@@ -62,6 +69,10 @@ function backendItem(ratingKey: string, over: Partial<BackendItem> = {}): Backen
     overview: null,
     genres: [],
     runtimeMinutes: null,
+    dirName: null,
+    fileName: null,
+    dirPath: null,
+    fileCount: null,
     ...over,
   };
 }
@@ -90,7 +101,7 @@ function backendWith(
     listSections: async () => sections,
     listSectionItems: async (id) => itemsBySection[id] ?? [],
     recentItems: async () => [],
-    showSize: async () => 0,
+    showSize: async () => ({ sizeBytes: 0, dirPath: null, dirNames: [] }),
     getWatchData: async () => null,
   };
 }
@@ -169,6 +180,7 @@ describe('syncArr per-instance replace', () => {
     qualityKind: 'file',
     rootFolder: '/m',
     sizeOnDisk: 1 * GB,
+    path: null,
     tags: [],
     ...over,
   });
@@ -225,6 +237,186 @@ describe('syncArr per-instance replace', () => {
     expect(arrSource('sh1')).toBeNull(); // Sonarr reported nothing → row dropped
     expect(getArrUnmatched()).toEqual([]); // stale orphan swept
   });
+
+  it('captures folder names for matched AND unmatched titles (disk-orphan set)', async () => {
+    vi.mocked(fetchSonarr).mockResolvedValue([]);
+    vi.mocked(fetchRadarr).mockResolvedValue([
+      rec({ path: '/movies/Dune (2021)' }), // matches m1
+      rec({ arrId: 2, matchId: '404', title: 'Lost Film', path: '/movies/Lost Film' }), // unmatched, downloaded
+    ]);
+    await syncArr();
+    expect(arrFolderNames().sort()).toEqual(['Dune (2021)', 'Lost Film']);
+    // The unmatched record also keeps its FULL *arr-side path (Problems Location).
+    expect(getArrUnmatched().map((u) => u.path)).toEqual(['/movies/Lost Film']);
+  });
+
+  it('reality-checks unmatched folders against mapped roots right after the sync', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'keeparr-arr-verify-'));
+    try {
+      mkdirSync(join(root, 'On Disk Orphan'));
+      writeFileSync(join(root, 'On Disk Orphan', 'f.mkv'), 'x'.repeat(50));
+      setStorageMappings([{ sectionId: '1', path: root }]);
+      vi.mocked(fetchSonarr).mockResolvedValue([]);
+      vi.mocked(fetchRadarr).mockResolvedValue([
+        rec({ arrId: 2, matchId: '404', title: 'On Disk Orphan', sizeOnDisk: 2 * GB, path: '/movies/On Disk Orphan' }),
+        rec({ arrId: 3, matchId: '405', title: 'Ghost Record', sizeOnDisk: 1 * GB, path: '/movies/Ghost Record' }),
+      ]);
+      await syncArr();
+      const byTitle = new Map(getArrUnmatched(false).map((u) => [u.title, u]));
+      expect(byTitle.get('On Disk Orphan')).toMatchObject({ onDisk: true, diskSizeBytes: 50 });
+      expect(byTitle.get('Ghost Record')).toMatchObject({ onDisk: false, diskSizeBytes: null });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('records FILELESS unmatched titles too, but only counts downloaded in the message', async () => {
+    vi.mocked(fetchSonarr).mockResolvedValue([]);
+    vi.mocked(fetchRadarr).mockResolvedValue([
+      rec({}), // matches m1
+      rec({ arrId: 2, matchId: '404', title: 'Downloaded Orphan', sizeOnDisk: 2 * GB, path: '/movies/DO' }),
+      rec({ arrId: 3, matchId: '405', title: 'Wanted Only', sizeOnDisk: 0, path: '/movies/WO' }),
+    ]);
+    const res = await syncArr();
+    expect(res.message).toContain('(1 downloaded but not in Plex)'); // fileless not counted
+    expect(getArrUnmatched().map((u) => u.title)).toEqual(['Downloaded Orphan']);
+    const all = getArrUnmatched(false);
+    expect(all.map((u) => u.title).sort()).toEqual(['Downloaded Orphan', 'Wanted Only']);
+    expect(all.find((u) => u.title === 'Wanted Only')?.downloaded).toBe(false);
+  });
+});
+
+describe('syncArr cross-instance conflicts', () => {
+  const rec = (over: Partial<ArrRecord>): ArrRecord => ({
+    source: 'radarr',
+    instanceId: 'r1',
+    instanceName: 'Radarr',
+    arrId: 1,
+    matchId: '22',
+    imdbId: null,
+    title: 'Movie',
+    monitored: true,
+    status: 'released',
+    quality: 'Bluray-1080p',
+    qualityKind: 'file',
+    rootFolder: '/m',
+    sizeOnDisk: 1 * GB,
+    path: null,
+    tags: [],
+    ...over,
+  });
+
+  beforeEach(() => {
+    setSonarrInstances([]);
+    setRadarrInstances([
+      { id: 'r1', name: 'Radarr', url: 'http://r1', apiKey: 'k' },
+      { id: 'r2', name: 'Radarr 4K', url: 'http://r2', apiKey: 'k' },
+    ]);
+    upsertMediaBatch([media('m1', { guidTmdb: '22', guidImdb: 'tt5' })]);
+  });
+
+  it('records the second claimant as a conflict; the first keeps the arr_items row', async () => {
+    vi.mocked(fetchRadarr)
+      .mockResolvedValueOnce([rec({})]) // r1 claims m1 first
+      .mockResolvedValueOnce([
+        rec({ instanceId: 'r2', instanceName: 'Radarr 4K', sizeOnDisk: 2 * GB }),
+      ]);
+    const res = await syncArr();
+
+    const conflicts = getArrConflicts();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].ratingKey).toBe('m1');
+    expect(conflicts[0].winner).toEqual({
+      source: 'radarr',
+      instanceId: 'r1',
+      instanceName: 'Radarr',
+    });
+    expect(conflicts[0].loser).toEqual({
+      source: 'radarr',
+      instanceId: 'r2',
+      instanceName: 'Radarr 4K',
+    });
+    expect(conflicts[0].sameInstance).toBe(false);
+    expect(conflicts[0].sizeOnDisk).toBe(2 * GB); // the loser's copy
+    // arr_items kept the FIRST claimant.
+    const row = queryLibrary({ plexUserId: 'u', limit: 10, offset: 0 }).find(
+      (r) => r.rating_key === 'm1'
+    );
+    expect(row?.arr_instance_name).toBe('Radarr');
+    expect(res.message).toContain('1 cross-instance conflict(s)');
+  });
+
+  it('a collision via the imdb fallback is recorded too', async () => {
+    vi.mocked(fetchRadarr)
+      .mockResolvedValueOnce([rec({})]) // r1 claims m1 via tmdb
+      .mockResolvedValueOnce([
+        // r2's record carries a different tmdb id but the same imdb id.
+        rec({ instanceId: 'r2', instanceName: 'Radarr 4K', matchId: '404', imdbId: 'tt5' }),
+      ]);
+    await syncArr();
+    expect(getArrConflicts().map((c) => c.loser.instanceName)).toEqual(['Radarr 4K']);
+  });
+
+  it('two titles of ONE instance resolving to one item → sameInstance conflict (merged multi-part)', async () => {
+    setRadarrInstances([{ id: 'r1', name: 'Radarr', url: 'http://r1', apiKey: 'k' }]);
+    vi.mocked(fetchRadarr).mockResolvedValueOnce([
+      // Part I claims the media item via the shared imdb id…
+      rec({ arrId: 1, title: 'Film, Part I', matchId: '404', imdbId: 'tt5' }),
+      // …then Part II — the item's real tmdb match — collides.
+      rec({ arrId: 2, title: 'Film, Part II', matchId: '22', sizeOnDisk: 2 * GB }),
+    ]);
+    await syncArr();
+    const conflicts = getArrConflicts();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      ratingKey: 'm1',
+      title: 'Film, Part II',
+      sameInstance: true,
+    });
+  });
+
+  it('a clean run sweeps stale conflict rows', async () => {
+    replaceArrConflicts([
+      {
+        ratingKey: 'm1', title: 'Movie', firstSource: 'radarr', firstInstanceId: 'r1',
+        firstInstanceName: 'Radarr', source: 'radarr', instanceId: 'r2',
+        instanceName: 'Radarr 4K', sizeOnDisk: 1 * GB,
+      },
+    ]);
+    vi.mocked(fetchRadarr)
+      .mockResolvedValueOnce([rec({})]) // only r1 has it now
+      .mockResolvedValueOnce([]);
+    await syncArr();
+    expect(getArrConflicts()).toEqual([]);
+  });
+
+  it("a failed instance's prior conflict rows are preserved", async () => {
+    replaceArrConflicts([
+      {
+        ratingKey: 'm1', title: 'Movie', firstSource: 'radarr', firstInstanceId: 'r1',
+        firstInstanceName: 'Radarr', source: 'radarr', instanceId: 'r2',
+        instanceName: 'Radarr 4K', sizeOnDisk: 1 * GB,
+      },
+    ]);
+    vi.mocked(fetchRadarr)
+      .mockResolvedValueOnce([rec({})])
+      .mockRejectedValueOnce(new Error('down')); // r2 (the row's owner) failed
+    await syncArr();
+    expect(getArrConflicts()).toHaveLength(1); // preserved, not swept
+  });
+
+  it('every instance failing leaves the conflict table untouched', async () => {
+    replaceArrConflicts([
+      {
+        ratingKey: 'm1', title: 'Movie', firstSource: 'radarr', firstInstanceId: 'r1',
+        firstInstanceName: 'Radarr', source: 'radarr', instanceId: 'r2',
+        instanceName: 'Radarr 4K', sizeOnDisk: 1 * GB,
+      },
+    ]);
+    vi.mocked(fetchRadarr).mockRejectedValue(new Error('down'));
+    await syncArr();
+    expect(getArrConflicts()).toHaveLength(1);
+  });
 });
 
 describe('syncRecentlyAdded', () => {
@@ -240,13 +432,43 @@ describe('syncRecentlyAdded', () => {
         sectionId === '1'
           ? [backendItem('m-new')]
           : [backendItem('sh-new', { sizeBytes: 0 })],
-      showSize: async () => 7 * GB,
+      showSize: async () => ({ sizeBytes: 7 * GB, dirPath: '/tv/New Show', dirNames: ['New Show'] }),
     };
     const res = await syncRecentlyAdded();
     expect(res.result).toBe(2);
     expect(getMediaItem('m-new')?.removed).toBe(0);
     expect(getMediaItem('sh-new')?.size_bytes).toBe(7 * GB); // new show sized inline
+    // The listing carried no Location (dirPath null) — the episode-derived
+    // folder from showSize() fills in dir_path/dir_name instead.
+    expect(getMediaItem('sh-new')?.dir_path).toBe('/tv/New Show');
+    expect(getMediaItem('sh-new')?.dir_name).toBe('New Show');
     expect(getMediaItem('old')?.removed).toBe(0); // no tombstoning here, ever
+  });
+
+  it("re-upserting a KNOWN show doesn't wipe the sizes-job path backfill", async () => {
+    // The live-server regression: Location-less PMS → sizes job derives the
+    // show folder; recentlyAdded then re-upserts the (known-size) show WITHOUT
+    // recomputing it and must not null the path back out.
+    setPlexSections([{ id: '2', title: 'TV', type: 'show', paths: [] }]);
+    upsertMediaBatch([media('sh1', { sectionId: '2', libraryKind: 'show', sizeBytes: 5 * GB })]);
+    fakeBackend = {
+      ...backendWith([], {}),
+      showSize: async () => ({ sizeBytes: 5 * GB, dirPath: '/tv/Airing Show', dirNames: ['Airing Show'] }),
+    };
+    await syncSizes(); // backfills dir_path
+    expect(getMediaItem('sh1')?.dir_path).toBe('/tv/Airing Show');
+
+    fakeBackend = {
+      ...backendWith([], {}),
+      // The show is in the recently-added window but its size is known, so
+      // showSize is never called — the item arrives with dirPath null.
+      recentItems: async () => [backendItem('sh1', { sizeBytes: 0 })],
+      showSize: async () => {
+        throw new Error('must not be called for known-size shows');
+      },
+    };
+    await syncRecentlyAdded();
+    expect(getMediaItem('sh1')?.dir_path).toBe('/tv/Airing Show'); // survived
   });
 
   it('a failing section is skipped, the rest still sync', async () => {
@@ -260,7 +482,7 @@ describe('syncRecentlyAdded', () => {
         if (sectionId === '1') throw new Error('boom');
         return [backendItem('sh-new', { sizeBytes: 0 })];
       },
-      showSize: async () => 1 * GB,
+      showSize: async () => ({ sizeBytes: 1 * GB, dirPath: null, dirNames: [] }),
     };
     const res = await syncRecentlyAdded();
     expect(res.result).toBe(1);
@@ -279,7 +501,11 @@ describe('syncSizes', () => {
       ...backendWith([], {}),
       showSize: async (rk) => {
         if (rk === 'sh1') throw new Error('boom');
-        return 9 * GB;
+        return {
+          sizeBytes: 9 * GB,
+          dirPath: '/tv/Show sh2',
+          dirNames: ['Show sh2', 'Show sh2 Specials'], // multi-folder show
+        };
       },
     };
     const res = await syncSizes();
@@ -287,6 +513,11 @@ describe('syncSizes', () => {
     expect(getMediaItem('sh2')?.size_bytes).toBe(9 * GB);
     expect(getMediaItem('sh1')?.size_bytes).toBe(1 * GB); // unchanged
     expect(getMediaItem('mv')?.size_bytes).toBe(1 * GB); // movies untouched
+    // The derived show folder is backfilled alongside the size (the fallback
+    // for servers that omit Location from listings); EVERY folder the show
+    // spans lands in dir_name, newline-joined.
+    expect(getMediaItem('sh2')?.dir_path).toBe('/tv/Show sh2');
+    expect(getMediaItem('sh2')?.dir_name).toBe('Show sh2\nShow sh2 Specials');
   });
 });
 

@@ -103,13 +103,62 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   is connected** it also adds an **"OK to delete"** headline stat and a drill-down
   listing the titles requesters have released, largest first, with **who** released
   each (and a "still kept" flag where someone else's keep still protects it).
+- **Problems** (admin) — one page that gathers every "something's off" check with
+  a count + size per category, so you don't have to dig through Browse filters and
+  Settings panels. The categories are grouped into three families (media server
+  ↔ Sonarr/Radarr · within the server · on disk), and **every row ends in a
+  "What to do" badge** — the concrete next step ("Rescan Plex", "Refresh & Scan
+  in *arr", "Leftover copy — verify & delete") with the full reasoning on hover.
+  Rows whose real fix lives in another check say so ("Fix match — see Identity
+  mismatch") instead of giving generic advice. The checks:
+  **size mismatch** (Plex vs *arr sizes diverge — plus the MEASURED on-disk size
+  as the tiebreaker, so the row says which side needs a rescan; movies the
+  server merged from several files — a two-part film, extra versions — are
+  badged **"Multi-part item — likely fine"** since their mismatch is by
+  design), **in the media
+  server but not in *arr** (nothing manages the title), **in *arr but not in the
+  media server** (with an on-disk reality check: "not found"/"empty" = stale
+  *arr record, Refresh & Scan there; a real size = the server needs a scan),
+  **identity mismatch** (the same folder claimed under two different titles —
+  e.g. Plex matched `The Langoliers (1995)` to some obscure film while Radarr
+  tracks The Langoliers; one side's match is wrong, and the row shows both
+  claims side by side **with each side's external ids**, so two
+  identical-looking titles reveal their differing tmdb/tvdb/imdb ids), **duplicates** (two
+  library entries sharing one external id), ***arr conflicts** (two *arr records
+  resolving to one library item — across two instances that's double management,
+  remove it from one; within ONE instance it means the server merged several
+  entries into one item, e.g. a multi-part film carrying both ids — the badge
+  says "split apart" instead), **zero size** (the server lists it but reports
+  no file bytes), **removed but kept** (deleted despite someone's keep), and
+  **missing IDs** (no tvdb/tmdb/imdb id, so it can never match *arr), and
+  **on disk, in neither** — a weekly *Disk scan* job checks the top level of each
+  mapped library path for folders/files that neither the media server nor
+  Sonarr/Radarr account for (forgotten downloads, leftovers from deletions).
+  Each orphan is name-matched against your library: a **"Looks like"** column
+  flags leftover old copies ("the library already has The Avengers at 16 GB in
+  another folder — this 1 GB folder is a leftover; delete it").
+  Matching is by folder/file **name** per library root (the three systems see
+  different absolute paths for the same folder), well-known junk (`@eaDir`,
+  `#recycle`, dotfiles…) is ignored, only unaccounted-for entries are sized, and
+  if *most* of a root looks orphaned Keeparr assumes the storage mapping is wrong
+  and skips the sizing instead of crawling your whole share. Needs the same
+  library mounts + storage mappings the free-space report uses. Rows show
+  **where the item lives on disk** — a compact path with the full one on hover;
+  click to copy — and duplicate groups highlight the folder that differs, so you
+  can tell a double-import (same folder) from two real copies (different
+  folders) at a glance. Every table has **click-to-sort column headers** and
+  **library / movie-vs-series filters**, so you can slice a category down to
+  one library while cross-referencing against Sonarr/Radarr. The *arr-based
+  categories appear only when Sonarr/Radarr is connected. Report-only, like
+  everything else in Keeparr.
 - **Size on disk** — series totals are summed across every episode; movies across
   all parts/versions. Shown as `x.xx GB` per card; aggregates auto-switch to TB.
 - **Scheduled refresh jobs** — admins set a schedule (every N minutes, daily, or
   weekly at a set time) per job and run any on demand from **Settings → Jobs &
   Cache**: *Recently added scan* (cheap, every 5 min), *Full library scan* (daily
   3 AM), *Watch history* (4 AM), *Requests* (5 AM), *Library size* (the expensive
-  per-show recompute, daily 6 AM), *Sonarr / Radarr* (7 AM), and *Backup* (8 AM).
+  per-show recompute, daily 6 AM), *Sonarr / Radarr* (7 AM), *Backup* (8 AM), and
+  *Disk scan* (the disk-orphan check, weekly Sunday 9 AM).
   Clear the poster / Seerr / watch caches from the same page, and view app events
   under **Settings → Logs**. A **Recent activity** list shows the last runs + errors.
 - **Sonarr / Radarr** (optional) — connect any number of Sonarr and Radarr instances
@@ -123,10 +172,10 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   1080p variant). Sort by size to find the biggest, highest-quality titles to
   downgrade; Grid view shows a small quality badge. **Big Picture** gains a **By
   quality** table (how much 2160p/1080p/… is on disk, not kept, and never watched),
-  and **Settings → Match health** shows how many matched, the titles that are
-  **downloaded in *arr but not in Plex** (largest-first with sizes + a total — media on
-  disk Plex can't see, so you can rescan/fix it), and a count of Plex items missing a
-  tmdb/tvdb id (so you can fix them). Report-only; Keeparr never changes
+  and **Settings → Match health** shows a summary right next to the instance
+  config — how many titles matched, plus counts for "in *arr but not on the
+  server" and items missing a tmdb/tvdb id — with a Resync button and a link to
+  the **Problems** page for the full lists. Report-only; Keeparr never changes
   anything in *arr. Titles match on stable tvdb/tmdb ids; unmatched titles are fine
   to leave. All of this stays hidden until you connect an instance.
 - **Watch history** — powers the Browse **Watched** filter, a small "watched" badge on
