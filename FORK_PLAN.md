@@ -480,3 +480,35 @@ Six positions counting the empty state.
 - Decide whether this **replaces** the keep button or sits beside it. Replacing
   is the coherent end state (one vocabulary everywhere) but changes a
   well-worn interaction — worth trying behind a preference first.
+
+## 3.7 Paper cut: the Swipe watch tabs are unreachable on desktop
+
+**Symptom** (2026-07-30): on the `/swipe` page the watch-mode tab strip is cut
+off mid-word — "Everything · Never played · Not watched in 90d+ · Watched
+recently · M…" — so **My unwatched** can't be clicked. On a phone you can swipe
+the strip sideways, so it only bites on desktop.
+
+**Cause** — `components/SwipeView.tsx:247`:
+
+```
+flex items-center gap-1 overflow-x-auto … [scrollbar-width:none] [&::-webkit-scrollbar]:hidden
+```
+
+inside a `w-full max-w-md` column (`:232`). Five tabs don't fit in `max-w-md`
+(448px), so the strip overflows and `overflow-x-auto` makes it scrollable — but
+the scrollbar is **deliberately hidden** in both Firefox and WebKit. Touch users
+can still drag; on desktop there's no scrollbar, no affordance, and a mouse
+wheel won't scroll horizontally without Shift. The hidden scrollbar was a mobile
+polish tweak that silently broke the desktop case.
+
+**Fix options**, cheapest first:
+- Let the strip wrap on wider screens (`md:flex-wrap`) — the desktop layout has
+  vertical room, though the page is intentionally no-scroll so check it still
+  fits `100dvh`.
+- Or let the tab strip exceed the card column on `md:`+ (it's only capped
+  because it shares the card's `max-w-md`).
+- Or re-enable the scrollbar on non-touch (`@media (hover: hover)`), or add
+  edge-fade/arrow affordances.
+
+Low severity — every tab is still reachable on mobile, and Everything is the
+default. Worth doing next time the swipe layout is touched.
