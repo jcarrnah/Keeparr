@@ -255,7 +255,12 @@ export function applySchema(database: Database.Database): void {
                     -- pending | held (keep exists) | deleted | failed | cancelled
       status_at     INTEGER,
       status_detail TEXT,                   -- arr response / error / who cancelled
-      notified_week INTEGER NOT NULL DEFAULT 0 -- final-7-days Discord notice sent
+      notified_week INTEGER NOT NULL DEFAULT 0, -- final-7-days Discord notice sent
+      -- Post-delete reality check: did the bytes actually leave the disk?
+      -- residue_bytes NULL = not verified (unmapped/unreadable root); 0 = the
+      -- folder is really gone; > 0 = *arr reported success but N bytes remain.
+      verified_at   INTEGER,
+      residue_bytes INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_scheddel_due ON scheduled_deletions(status, delete_after);
 
@@ -392,6 +397,19 @@ function migrate(database: Database.Database): void {
       );
     } catch (e) {
       if (!String(e).includes('duplicate column name')) throw e;
+    }
+  }
+
+  // FORK: post-delete disk verification (did the bytes actually go?). Same
+  // guarded-ALTER treatment, and both columns are in the CREATE block above —
+  // an ALTER-only migration races the parallel next-build prerender workers.
+  for (const col of ['verified_at', 'residue_bytes']) {
+    if (sdCols.length > 0 && !sdCols.some((c) => c.name === col)) {
+      try {
+        database.exec(`ALTER TABLE scheduled_deletions ADD COLUMN ${col} INTEGER`);
+      } catch (e) {
+        if (!String(e).includes('duplicate column name')) throw e;
+      }
     }
   }
 

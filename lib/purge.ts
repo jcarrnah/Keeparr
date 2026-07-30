@@ -18,7 +18,10 @@ import {
   markWeekNotified,
   refreshDeletionHolds,
   setDeletionResult,
+  setDeletionVerification,
 } from './queries';
+import { createDeletionVerifier } from './purge-verify';
+import { cleanupAfterDeletions, type PurgedItem } from './post-delete-cleanup';
 import {
   getDeletionDryRun,
   getDeletionEnabled,
@@ -67,6 +70,15 @@ export async function runPurge(): Promise<JobResult> {
   let failed = 0;
   let unmatched = 0;
   let bytes = 0;
+  // Post-delete disk check (live runs only — a dry run deletes nothing, so
+  // there is nothing to verify).
+  const verifier = createDeletionVerifier();
+  let residueItems = 0;
+  let residueBytes = 0;
+  let unverified = 0;
+  // Titles actually deleted this run — Seerr requests are cleared and the
+  // media server rescanned for these once the loop finishes.
+  const purged: PurgedItem[] = [];
 
   for (const item of due) {
     const match = arrMatchForItem(item.rating_key);
@@ -103,11 +115,40 @@ export async function runPurge(): Promise<JobResult> {
       );
       deleted++;
       bytes += item.size_bytes;
+      purged.push({
+        ratingKey: item.rating_key,
+        title: item.title,
+        guidTmdb: item.guid_tmdb,
+        guidTvdb: item.guid_tvdb,
+      });
       logEvent(
         'info',
         'job:purge',
         `Deleted "${item.title}" (${formatSize(item.size_bytes)}) via ${match.source} (${inst.name || inst.url}).`
       );
+
+      // Did the bytes actually leave? *arr reporting success does not mean the
+      // folder is empty — leftovers become disk orphans and the "reclaimed"
+      // figure above silently overstates what we freed.
+      const check = await verifier.verify(
+        item.section_id,
+        (item.dir_name ?? '').split('\n').filter(Boolean),
+        item.file_name
+      );
+      setDeletionVerification(item.rating_key, check ? check.residueBytes : null);
+      if (check === null) {
+        unverified++;
+      } else if (check.found && check.residueBytes > 0) {
+        residueItems++;
+        residueBytes += check.residueBytes;
+        logEvent(
+          'warn',
+          'job:purge',
+          `"${item.title}" still occupies ${formatSize(check.residueBytes)} on disk after the ` +
+            `${match.source} delete — leftover files (extras/subtitles/artwork, or a second copy). ` +
+            `It will surface under Problems → "On disk, in neither".`
+        );
+      }
     } catch (e) {
       failed++;
       setDeletionResult(item.rating_key, 'failed', String(e));
@@ -115,12 +156,29 @@ export async function runPurge(): Promise<JobResult> {
     }
   }
 
+  // Finish the deletion in the two systems the *arr delete doesn't touch:
+  // clear Seerr requests (else the title can be re-requested and re-downloaded)
+  // and rescan the media server (else it serves empty entries). Never in a dry
+  // run — nothing was deleted, so there is nothing to clean up.
+  const cleanup = await cleanupAfterDeletions(purged);
+
+  // What actually left the disk, where we could measure it. `bytes` is only
+  // the size the media server last reported.
+  const measuredFreed = Math.max(0, bytes - residueBytes);
+
   const parts: string[] = [
     dryRun
       ? `DRY RUN — would delete ${deleted} item(s) (${formatSize(bytes)})`
-      : `Deleted ${deleted} item(s), reclaimed ${formatSize(bytes)}`,
+      : `Deleted ${deleted} item(s), freed ${formatSize(measuredFreed)}` +
+        (residueItems
+          ? ` (${formatSize(bytes)} expected — ${formatSize(residueBytes)} still on disk)`
+          : ''),
   ];
   if (failed) parts.push(`${failed} failed`);
+  if (residueItems) parts.push(`${residueItems} left files behind`);
+  if (cleanup.seerrCleared) parts.push(`${cleanup.seerrCleared} Seerr request(s) cleared`);
+  if (cleanup.serverRefreshed) parts.push('media server rescan triggered');
+  if (unverified) parts.push(`${unverified} unverified (section not mapped)`);
   if (unmatched) parts.push(`${unmatched} unmatched (left alone)`);
   if (held) parts.push(`${held} newly held by keeps`);
   if (released) parts.push(`${released} resumed after keep removal`);
@@ -129,8 +187,12 @@ export async function runPurge(): Promise<JobResult> {
   // stays quiet — its results are in the app log).
   if (!dryRun && (deleted > 0 || failed > 0)) {
     const failNote = failed ? `\n⚠️ ${failed} deletion(s) FAILED — see Settings → Logs.` : '';
+    const residueNote = residueItems
+      ? `\n⚠️ ${residueItems} item(s) left ${formatSize(residueBytes)} on disk — see Problems → "On disk, in neither".`
+      : '';
     await sendDiscordMessage(
-      `🧹 **Purge complete** — deleted ${deleted} item(s), reclaimed ${formatSize(bytes)}.${failNote}`
+      `🧹 **Purge complete** — deleted ${deleted} item(s), freed ${formatSize(measuredFreed)}.` +
+        `${failNote}${residueNote}`
     );
   }
 

@@ -3273,10 +3273,19 @@ export interface ScheduledDeletionRow {
   status_at: number | null;
   status_detail: string | null;
   notified_week: number;
+  verified_at: number | null;
+  /** Bytes still on disk after the delete. NULL = not verified. */
+  residue_bytes: number | null;
   title: string;
   size_bytes: number;
   section_id: string;
   removed: number;
+  /** Newline-joined when a show spans several root folders — split on '\n'. */
+  dir_name: string | null;
+  file_name: string | null;
+  /** For post-delete Seerr cleanup (may be CSV when an item carries several). */
+  guid_tmdb: string | null;
+  guid_tvdb: string | null;
   kept: number; // anyone keeps it right now (protected)
   tagged_by_name: string | null;
 }
@@ -3340,6 +3349,7 @@ export function listScheduledDeletions(): ScheduledDeletionRow[] {
   return getDb()
     .prepare(
       `SELECT sd.*, m.title, m.size_bytes, m.section_id, m.removed,
+              m.dir_name, m.file_name,
               EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = sd.rating_key) AS kept,
               u.username AS tagged_by_name
        FROM scheduled_deletions sd
@@ -3389,6 +3399,7 @@ export function dueDeletions(nowSec: number = now()): ScheduledDeletionRow[] {
   return getDb()
     .prepare(
       `SELECT sd.*, m.title, m.size_bytes, m.section_id, m.removed,
+              m.dir_name, m.file_name, m.guid_tmdb, m.guid_tvdb,
               0 AS kept, NULL AS tagged_by_name
        FROM scheduled_deletions sd
        JOIN media_items m ON m.rating_key = sd.rating_key
@@ -3413,6 +3424,52 @@ export function setDeletionResult(
        WHERE rating_key = ?`
     )
     .run(status, now(), detail, ratingKey);
+}
+
+/**
+ * Record the post-delete disk check. `residueBytes` null = could not verify
+ * (section unmapped / root unreadable) — deliberately distinct from 0, which
+ * means the folder really is gone.
+ */
+export function setDeletionVerification(
+  ratingKey: string,
+  residueBytes: number | null
+): void {
+  getDb()
+    .prepare(
+      `UPDATE scheduled_deletions
+       SET verified_at = ?, residue_bytes = ?
+       WHERE rating_key = ?`
+    )
+    .run(now(), residueBytes, ratingKey);
+}
+
+/** Deletions the purge reported as done but that left bytes behind — the
+ *  "we said we reclaimed it, we didn't" report. Largest residue first. */
+export function deletionResidueItems(): {
+  ratingKey: string;
+  title: string;
+  claimedBytes: number;
+  residueBytes: number;
+  verifiedAt: number | null;
+}[] {
+  return getDb()
+    .prepare(
+      `SELECT sd.rating_key AS ratingKey, m.title AS title,
+              m.size_bytes AS claimedBytes, sd.residue_bytes AS residueBytes,
+              sd.verified_at AS verifiedAt
+       FROM scheduled_deletions sd
+       JOIN media_items m ON m.rating_key = sd.rating_key
+       WHERE sd.status = 'deleted' AND sd.residue_bytes > 0
+       ORDER BY sd.residue_bytes DESC`
+    )
+    .all() as {
+    ratingKey: string;
+    title: string;
+    claimedBytes: number;
+    residueBytes: number;
+    verifiedAt: number | null;
+  }[];
 }
 
 /** The arr match for one item (to target the DELETE at the right instance). */
@@ -4185,3 +4242,169 @@ export function countRoomDeckRemaining(room: RoomRow, userId: string): number {
     .get(params) as { n: number };
   return row.n;
 }
+
+// ---------------------------------------------------------------------------
+// FORK: re-link per-user state across a REPLACED item id (4K upgrades, library
+// rebuilds). Upstream keys every per-user table on the mutable rating_key; the
+// fork acts on that state (rules/purge), so an orphaned keep is a safety bug.
+// ---------------------------------------------------------------------------
+
+/** What `relinkReplacedItems` moved, for the job summary. */
+export interface RelinkResult {
+  items: number;
+  keeps: number;
+  skips: number;
+  deletes: number;
+  verdicts: number;
+  watch: number;
+}
+
+/**
+ * Carry per-user state across a REPLACED item.
+ *
+ * `rating_key` is the media server's item id, and it is not stable: re-adding a
+ * title (the classic case is upgrading a movie to 4K, but any remove+re-add or
+ * library rebuild does it) mints a NEW id. Every per-user table is keyed on
+ * rating_key, so without this the old row is orphaned onto the tombstone and
+ * the live copy comes back **unkept and never-watched** — i.e. unprotected, and
+ * matching "big and nobody's watched it" rules on its very first evaluation.
+ *
+ * Matches a tombstoned item to a live one by shared external id (tvdb for
+ * shows / tmdb for movies, falling back to imdb across both — same precedence
+ * as the *arr matcher), then moves keeps, skips, "OK to delete", verdicts and
+ * watch history onto the new id. Idempotent: once moved, the old rows are gone,
+ * so a second run finds nothing.
+ *
+ * Mutual exclusivity is preserved — a migrated skip/"OK to delete" is dropped
+ * if that user already keeps the live item. Watch rows MERGE (plays sum, latest
+ * timestamp wins) because the server itself loses UserData on a re-add, making
+ * our cached copy the only surviving record.
+ *
+ * Deliberately does NOT touch `scheduled_deletions`: a pending tag on the dead
+ * id is already inert (`dueDeletions` requires `removed = 0`), and carrying one
+ * forward would auto-tag a freshly re-added copy.
+ */
+export function relinkReplacedItems(): RelinkResult {
+  const db = getDb();
+  const result: RelinkResult = {
+    items: 0,
+    keeps: 0,
+    skips: 0,
+    deletes: 0,
+    verdicts: 0,
+    watch: 0,
+  };
+
+  // Live targets, by external id. Kind-scoped for tvdb/tmdb; imdb spans both.
+  const byTvdb = ratingKeysByGuid('tvdb');
+  const byTmdb = ratingKeysByGuid('tmdb');
+  const byImdb = ratingKeysByGuid('imdb');
+
+  // Only tombstones that still carry per-user state are worth examining.
+  const stale = db
+    .prepare(
+      `SELECT rating_key, library_kind, guid_tvdb, guid_tmdb, guid_imdb
+         FROM media_items
+        WHERE removed = 1
+          AND (guid_tvdb IS NOT NULL OR guid_tmdb IS NOT NULL OR guid_imdb IS NOT NULL)
+          AND (EXISTS (SELECT 1 FROM keeps        t WHERE t.rating_key = media_items.rating_key)
+            OR EXISTS (SELECT 1 FROM user_skips   t WHERE t.rating_key = media_items.rating_key)
+            OR EXISTS (SELECT 1 FROM user_deletes t WHERE t.rating_key = media_items.rating_key)
+            OR EXISTS (SELECT 1 FROM verdicts     t WHERE t.rating_key = media_items.rating_key)
+            OR EXISTS (SELECT 1 FROM watch_history t WHERE t.rating_key = media_items.rating_key))`
+    )
+    .all() as {
+    rating_key: string;
+    library_kind: LibraryKind;
+    guid_tvdb: string | null;
+    guid_tmdb: string | null;
+    guid_imdb: string | null;
+  }[];
+  if (stale.length === 0) return result;
+
+  /** First live id claimed by any of a CSV guid's tokens. */
+  const lookup = (csv: string | null, map: Map<string, string>): string | null => {
+    if (!csv) return null;
+    for (const raw of String(csv).split(',')) {
+      const hit = map.get(raw.trim());
+      if (hit) return hit;
+    }
+    return null;
+  };
+
+  const move = db.transaction((oldKey: string, newKey: string) => {
+    // Keeps first — the exclusivity guards below depend on the final keep set.
+    let info = db
+      .prepare(
+        `INSERT OR IGNORE INTO keeps (plex_user_id, rating_key, kept_at)
+         SELECT plex_user_id, ?, kept_at FROM keeps WHERE rating_key = ?`
+      )
+      .run(newKey, oldKey);
+    result.keeps += info.changes;
+    db.prepare('DELETE FROM keeps WHERE rating_key = ?').run(oldKey);
+
+    info = db
+      .prepare(
+        `INSERT OR IGNORE INTO user_skips (plex_user_id, rating_key, skipped_at)
+         SELECT s.plex_user_id, ?, s.skipped_at FROM user_skips s
+          WHERE s.rating_key = ?
+            AND NOT EXISTS (SELECT 1 FROM keeps k
+                             WHERE k.rating_key = ? AND k.plex_user_id = s.plex_user_id)
+            AND NOT EXISTS (SELECT 1 FROM user_deletes d
+                             WHERE d.rating_key = ? AND d.plex_user_id = s.plex_user_id)`
+      )
+      .run(newKey, oldKey, newKey, newKey);
+    result.skips += info.changes;
+    db.prepare('DELETE FROM user_skips WHERE rating_key = ?').run(oldKey);
+
+    info = db
+      .prepare(
+        `INSERT OR IGNORE INTO user_deletes (plex_user_id, rating_key, marked_at)
+         SELECT d.plex_user_id, ?, d.marked_at FROM user_deletes d
+          WHERE d.rating_key = ?
+            AND NOT EXISTS (SELECT 1 FROM keeps k
+                             WHERE k.rating_key = ? AND k.plex_user_id = d.plex_user_id)
+            AND NOT EXISTS (SELECT 1 FROM user_skips s
+                             WHERE s.rating_key = ? AND s.plex_user_id = d.plex_user_id)`
+      )
+      .run(newKey, oldKey, newKey, newKey);
+    result.deletes += info.changes;
+    db.prepare('DELETE FROM user_deletes WHERE rating_key = ?').run(oldKey);
+
+    info = db
+      .prepare(
+        `INSERT OR IGNORE INTO verdicts (plex_user_id, rating_key, verdict, decided_at)
+         SELECT plex_user_id, ?, verdict, decided_at FROM verdicts WHERE rating_key = ?`
+      )
+      .run(newKey, oldKey);
+    result.verdicts += info.changes;
+    db.prepare('DELETE FROM verdicts WHERE rating_key = ?').run(oldKey);
+
+    // Merge rather than ignore: the re-added item starts with no server-side
+    // watch data, so both sides can hold real plays.
+    info = db
+      .prepare(
+        `INSERT INTO watch_history (plex_user_id, rating_key, plays, last_watched)
+         SELECT plex_user_id, ?, plays, last_watched FROM watch_history WHERE rating_key = ?
+         ON CONFLICT(plex_user_id, rating_key) DO UPDATE SET
+           plays = plays + excluded.plays,
+           last_watched = MAX(COALESCE(last_watched, 0), COALESCE(excluded.last_watched, 0))`
+      )
+      .run(newKey, oldKey);
+    result.watch += info.changes;
+    db.prepare('DELETE FROM watch_history WHERE rating_key = ?').run(oldKey);
+  });
+
+  for (const row of stale) {
+    const primary =
+      row.library_kind === 'show'
+        ? lookup(row.guid_tvdb, byTvdb)
+        : lookup(row.guid_tmdb, byTmdb);
+    const target = primary ?? lookup(row.guid_imdb, byImdb);
+    if (!target || target === row.rating_key) continue;
+    move(row.rating_key, target);
+    result.items++;
+  }
+  return result;
+}
+
