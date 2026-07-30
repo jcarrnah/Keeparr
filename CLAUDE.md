@@ -610,6 +610,18 @@ when it has no tvdb/tmdb **and** no imdb.
   audit). Browse's Status filter gains a `scheduledDeletion` bucket (shown only
   when the Deletion toggle is on) and library rows carry
   `scheduledDeleteAfter`/`scheduledDeleteHeld` → the card badge.
+  **FORK:** `POST /api/admin/problem-actions` `{action:'relink'|'rescan'}` →
+  `{ok, message, changed}` — the Problems page's fix-it actions. Deliberately a
+  SEPARATE route from upstream's `/api/admin/problems/*` reads so fork actions
+  never collide on a sync. `relink` runs `relinkReplacedItems()` on demand (the
+  "don't wait for the 03:00 library sweep" button, offered on `removedButKept`);
+  `rescan` calls `triggerServerRefresh()` so the server drops entries whose
+  files are gone (offered on `zeroSize`/`missingFromPlex`). Both are
+  non-destructive — nothing deletes media and the filesystem is never touched.
+  UI: `components/ForkProblemActions.tsx`, an action bar above the table.
+  Upstream's `ProblemsView.tsx` gets exactly ONE line (plus the import) — its
+  per-category switch and ~23 inline action-badge sites are hot upstream code,
+  so no fork markup goes in there.
   **FORK:** `GET/POST/PUT/DELETE /api/admin/deletion-rules` (rule CRUD;
   conditions validated by `parseRuleConditions`) +
   `POST /api/admin/deletion-rules/preview` `{conditions}` →

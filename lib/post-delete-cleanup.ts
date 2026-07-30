@@ -109,30 +109,41 @@ export async function cleanupAfterDeletions(
   }
 
   // --- Media server: one rescan so empty entries disappear -----------------
-  // Jellyfin/Emby only; Plex has no equivalent single-call refresh here, and
-  // its own scheduled scan handles it.
-  if (getMediaServerType() !== 'plex') {
-    const baseUrl = getServerBaseUrl();
-    const token = getAdminToken() || getServerToken();
-    if (baseUrl && token) {
-      try {
-        await refreshLibrary(baseUrl, token);
-        result.serverRefreshed = true;
-        logEvent(
-          'info',
-          'job:purge',
-          'Triggered a media-server library refresh so the deleted titles drop out.'
-        );
-      } catch (e) {
-        logEvent(
-          'warn',
-          'job:purge',
-          `Could not trigger a media-server refresh (deleted titles will linger ` +
-            `as empty entries until its own scan): ${String(e)}`
-        );
-      }
-    }
-  }
+  result.serverRefreshed = await triggerServerRefresh('job:purge');
 
   return result;
+}
+
+/**
+ * Ask the media server to rescan, so entries whose files are gone drop out.
+ * Jellyfin/Emby only — Plex has no equivalent single call here and its own
+ * scheduled scan handles it. Returns whether a refresh was actually triggered;
+ * never throws (callers are a nightly job and an admin button).
+ *
+ * Shared by the purge and the Problems page's manual "Rescan" action.
+ */
+export async function triggerServerRefresh(
+  source: string
+): Promise<boolean> {
+  if (getMediaServerType() === 'plex') return false;
+  const baseUrl = getServerBaseUrl();
+  const token = getAdminToken() || getServerToken();
+  if (!baseUrl || !token) return false;
+  try {
+    await refreshLibrary(baseUrl, token);
+    logEvent(
+      'info',
+      source,
+      'Triggered a media-server library refresh so titles with no files drop out.'
+    );
+    return true;
+  } catch (e) {
+    logEvent(
+      'warn',
+      source,
+      `Could not trigger a media-server refresh (titles with no files will linger ` +
+        `as empty entries until its own scan): ${String(e)}`
+    );
+    return false;
+  }
 }
