@@ -4,7 +4,8 @@
 > It adds scheduled deletions (default OFF, dry-run ON, keeps always win),
 > rule-based auto-tagging, a "Leaving Soon" Jellyfin collection, Discord
 > notifications, and a swipe UI. **See [FORK.md](FORK.md) for everything that
-> differs.** Image: `ghcr.io/jcarrnah/keeparr:latest`.
+> differs**, and [FORK_SYNC.md](FORK_SYNC.md) for how to merge upstream.
+> Image: `ghcr.io/jcarrnah/keeparr:latest`.
 
 A self-hosted web app that makes it dead-simple for a household to decide **what
 media to keep** — and to find what can be safely deleted to reclaim disk space.
@@ -150,7 +151,17 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   **library / movie-vs-series filters**, so you can slice a category down to
   one library while cross-referencing against Sonarr/Radarr. The *arr-based
   categories appear only when Sonarr/Radarr is connected. Report-only, like
-  everything else in Keeparr.
+  everything else in Keeparr — **except** the two fork-added fix-it buttons
+  ("Re-link keeps to the new copies" on *Removed but kept*, and "Rescan the
+  library" on the zero-size / missing-from-server rows). Both are
+  non-destructive: nothing is deleted and the filesystem is never touched.
+- **Keeps survive a re-add** *(fork)* — the media server's item id changes when a
+  title is re-added (upgrading a movie to 4K, a library rebuild), which used to
+  strand your keep on the old id and bring the new copy back **unkept and
+  never-watched**. The nightly library sweep now moves keeps, skips, "OK to
+  delete", verdicts and watch history onto the replacement, matched by
+  tvdb/tmdb/imdb. Items with a stranded keep show under Problems → *Removed but
+  kept*, where the button fixes them immediately.
 - **Size on disk** — series totals are summed across every episode; movies across
   all parts/versions. Shown as `x.xx GB` per card; aggregates auto-switch to TB.
 - **Scheduled refresh jobs** — admins set a schedule (every N minutes, daily, or
