@@ -1185,6 +1185,21 @@ describe('queryLibrary combinable Status buckets (stateBuckets, OR)', () => {
     expect(q(['keptByMe', 'keptOther'])).toEqual(['1', '2']);
     expect(q(['dontcare', 'okDeleteMine', 'undecided'])).toEqual(['3', '4', '5', '6']);
   });
+
+  // FORK (3.6): the card control writes verdicts, and the delete-side ones
+  // write no keep/skip/delete row — so without the verdict clause a title you
+  // just marked "let it go" would never leave the default Browse view.
+  it('a delete-side verdict counts as decided, and rows carry it', () => {
+    applyVerdict('me', '6', 'not_interested');
+    expect(q(['undecided'])).toEqual(['5']);
+    const row = queryLibrary({ plexUserId: 'me', limit: 100, offset: 0 }).find(
+      (r) => r.rating_key === '6'
+    )!;
+    expect(row.my_verdict).toBe('not_interested');
+    // Someone else's verdict is not my decision.
+    applyVerdict('other', '5', 'not_interested');
+    expect(q(['undecided'])).toEqual(['5']);
+  });
 });
 
 describe('apply* exclusive mutations (atomic keep/skip/delete)', () => {

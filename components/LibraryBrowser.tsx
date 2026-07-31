@@ -527,6 +527,9 @@ export default function LibraryBrowser({
               skippable
               requested={requested.has(item.ratingKey)}
               taggable={canTagDeletion}
+              /* FORK (3.6): Browse triage speaks the swipe vocabulary, so it
+                 produces real votes instead of silent keeps. */
+              verdictControl
             />
           ))}
         </div>
@@ -552,6 +555,8 @@ export default function LibraryBrowser({
                   key={item.ratingKey}
                   item={item}
                   sectionTitle={sectionTitle.get(item.sectionId) ?? item.sectionId}
+                  /* FORK (3.6): same vocabulary as the Grid view. */
+                  verdictControl
                 />
               ))}
             </tbody>

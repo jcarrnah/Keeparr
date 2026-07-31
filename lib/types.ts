@@ -65,6 +65,49 @@ export const VERDICTS: Verdict[] = [
   'dont_care',
 ];
 
+/**
+ * FORK (3.3): the signed weight of each verdict. Positive = the household wants
+ * it gone, so an item's score is the sum across voters and the largest scores
+ * are the safest to reclaim. Two "let it go" votes (+4) outrank one "worth
+ * keeping" (−2) by design. Stored verdict values never change — this is purely
+ * a projection. SQL builds its CASE from this map (`verdictPointsSql`) so the
+ * scale can't drift between the query and the UI.
+ */
+export const VERDICT_POINTS: Record<Verdict, number> = {
+  not_interested: 2, // "Let it go / delete this shit"
+  done_with_it: 1, // "Wouldn't be mad / OK to delete"
+  dont_care: 0, // "Skip" — an abstention, deliberately weightless
+  want_to_watch: -1, // "Save for later"
+  loved_it: -2, // "Worth keeping"
+};
+
+/**
+ * FORK (3.3): the verdict a keep / "don't care" / "OK to delete" made OUTSIDE
+ * Swipe stands in for, so someone who triages in Browse still counts. Only used
+ * where that user has no explicit verdict for the item — an actual swipe always
+ * wins. Kept as data (not inlined in SQL) so the two vocabularies map in exactly
+ * one place.
+ */
+export const IMPLIED_VERDICTS = {
+  keep: 'loved_it',
+  skip: 'dont_care',
+  okToDelete: 'done_with_it',
+} as const satisfies Record<string, Verdict>;
+
+/**
+ * FORK (3.6): the order the card control steps through, lowest score (most
+ * protective) first, so clicking has a direction rather than being an arbitrary
+ * carousel. `null` is the un-voted position that starts and ends the cycle.
+ */
+export const VERDICT_CYCLE: (Verdict | null)[] = [
+  null,
+  'loved_it',
+  'want_to_watch',
+  'dont_care',
+  'done_with_it',
+  'not_interested',
+];
+
 /** A row from media_items as stored. */
 export interface MediaItem {
   rating_key: string;
@@ -127,6 +170,8 @@ export interface MediaCardData {
   genres?: string[];
   /** Runtime in whole minutes. */
   runtimeMinutes?: number;
+  /** FORK: this user's swipe verdict, if any — drives the card's cycle control. */
+  myVerdict?: Verdict;
   // --- FORK: scheduled deletion (live tag only) ---
   /** Epoch seconds after which the purge may delete it (undefined = untagged). */
   scheduledDeleteAfter?: number;

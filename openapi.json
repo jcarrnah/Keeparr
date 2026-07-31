@@ -295,10 +295,12 @@
         "tags": ["media"],
         "summary": "FORK: per-item verdict rollup (who wants / keeps / released each title)",
         "parameters": [
-          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["votes", "size"] }, "description": "votes = most delete votes first (default)" },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["votes", "size", "score"] }, "description": "votes = most delete votes first (default); score = most wanted gone first (weighted)" },
+          { "name": "voter", "in": "query", "schema": { "type": "string" }, "description": "FORK: only titles this user has an opinion on (explicit or implied)" },
+          { "name": "verdict", "in": "query", "schema": { "type": "string", "enum": ["not_interested", "done_with_it", "dont_care", "want_to_watch", "loved_it"] }, "description": "FORK: only titles marked this way; combine with voter for \"everything X let go\"" },
           { "name": "offset", "in": "query", "schema": { "type": "integer" } }
         ],
-        "responses": { "200": { "description": "`{items: [{…card, kept, wantNames[], keepNames[], doneNames[], neverNames[], skipCount, deleteVotes}], hasMore, nextOffset}`" } }
+        "responses": { "200": { "description": "`{items: [{…card, kept, wantNames[], keepNames[], doneNames[], neverNames[], skipCount, deleteVotes, score, voters, keepImplicitNames[], doneImplicitNames[], skipImplicitCount}], me, voters: [{id, username}], hasMore, nextOffset}` — `score` sums the verdict scale across everyone (let it go +2, wouldn't be mad +1, skip 0, save for later −1, worth keeping −2); a keep / don't-care / OK-to-delete made outside Swipe counts as an implied vote, listed separately in the `*Implicit*` fields" } }
       }
     },
     "/api/keep": {

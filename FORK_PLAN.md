@@ -238,10 +238,11 @@ default OFF where destructive; update `openapi.json` for new endpoints.
 
 ---
 
-# Phase 3 — Planned, not yet built
+# Phase 3
 
 Written up 2026-07-30 after the first live purge exposed gaps. Phases 1–2 are
-shipped; everything below is designed but unimplemented. Read
+shipped. **3.3 and 3.6 are built (2026-07-30)**; 3.1, 3.2, 3.4 and 3.7 are still
+designed-but-unimplemented, and 3.5 is a standing decision. Read
 [FORK_SYNC.md](FORK_SYNC.md) before touching upstream-owned files.
 
 ## 3.1 Deletion history UI
@@ -307,7 +308,7 @@ no existing `scheduled_deletions` row. Add a **minimum-voters guard** so a
 single person's swipe can't tag the whole library — a rule matching on votes
 should require N distinct voters before it fires.
 
-## 3.3 Weighted vote scoring ("points")
+## 3.3 Weighted vote scoring ("points") — BUILT 2026-07-30
 
 **Why.** `verdictConsensus` currently reports `delete_votes` as a flat count of
 `done_with_it + not_interested` (`lib/queries.ts`), which flattens a shrug and
@@ -329,22 +330,24 @@ An item's score is the sum across all voters, so two "let it go" votes (+4)
 outrank one "worth keeping" (−2). Stored verdict values do not change — this is
 purely a projection over `verdicts`.
 
-> One thing to confirm before building: the phrasing that produced this table
-> was "a delete vote is 2, can go / let go is a 1". That maps cleanly onto the
-> two delete-side verdicts as above (hard no = 2, soft = 1), but it's worth a
-> sanity check, since "let go" is wording from the `not_interested` label.
-
-**Build.**
-- A shared `VERDICT_POINTS` map (put it beside `VERDICTS` in `lib/types.ts`) so
-  SQL and UI can't drift.
-- Extend `verdictConsensus` with a summed `score`, and make it sortable by
-  score as well as the existing votes/size.
-- **Filter by who voted what** — the ask was explicitly to slice by voter, not
-  just totals. `verdictConsensus` already rolls names up per verdict; add
-  `voter` + `verdict` query params so you can ask "everything Alice marked
-  'let it go'". Identity is already deliberately visible on this screen.
-- Surface score as a sortable column on `/swipe/matches` consensus, and feed it
-  to 3.2's `verdict_score` condition.
+**As built.**
+- `VERDICT_POINTS` in `lib/types.ts`, beside `VERDICTS`. SQL generates its CASE
+  from it (`verdictPointsSql`), so the scale exists once.
+- `verdictConsensus` returns a summed `score` + `voters` and accepts
+  `sort: 'score'` plus `voter`/`verdict` filters — the filter is an EXISTS over
+  the same vote set, so slicing the list never narrows a surviving row's
+  rollup. `consensusVoters()` backs the picker.
+- `/swipe/matches` Consensus tab: Score column (sortable, signed, greyed while
+  someone keeps it), voter + verdict dropdowns, Clear.
+- **Implicit votes** (the 3.4 decision, settled 2026-07-30 — see below): a keep
+  / "don't care" / "OK to delete" with no verdict behind it counts as
+  `loved_it` / `dont_care` / `done_with_it` via `IMPLIED_VERDICTS` and the
+  `VOTES_CTE` UNION. An explicit verdict always wins for that (user, item), and
+  because the three source tables are mutually exclusive per user nobody is
+  counted twice — including the keep `applyVerdict` itself writes.
+- Implied names come back in `*_implicit_*` columns and render as "Sam (kept)",
+  so an inference never reads as a swipe.
+- Still to do: feed `score` to 3.2's `verdict_score` condition.
 
 ## 3.4 Are Keep / Browse / Swipe actually in sync?
 
@@ -371,10 +374,21 @@ in **Browse or Keep does not record a verdict**. Consequences:
 - Someone who does all their triage in Browse never appears in
   `verdictConsensus` or Movie night — they have opinions, but no votes.
 - **This directly undercuts 3.3's scoring**: a household member who keeps
-  things in Browse contributes 0 points, while a swiper contributes ±2. Decide
-  before building the points model whether a keep should count as an implicit
-  `loved_it` (−2) / a skip as `dont_care` (0), or whether score should stay
-  swipe-only and simply be labelled as such.
+  things in Browse contributes 0 points, while a swiper contributes ±2.
+
+**Decided 2026-07-30, and both halves are now built:**
+1. **Scoring infers the missing votes** rather than staying swipe-only. A keep
+   counts as `loved_it` (−2), a "don't care" as `dont_care` (0), an "OK to
+   delete" as `done_with_it` (+1) — only where that person has no verdict for
+   the item. See 3.3.
+2. **The card control speaks verdicts**, so the gap stops widening: Browse
+   (grid + list) and Search cycle all five states instead of toggling a keep.
+   See 3.6.
+
+Together these mean the two vocabularies now converge from both ends —
+inference covers the history, the cycle control covers new triage. The Keep
+page deliberately keeps its own keep/skip batch loop; its keeps are inferred
+like any other.
 
 **Also worth knowing** (this is what made Murderbot look broken): an item can
 appear in Keep but not Browse with no decision recorded at all, because Browse
@@ -383,10 +397,8 @@ rail, plus any quality/status/watched/arr filters. Search (`/api/search`)
 applies none of them, so it's the quickest way to prove an item exists before
 hunting for the filter hiding it.
 
-**To do.** Verify the above end-to-end with a live account (it's read from the
-SQL, not observed), then either document the asymmetry as intended or add the
-reverse write-through. Consider showing "kept, never swiped" as a distinct
-state so the two vocabularies stop looking like a bug.
+**Still to do.** Verify the deck/feed/Browse exclusion table end-to-end with a
+live account — it's read from the SQL, not observed.
 
 ## 3.5 Decision to revisit: keep syncing, or hard-fork?
 
@@ -439,7 +451,7 @@ Related, still unresolved: the repo is a **public** GitHub fork. GitHub can't
 make a fork private — going private means detaching (which is the hard-fork
 decision) or a fresh repo. Raised previously; no action requested.
 
-## 3.6 Click-to-cycle verdict control on cards
+## 3.6 Click-to-cycle verdict control on cards — BUILT 2026-07-30
 
 **The idea** (raised 2026-07-30): "Clicking on it should cycle all states, since
 we have 5 now."
@@ -461,25 +473,32 @@ none → Worth keeping (−2) → Save for later (−1) → Skip (0)
 
 Six positions counting the empty state.
 
-**Design notes.**
-- **Make it reversible.** Six states means overshooting is common — shift-click
-  or right-click should step backwards, and long-press could open a direct
-  picker. A forward-only cycle gets irritating fast.
-- Show the current state unambiguously: the existing verdict colours
-  (rose / amber / slate / emerald / sky, from `components/SwipeView.tsx`) plus a
-  label or icon, not colour alone.
-- **Reuse the existing endpoint** — `POST /api/swipe/verdict` already replaces a
-  previous verdict and transitions the write-through state; `DELETE` clears it
-  and maps to the `none` position. No new API needed.
-- Respect the established optimistic-UI rule: an in-flight keep/skip/delete
-  blocks the other two (the states are mutually exclusive and interleaved
-  requests desync the UI). A rapid-cycling control makes this sharper — debounce
-  and send only the final state rather than one request per click.
-- `components/MediaCard.tsx` already carries the admin Schedule/Cancel-deletion
-  button; check the two controls don't crowd each other, especially on mobile.
-- Decide whether this **replaces** the keep button or sits beside it. Replacing
-  is the coherent end state (one vocabulary everywhere) but changes a
-  well-worn interaction — worth trying behind a preference first.
+**As built.** It **replaces** the keep interaction (the user's call, over
+sitting beside it or hiding behind a preference): one vocabulary everywhere was
+the point, and two controls driving overlapping state is exactly the confusion
+3.4 describes.
+
+- `components/useVerdictCycle.ts` owns the state; `components/VerdictCycle.tsx`
+  is the button. `MediaCard` and `MediaRow` each take a `verdictControl` prop
+  and, when it's on, read this user's keep/skip from the cycle rather than
+  `useKeepState` — `applyVerdict` writes both through, so the badges, the card
+  border and the row accent stay honest. Delete-side verdicts get the same rose
+  framing an explicit "OK to delete" gets.
+- Order is `VERDICT_CYCLE` in `lib/types.ts` (score order, `null` first);
+  **shift-click or right-click steps back**, on the button and on the card body.
+  No long-press picker yet.
+- Reuses `POST/DELETE /api/swipe/verdict` — no new endpoint.
+- **Debounced to the state you land on** (450 ms), not one request per click.
+  The hook tracks desired-vs-confirmed in refs, so a click landing mid-request
+  isn't lost and a failure reverts to what the server actually acked, not to a
+  guess.
+- Labels, colours and glyphs moved to `components/verdict-meta.ts`, shared with
+  SwipeView so the two screens can't name the same stored value differently.
+  This also pulled `sky-300/400/500` into the themed ladder — the swipe screen
+  had been using unthemed sky shades all along.
+- Applied to Browse (grid **and** list) and Search. The Keep page keeps its own
+  keep/skip batch loop — it's a different interaction, and 3.3's inference means
+  those keeps still count.
 
 ## 3.7 Paper cut: the Swipe watch tabs are unreachable on desktop
 

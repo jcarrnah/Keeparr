@@ -3,20 +3,26 @@
 import type { MediaCardData } from '@/lib/types';
 import { formatGB } from '@/lib/format';
 import { useKeepState } from './useKeepState';
+// FORK: the 5-state verdict control (3.6).
+import VerdictCycle from './VerdictCycle';
+import { useVerdictCycle } from './useVerdictCycle';
 
 /** One row of Browse's List view — the dense, quality/tags-forward counterpart
  *  to MediaCard. Reuses `useKeepState` for keep / "I don't care" / "OK to delete". */
 export default function MediaRow({
   item,
   sectionTitle,
+  verdictControl = false,
 }: {
   item: MediaCardData;
   sectionTitle: string;
+  /** FORK: replace keep/"don't care" with the verdict cycle, as the grid does. */
+  verdictControl?: boolean;
 }) {
   const keptByOthers = item.kept && !item.keptByMe;
   const {
-    keptByMe,
-    skipped,
+    keptByMe: keptByMeDirect,
+    skipped: skippedDirect,
     markedForDelete,
     busy,
     skipBusy,
@@ -30,6 +36,17 @@ export default function MediaRow({
     initialSkipped: item.skipped,
     initialMarkedForDelete: item.markedForDeleteByMe,
   });
+  // FORK (3.6): the verdict is this user's decision when the cycle is on — it
+  // writes the keep / "don't care" through, so the row accent reads from it.
+  const cycle = useVerdictCycle({
+    ratingKey: item.ratingKey,
+    initial: item.myVerdict ?? null,
+  });
+  const keptByMe = verdictControl ? cycle.keptByMe : keptByMeDirect;
+  const skipped = verdictControl ? cycle.skipped : skippedDirect;
+  const votedGone =
+    verdictControl &&
+    (cycle.verdict === 'done_with_it' || cycle.verdict === 'not_interested');
   // Someone else released it (the by-anyone view) — show a name-less tag. My own
   // mark is conveyed by the button, so don't double up.
   const releasedByOther = !!item.markedForDeleteAny && !markedForDelete;
@@ -39,7 +56,7 @@ export default function MediaRow({
   // care. My own decision wins; otherwise reflect others' keep / release.
   const rowAccent = keptByMe
     ? 'border-l-2 border-l-brand bg-brand/10'
-    : markedForDelete
+    : markedForDelete || votedGone
       ? 'border-l-2 border-l-rose-500 bg-rose-950/40'
       : skipped
         ? 'border-l-2 border-l-slate-600 opacity-50'
@@ -128,6 +145,18 @@ export default function MediaRow({
         {/* Fixed-width buttons so toggling a label never reflows the column /
             table. The "OK to delete" button only shows on items you requested. */}
         <div className="flex items-center justify-end gap-2">
+          {/* FORK (3.6): one control speaking the swipe vocabulary replaces the
+              Keep / "I don't care" pair — Skip is one of its positions. */}
+          {verdictControl && (
+            <VerdictCycle
+              verdict={cycle.verdict}
+              busy={cycle.busy}
+              onStep={cycle.step}
+              className="w-36 shrink-0"
+            />
+          )}
+          {!verdictControl && (
+          <>
           <button
             type="button"
             onClick={() => void toggleKeep()}
@@ -155,6 +184,8 @@ export default function MediaRow({
           >
             {skipped ? '↺ Care' : "I don't care"}
           </button>
+          </>
+          )}
           {(item.requestedByMe || markedForDelete) && (
             <button
               type="button"

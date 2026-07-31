@@ -32,6 +32,8 @@ export async function GET(req: Request) {
       requestedByMe: r.requested_by_me === 1,
       markedForDeleteByMe: r.marked_for_delete_by_me === 1,
       markedForDeleteAny: r.marked_for_delete_any === 1,
+      // FORK: this user's verdict → the card's cycle control position.
+      myVerdict: r.my_verdict ?? undefined,
     }));
 
     return NextResponse.json({ items, hasMore, nextOffset: offset + items.length });

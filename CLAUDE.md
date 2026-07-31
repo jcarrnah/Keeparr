@@ -332,7 +332,30 @@ touching that layout.
   chosen users with `want_to_watch`, optional nobody-watched filter, names
   deliberately visible) + **Consensus** (`verdictConsensus` — per-item name
   rollup by verdict, `delete_votes` = done_with_it + not_interested, sortable
-  votes/size) via `GET /api/swipe/matches` + `GET /api/swipe/consensus`.
+  votes/size/**score**, filterable by voter+verdict) via
+  `GET /api/swipe/matches` + `GET /api/swipe/consensus`.
+  **Weighted scoring (3.3):** `VERDICT_POINTS` in `lib/types.ts` is the single
+  scale (not_interested +2, done_with_it +1, dont_care 0, want_to_watch −1,
+  loved_it −2; positive = the household wants it gone) — SQL builds its CASE
+  from it via `verdictPointsSql`, so query and UI can't drift. A keep /
+  "don't care" / "OK to delete" made OUTSIDE Swipe counts as an **implied**
+  vote (`IMPLIED_VERDICTS`, the `VOTES_CTE` UNION in `lib/queries.ts`), so a
+  Browse-only triager isn't scored 0 against a swiper's ±2; an explicit verdict
+  always wins for that (user, item), and the three source tables are mutually
+  exclusive per user, so nobody is counted twice. Implied names come back in
+  separate `*_implicit_*` columns and are marked in the UI — "Bob (kept)" must
+  never read as "Bob swiped it". `consensusVoters()` backs the voter filter.
+  **Card verdict control (3.6):** on Browse (grid AND list) and Search, the
+  5-state cycle REPLACES click-to-keep and the "I don't care" button —
+  `MediaCard`/`MediaRow` take a `verdictControl` prop and read this user's
+  keep/skip state from `useVerdictCycle` instead of `useKeepState` (applyVerdict
+  writes both through). Order is `VERDICT_CYCLE` (score order, `null` first);
+  shift-click or right-click steps BACK; writes are debounced so only the state
+  you land on is sent (`components/useVerdictCycle.ts` — desired-vs-confirmed
+  refs, so a click mid-request is never lost and a failure reverts to what the
+  server acked). Labels/colours/glyphs live in `components/verdict-meta.ts`,
+  shared with SwipeView. The **Keep page keeps its own keep/skip loop** (it's a
+  batch triage screen) — its keeps still count, as implied votes.
   Browse cards additionally get an admin-only Schedule/Cancel-deletion button
   (`MediaCard taggable` prop, gated on `isAdmin && deletion_enabled`, calls
   the scheduled-deletions admin API with the configured grace). Cards show OMDb enrichment when present:
@@ -424,7 +447,15 @@ when it has no tvdb/tmdb **and** no imdb.
 - **FORK:** `GET /api/swipe/deck?limit=&section=&watch=` → un-swiped movies +
   `remaining`; `POST /api/swipe/verdict {ratingKey, verdict}` (validated
   against `VERDICTS`; replaces a previous verdict, transitioning its
-  write-through state) / `DELETE {ratingKey}` (undo → `{ok, removed}`).
+  write-through state) / `DELETE {ratingKey}` (undo → `{ok, removed}`). The
+  card cycle control reuses these two — no new endpoint.
+- **FORK:** `GET /api/swipe/consensus?sort=votes|size|score&voter=&verdict=&offset=`
+  → `{items, me, voters[], hasMore, nextOffset}`. Items carry `score`/`voters`
+  plus `keepImplicitNames`/`doneImplicitNames`/`skipImplicitCount` (opinions
+  implied by a keep / "OK to delete" / "don't care" rather than a swipe).
+  `voter`+`verdict` slice the list — "everything Alice let go" — without
+  narrowing any row's rollup. Unknown sort/verdict values fall back to the
+  default rather than erroring (it's a browse surface).
 - **FORK:** live "movie night" rooms (all `requireUser`, short-poll transport):
   `POST /api/swipe/rooms {section?, watch?}` → create + host-join → `{code, state}`;
   `POST /api/swipe/rooms/{code}/join` → `{state}`;
@@ -462,7 +493,11 @@ when it has no tvdb/tmdb **and** no imdb.
   the `state=` param: a comma list of per-user decision buckets OR'd together
   (**empty = All**). Buckets: `keptByMe` (you keep it), `keptOther` (kept by
   someone else, not you), `dontcare` (your "don't care"), `undecided` (you've made
-  no keep/skip/delete decision — excludes only YOUR own marks), and — only when
+  no keep/skip/delete decision — excludes only YOUR own marks; **FORK:** your
+  own verdict counts as a decision too, since the delete-side ones write no
+  keep/skip/delete row and the view would otherwise never drain — deliberately
+  NOT mirrored in `librarySummary`, whose three buckets must partition the
+  bytes exactly), and — only when
   Seerr is connected — `okDeleteMine` / `okDeleteAny` (your / anyone's "OK to
   delete", the by-anyone view stays identity-free). Defaults to `state=undecided`
   (hides items you've decided on). (The legacy single-select `kept`/`keptByMe`/
@@ -610,6 +645,9 @@ when it has no tvdb/tmdb **and** no imdb.
   audit). Browse's Status filter gains a `scheduledDeletion` bucket (shown only
   when the Deletion toggle is on) and library rows carry
   `scheduledDeleteAfter`/`scheduledDeleteHeld` → the card badge.
+  **FORK:** `/api/library` and `/api/search` rows also carry `myVerdict` (this
+  user's swipe verdict, from a `verdicts` LEFT JOIN) — the cycle control needs
+  its current position, not just the derived keep/skip flags.
   **FORK:** `POST /api/admin/problem-actions` `{action:'relink'|'rescan'}` →
   `{ok, message, changed}` — the Problems page's fix-it actions. Deliberately a
   SEPARATE route from upstream's `/api/admin/problems/*` reads so fork actions
