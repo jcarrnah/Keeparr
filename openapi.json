@@ -605,8 +605,8 @@
     "/api/admin/scheduled-deletions": {
       "get": {
         "tags": ["admin"],
-        "summary": "FORK: list scheduled-deletion tags (live first, soonest first)",
-        "responses": { "200": { "description": "`{items[], enabled}` — each item: ratingKey, title, sizeBytes, taggedBy(+Name), taggedAt, deleteAfter, status (pending|held|deleted|failed|cancelled), statusDetail, kept" } }
+        "summary": "FORK: list scheduled-deletion tags (live first, soonest first) — the permanent deletion audit trail",
+        "responses": { "200": { "description": "`{items[], summary, reclaim, residueItems[], enabled}` — each item: ratingKey, title, sizeBytes, taggedBy(+Name), taggedAt, deleteAfter, status (pending|held|deleted|failed|cancelled), statusDetail, kept, removed, verifiedAt, residueBytes (null = the disk couldn't be checked, NOT \"nothing left\"). `summary` is {count, bytes} per status; `reclaim` reports MEASURED freed bytes across verified deletions only (claimedBytes, verifiedClaimedBytes, residueBytes, verifiedCount, unverifiedCount); `residueItems` lists deletions that reported success but left bytes behind. Nothing prunes these rows — `logs` (1000) and `job_runs` (100) do, so this is the only durable record of a purge." } }
       },
       "post": {
         "tags": ["admin"],

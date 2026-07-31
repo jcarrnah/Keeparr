@@ -278,6 +278,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           {navItem('/stats', 'Big Picture', pathname.startsWith('/stats'), '◴')}
           {user?.isAdmin &&
             navItem('/problems', 'Problems', pathname.startsWith('/problems'), '⚠')}
+          {/* FORK: the deletion audit trail (3.1). */}
+          {user?.isAdmin &&
+            navItem('/deletions', 'Deletions', pathname.startsWith('/deletions'), '⌛')}
           {user?.isAdmin &&
             navItem(
               '/settings/general',

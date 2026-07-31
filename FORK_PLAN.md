@@ -241,11 +241,11 @@ default OFF where destructive; update `openapi.json` for new endpoints.
 # Phase 3
 
 Written up 2026-07-30 after the first live purge exposed gaps. Phases 1–2 are
-shipped. **3.3 and 3.6 are built (2026-07-30)**; 3.1, 3.2, 3.4 and 3.7 are still
+shipped. **3.1, 3.3 and 3.6 are built (2026-07-30)**; 3.2, 3.4 and 3.7 are still
 designed-but-unimplemented, and 3.5 is a standing decision. Read
 [FORK_SYNC.md](FORK_SYNC.md) before touching upstream-owned files.
 
-## 3.1 Deletion history UI
+## 3.1 Deletion history UI — BUILT 2026-07-30
 
 **Why.** The fork runs destructive automation whose only audit trail today is a
 raw JSON endpoint. There is no screen anywhere that lists what was tagged,
@@ -269,20 +269,28 @@ Meanwhile `scheduled_deletions` rows are permanent — nothing in the codebase
 deletes them and no hard-delete of `media_items` can cascade them away. The
 data is all there; it just isn't visible.
 
-**Build.**
-- A fork-only `components/DeletionHistoryCard.tsx`, on a Settings tab or under
-  `/problems` — reuse the existing `GET /api/admin/scheduled-deletions`, which
-  already returns every row with `status`, `statusDetail`, `taggedBy(+Name)`
-  and `deleteAfter`.
-- Group by status (`pending`/`held`/`deleted`/`failed`/`cancelled`); show
-  `statusDetail` (it records which *arr instance performed each delete) and the
-  new `residue_bytes`/`verified_at` from Phase 2's verification, so
-  "reclaimed 13 TB" can be checked against what actually left the disk.
-- Surface `deletionResidueItems()` (already in `lib/queries.ts`) as a
-  "said reclaimed, didn't" list.
-- Consider raising `job_runs` retention, or writing purge outcomes to a store
-  that isn't pruned by a 5-minute job. The scheduled-deletions row already is
-  that store — the UI is what's missing.
+**As built.** A dedicated admin page rather than a settings card — the content
+is a full table plus rollups, and it's an operational screen, not a preference.
+
+- `app/deletions/page.tsx` → `components/DeletionHistoryView.tsx`, with a rail
+  entry (admin-only, beside Problems). Both fork-owned; `AppShell` takes two
+  lines.
+- Status pills with counts (`pending`/`held`/`deleted`/`failed`/`cancelled`),
+  each carrying a plain-language explanation on hover — a count of zero is a
+  real answer, so the pills show even when empty.
+- Three reclaim tiles: **actually reclaimed** (measured), **left behind**, and
+  **unverified**. The measured figure spans VERIFIED deletions only; the ones
+  whose disk couldn't be checked are counted separately rather than assumed
+  successful. `residue_bytes` null ≠ 0 anywhere in this UI.
+- The table shows `statusDetail` (which *arr instance did it, or why it
+  failed), who tagged it — rule tags read "a rule", since `tagged_by` is
+  `rule:<id>` and joins no user — and a Cancel action on live tags.
+- `deletionResidueItems()` gets its own "said reclaimed, didn't" list under the
+  table; it was previously reachable only from tests.
+- `GET /api/admin/scheduled-deletions` grew `verifiedAt`/`residueBytes`,
+  `summary`, `reclaim` and `residueItems`. Retention was left alone — the
+  `scheduled_deletions` row already IS the durable store, so raising
+  `job_runs` would only duplicate it.
 
 ## 3.2 Verdict-aware deletion rules
 
@@ -304,9 +312,32 @@ age out on a date rule.
   kept items, so this is mainly for explicit rules).
 
 Keep the existing safety baseline untouched: `m.removed = 0`, no keep exists,
-no existing `scheduled_deletions` row. Add a **minimum-voters guard** so a
-single person's swipe can't tag the whole library — a rule matching on votes
-should require N distinct voters before it fires.
+no existing `scheduled_deletions` row.
+
+**Open question — the minimum-voters guard.** The original design made it
+mandatory: a rule matching on votes wouldn't fire until N distinct people had
+weighed in, so one person's swiping spree couldn't tag the library. The user
+pushed back on that (2026-07-30, "I'm not sure about having a minimum voters
+guard"), and they have a point in a small household — if two people use the app
+and one of them has clearly said "bin it", waiting for a quorum that will never
+arrive just means the rule never fires.
+
+Suggested resolution: make it a **per-rule condition rather than a hidden
+floor** (`min_voters`, default absent). The safety it was protecting against is
+already partly covered — keeps always win, the grace period still runs, and
+Discord announces every tag. Confirm before building.
+
+**Also asked for at the same time** (2026-07-30) — score needs to be usable
+*outside* the rules engine, so tagging decisions can be reviewed by hand:
+
+- **Browse by score.** Browse has no score sort or filter today; the score only
+  exists on `/swipe/matches`. Wants `sort=score` on `/api/library` plus a
+  "score at least N" filter, so the reclaim candidates can be worked through in
+  the normal grid with posters, sizes and the verdict control right there.
+- **Better consensus review.** Beyond the sortable column and voter/verdict
+  filters shipped in 3.3: per-item vote detail (who said what, at a glance
+  rather than as comma-joined names), and a path from a consensus row straight
+  to tagging it.
 
 ## 3.3 Weighted vote scoring ("points") — BUILT 2026-07-30
 

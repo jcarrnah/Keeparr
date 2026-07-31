@@ -141,6 +141,9 @@ app/
   stats/             AppShell → StatsView (full-width dashboard)
   problems/          AppShell → ProblemsView (admin-only problem-file dashboard:
                      category pills + per-category tables; non-admins → /)
+  deletions/         **FORK:** AppShell → DeletionHistoryView (admin-only
+                     deletion audit trail: status pills + measured-reclaim
+                     tiles + every tag ever, cancellable while live)
   api-docs/          interactive API reference (Scalar over /api/openapi.json;
                      session-gated server component + client dynamic import)
   settings/<tab>/    admin Settings sub-tabs: general, users, connections, libraries,
@@ -160,7 +163,8 @@ components/          AppShell (rail + top bar + user menu), MediaCard (grid), Me
 ```
 
 The chrome is a Sonarr/Radarr-style left rail (logo → Keep; Keep / Browse[expand
-→ libraries] / **Swipe** / Big Picture / Problems[admin] / Settings[admin]) + a
+→ libraries] / **Swipe** / Big Picture / Problems[admin] / **Deletions**[admin]
+/ Settings[admin]) + a
 top bar (search + user menu). `AppShell` (client) wraps every page; the Keep page
 renders inside it with no page scroll.
 **Responsive:** the rail is docked on `md:`+ but a slide-in drawer on mobile
@@ -642,7 +646,11 @@ when it has no tvdb/tmdb **and** no imdb.
   **FORK:** `GET/POST/DELETE /api/admin/scheduled-deletions` (list / tag
   `{ratingKey, graceDays?}` / cancel `{ratingKey}` — POST tags `held` when
   anyone currently keeps the item; DELETE keeps the row as `cancelled` for
-  audit). Browse's Status filter gains a `scheduledDeletion` bucket (shown only
+  audit). GET is the **deletion audit trail** behind `/deletions`: rows carry
+  `verifiedAt`/`residueBytes` (null = the disk couldn't be checked — never read
+  as "gone"), plus a per-status `summary`, a `reclaim` rollup that measures
+  freed bytes across VERIFIED deletions only, and `residueItems`
+  (`deletionResidueItems()` — reported deleted, bytes still on disk). Browse's Status filter gains a `scheduledDeletion` bucket (shown only
   when the Deletion toggle is on) and library rows carry
   `scheduledDeleteAfter`/`scheduledDeleteHeld` → the card badge.
   **FORK:** `/api/library` and `/api/search` rows also carry `myVerdict` (this

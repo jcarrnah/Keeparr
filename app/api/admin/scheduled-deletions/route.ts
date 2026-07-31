@@ -3,6 +3,7 @@ import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
 import {
   cancelDeletion,
+  deletionResidueItems,
   getMediaItem,
   listScheduledDeletions,
   tagForDeletion,
@@ -12,11 +13,18 @@ import { sendDiscordMessage } from '@/lib/discord';
 
 export const runtime = 'nodejs';
 
-/** FORK: list all scheduled-deletion tags (live first, soonest first). */
+/**
+ * FORK: list all scheduled-deletion tags (live first, soonest first) — the
+ * permanent record behind the deletion-history screen. Nothing prunes
+ * `scheduled_deletions`, which matters: `logs` keeps 1000 rows and `job_runs`
+ * 100 runs, so a purge from last week is gone from both. Absence from the log
+ * proves nothing; this endpoint is the audit trail.
+ */
 export async function GET() {
   try {
     await requireAdmin();
-    const items = listScheduledDeletions().map((r) => ({
+    const rows = listScheduledDeletions();
+    const items = rows.map((r) => ({
       ratingKey: r.rating_key,
       title: r.title,
       sizeBytes: r.size_bytes,
@@ -30,8 +38,38 @@ export async function GET() {
       statusDetail: r.status_detail,
       kept: r.kept === 1,
       removed: r.removed === 1,
+      // The post-delete reality check. residueBytes null = we couldn't verify
+      // (section unmapped / root unreadable) — never read that as "gone".
+      verifiedAt: r.verified_at,
+      residueBytes: r.residue_bytes,
     }));
-    return NextResponse.json({ items, enabled: getDeletionEnabled() });
+    // Per-status rollup, plus what the disk says actually left for the deleted
+    // ones — the media server's `size_bytes` is a claim, not a measurement.
+    const summary = items.reduce<
+      Record<string, { count: number; bytes: number }>
+    >((acc, i) => {
+      const b = (acc[i.status] ??= { count: 0, bytes: 0 });
+      b.count += 1;
+      b.bytes += i.sizeBytes;
+      return acc;
+    }, {});
+    const deleted = items.filter((i) => i.status === 'deleted');
+    const verified = deleted.filter((i) => i.residueBytes != null);
+    return NextResponse.json({
+      items,
+      summary,
+      reclaim: {
+        claimedBytes: deleted.reduce((n, i) => n + i.sizeBytes, 0),
+        // Measured across the VERIFIED deletions only; the unverified ones are
+        // counted separately rather than assumed successful.
+        verifiedClaimedBytes: verified.reduce((n, i) => n + i.sizeBytes, 0),
+        residueBytes: verified.reduce((n, i) => n + (i.residueBytes ?? 0), 0),
+        verifiedCount: verified.length,
+        unverifiedCount: deleted.length - verified.length,
+      },
+      residueItems: deletionResidueItems(),
+      enabled: getDeletionEnabled(),
+    });
   } catch (e) {
     return errorResponse(e);
   }
