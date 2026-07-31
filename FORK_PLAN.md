@@ -314,18 +314,27 @@ age out on a date rule.
 Keep the existing safety baseline untouched: `m.removed = 0`, no keep exists,
 no existing `scheduled_deletions` row.
 
-**Open question — the minimum-voters guard.** The original design made it
-mandatory: a rule matching on votes wouldn't fire until N distinct people had
-weighed in, so one person's swiping spree couldn't tag the library. The user
-pushed back on that (2026-07-30, "I'm not sure about having a minimum voters
-guard"), and they have a point in a small household — if two people use the app
-and one of them has clearly said "bin it", waiting for a quorum that will never
-arrive just means the rule never fires.
+**The minimum-voters guard — decided 2026-07-30: keep it, but make it
+overridable.** The original design made it a mandatory hidden floor, so a rule
+matching on votes wouldn't fire until N distinct people had weighed in. That's
+the right default — one person's swiping spree shouldn't be able to tag the
+library — but it's wrong as an absolute: in a two-person household, waiting for
+a quorum that will never arrive just means the rule never fires.
 
-Suggested resolution: make it a **per-rule condition rather than a hidden
-floor** (`min_voters`, default absent). The safety it was protecting against is
-already partly covered — keeps always win, the grace period still runs, and
-Discord announces every tag. Confirm before building.
+So:
+
+- Vote-matching rules carry a **default minimum of 2 distinct voters**, applied
+  automatically so a rule written carelessly is still safe.
+- Each rule can **override it** — `min_voters` as an explicit condition,
+  including `1` for "one clear no is enough". Rules are admin-only to create
+  and edit, so the override is already admin-gated; no separate permission is
+  needed.
+- Show the effective value in the rule builder rather than leaving it implicit,
+  and reflect it in the preview count — "would tag 12 items (3 held back:
+  only one voter)" is far more useful than a silently smaller number.
+
+The remaining safety net is unchanged either way: keeps always win, the grace
+period still runs, and Discord announces every tag.
 
 **Also asked for at the same time** (2026-07-30) — score needs to be usable
 *outside* the rules engine, so tagging decisions can be reviewed by hand:
