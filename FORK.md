@@ -201,6 +201,24 @@ setup, works behind any reverse proxy); rooms need at least two people to match,
 and someone going idle stops holding up the group. Nothing here deletes or keeps
 anything — it's just for picking what to watch tonight.
 
+### Deletion history (`/deletions`, admin)
+Every tag ever made and what became of it — counting down, paused by a keep,
+deleted, failed, cancelled. Three things it answers that nothing else could:
+
+- **What actually got reclaimed**, measured on disk rather than assumed. *arr
+  reporting a successful delete doesn't mean the folder is empty, so the purge
+  re-measures; "left behind" is the shortfall, and titles that couldn't be
+  checked at all are counted separately instead of being called gone.
+- **Whether a purge ran.** The app log keeps 1000 lines and job history 100
+  runs, and every job writes a line — with the 5-minute sync that's roughly
+  three days of log. A purge from last week is *pruned*, not absent. These rows
+  are permanent.
+- **Where a tag went.** Browse's "Scheduled for deletion" filter only shows
+  live tags, so a successful purge makes them vanish from it — which reads as
+  "nothing ever happened".
+
+Live tags can be cancelled from here; the row stays as a record.
+
 ### Manual tagging in Browse
 Admins (with Deletion enabled) get a **Schedule deletion / Cancel deletion**
 button on Browse cards, using the configured grace period.
