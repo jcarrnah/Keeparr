@@ -572,40 +572,43 @@ polish tweak that silently broke the desktop case.
 Low severity — every tab is still reachable on mobile, and Everything is the
 default. Worth doing next time the swipe layout is touched.
 
-## 3.8 Swipe doesn't work on iOS
+> **Withdrawn:** an earlier version of this section reported "swipe doesn't
+> work on iOS". It was a false alarm — wrong location, not a bug. Swipe works
+> on iOS. Don't go chasing `setPointerCapture`; nothing is known to be broken
+> there.
 
-**Reported 2026-07-30** by the user, from the live instance: swiping doesn't
-work on iOS. Unlike 3.7 this is not a paper cut — it's the whole feature dead
-on the platform half the household is likely holding.
+## 3.8 A landing page for Swipe
 
-**Not yet diagnosed.** First job next session is to pin down what "doesn't
-work" means, because the leads diverge sharply:
+**The idea** (raised 2026-07-30): "we should make a landing page for swipe
+maybe, since that's the biggest feature I feel like people use."
 
-- the card doesn't move at all (events never fire),
-- it moves but never commits a verdict (threshold or pointer-up path),
-- it commits the wrong one (axis/direction mapping),
-- or the page itself misbehaves — Safari's edge back-swipe hijacking the
-  horizontal drag, rubber-band scrolling, the card stack mispositioned.
+Right now `/swipe` drops you straight into the card stack, with the watch-mode
+tab strip above it. That's the correct destination for someone mid-triage, but
+it's a poor front door for the feature the household actually uses most — and
+everything *around* swiping is a click away somewhere else: rooms are started
+from `/swipe/matches`, and so are Movie night and Consensus.
 
-**What the code already does**, so these aren't the fix:
-- `touchAction: 'none'` IS set on the draggable card
-  (`components/SwipeView.tsx:292`, `RoomView.tsx:312`), so the usual
-  "Safari scrolls instead of dragging" cause is already handled.
-- Pointer Events are supported by iOS Safari (13+), so the API choice is fine.
+**Worth putting on it** (pick, don't build all of it):
+- **Start swiping** — with the list/library choice made here rather than as a
+  strip above the deck, plus the remaining count so the size of the job is
+  visible before you commit to it.
+- **Movie night, front and centre** — start a room, or join by code. This is
+  the thing people want on a Friday evening and it's currently two navigations
+  deep.
+- **Where you left off** — how many you've swiped, what's left, maybe the last
+  few verdicts with an undo.
+- **What the household is landing on** — a peek at the top Movie night matches
+  and the highest-scoring "everyone wants this gone" titles, each linking into
+  the existing screens.
 
-**Leading candidate.** Both views call
-`(e.target as HTMLElement).setPointerCapture?.(e.pointerId)` — capture on
-`e.target`, not `e.currentTarget`. The target is whatever child was touched
-(usually the poster `<img>`), and if that node is re-rendered or removed
-mid-gesture the capture goes with it and the move/up events stop arriving on
-the handler. WebKit is stricter here than Chrome, which would explain an
-iOS-only failure. Capturing on `currentTarget` is the one-line thing to try
-first.
-
-**Note it affects rooms too** — `RoomView` uses the same drag implementation,
-so a live movie-night room is presumably just as broken on an iPhone. Fix
-both together; the code is close enough that they should probably share a
-hook rather than keep two copies.
-
-Needs a real iOS device (or Safari with responsive design mode) to confirm —
-this is not something the test suite or a desktop browser will catch.
+**Open questions.**
+- Does it get in the way of the returning user who just wants to swipe? Likely
+  answer: remember the choice and let `/swipe` go straight to the deck once
+  someone has started, with the landing page as `/swipe` only when there's no
+  session in progress — or a "skip this" that sticks in `localStorage`, like
+  the watch-mode preference already does.
+- Does it replace `/swipe/matches` or sit beside it? Matches has grown two
+  substantial tabs plus the room entry; a landing page might be the natural
+  home for the room entry, leaving Matches as the results screen.
+- Mobile first — this is a phone feature. The full-height no-scroll layout and
+  the safe-area padding rules apply.
