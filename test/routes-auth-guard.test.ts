@@ -44,6 +44,7 @@ import { GET as adminHealth } from '@/app/api/admin/health/route';
 import { GET as adminLogsGet, DELETE as adminLogsDelete } from '@/app/api/admin/logs/route';
 import { GET as adminProblems } from '@/app/api/admin/problems/route';
 import { GET as adminProblemsSummary } from '@/app/api/admin/problems/summary/route';
+import { POST as adminProblemActions } from '@/app/api/admin/problem-actions/route'; // FORK
 
 type Handler = (req: Request) => Promise<Response>;
 
@@ -91,6 +92,7 @@ const ADMIN_GUARDED: [string, Handler, string][] = [
   ['DELETE /api/admin/logs', adminLogsDelete, 'DELETE'],
   ['GET /api/admin/problems', adminProblems, 'GET'],
   ['GET /api/admin/problems/summary', adminProblemsSummary, 'GET'],
+  ['POST /api/admin/problem-actions', adminProblemActions, 'POST'], // FORK
 ];
 
 describe('public routes stay public', () => {

@@ -1,5 +1,5 @@
 import { beforeEach, afterAll, describe, expect, it } from 'vitest';
-import { __setTestDbToMemory, __closeDb } from './db';
+import { __setTestDbToMemory, __closeDb, getDb } from './db';
 import {
   addKeep,
   applySkipBatch,
@@ -98,6 +98,9 @@ import {
   type DiskOrphanInput,
   type UpsertMediaInput,
   type FeedWatchMode,
+  relinkReplacedItems,
+  ratingKeysMatchingRule,
+  applyVerdict,
   tagForDeletion,
   cancelDeletion,
   listScheduledDeletions,
@@ -2083,5 +2086,137 @@ describe('Problems page queries', () => {
       upsertMediaBatch([media('1', { dirName: null, fileName: null, dirPath: null })]);
       expect(sectionDiskNameStats('1').names.sort()).toEqual(['New Name', 'new.mkv']);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FORK: relinkReplacedItems — see the matching section in lib/queries.ts.
+// ---------------------------------------------------------------------------
+
+describe('FORK: relinkReplacedItems (replaced item ids)', () => {
+  /** The real-world case: a movie re-added as 4K gets a brand-new rating_key.
+   *  `whileLive` runs before the old id is tombstoned — tagForDeletion and
+   *  applyVerdict both gate on `removed = 0`, so state that goes through them
+   *  has to be set while the old copy is still the live one. */
+  function upgrade4k(whileLive?: () => void) {
+    upsertMediaBatch([
+      media('old', { title: 'The Matrix', guidTmdb: '603', guidImdb: 'tt0133093' }),
+      media('new4k', { title: 'The Matrix', guidTmdb: '603', guidImdb: 'tt0133093' }),
+    ]);
+    whileLive?.();
+    // The old id is gone from the server.
+    getDb().prepare("UPDATE media_items SET removed = 1 WHERE rating_key = 'old'").run();
+  }
+
+  it('moves a keep onto the replacement, protecting the live copy', () => {
+    upgrade4k();
+    addKeep('userA', 'old');
+    expect(isKeptByUser('userA', 'new4k')).toBe(false); // the bug, before
+
+    const res = relinkReplacedItems();
+    expect(res.items).toBe(1);
+    expect(res.keeps).toBe(1);
+    expect(isKeptByUser('userA', 'new4k')).toBe(true);
+    expect(isKept('old')).toBe(false); // old row cleared, no duplicate protection
+  });
+
+  it('a re-linked keep makes the replacement ineligible for the rules baseline', () => {
+    upgrade4k();
+    addKeep('userA', 'old');
+    // Unprotected before the re-link: a rule would happily tag the 4K copy.
+    expect(ratingKeysMatchingRule([]).map((r) => r.rating_key)).toContain('new4k');
+    relinkReplacedItems();
+    expect(ratingKeysMatchingRule([]).map((r) => r.rating_key)).not.toContain('new4k');
+  });
+
+  it('merges watch history instead of dropping it (server loses UserData on re-add)', () => {
+    upgrade4k();
+    upsertWatchBatch([
+      { plexUserId: 'userA', ratingKey: 'old', plays: 3, lastWatched: 500 },
+      { plexUserId: 'userA', ratingKey: 'new4k', plays: 1, lastWatched: 900 },
+    ]);
+    relinkReplacedItems();
+    const row = getDb()
+      .prepare("SELECT plays, last_watched FROM watch_history WHERE rating_key = 'new4k'")
+      .get() as { plays: number; last_watched: number };
+    expect(row.plays).toBe(4); // summed, not clobbered
+    expect(row.last_watched).toBe(900); // latest wins
+    expect(
+      getDb().prepare("SELECT COUNT(*) n FROM watch_history WHERE rating_key='old'").get()
+    ).toEqual({ n: 0 });
+  });
+
+  it('matches shows on tvdb and falls back to imdb when the primary id differs', () => {
+    upsertMediaBatch([
+      media('s_old', { libraryKind: 'show', guidTvdb: '1234' }),
+      media('s_new', { libraryKind: 'show', guidTvdb: '1234' }),
+      media('m_old', { guidTmdb: null, guidImdb: 'tt999' }),
+      media('m_new', { guidTmdb: '42', guidImdb: 'tt999' }),
+    ]);
+    getDb()
+      .prepare("UPDATE media_items SET removed = 1 WHERE rating_key IN ('s_old','m_old')")
+      .run();
+    addKeep('userA', 's_old');
+    addKeep('userA', 'm_old');
+
+    expect(relinkReplacedItems().items).toBe(2);
+    expect(isKeptByUser('userA', 's_new')).toBe(true); // tvdb
+    expect(isKeptByUser('userA', 'm_new')).toBe(true); // imdb fallback
+  });
+
+  it('resolves a CSV guid (an item merged across two ids)', () => {
+    upsertMediaBatch([
+      media('old', { guidTmdb: '111' }),
+      media('new', { guidTmdb: '999,111' }),
+    ]);
+    getDb().prepare("UPDATE media_items SET removed = 1 WHERE rating_key = 'old'").run();
+    addKeep('userA', 'old');
+    expect(relinkReplacedItems().items).toBe(1);
+    expect(isKeptByUser('userA', 'new')).toBe(true);
+  });
+
+  it('preserves keep/skip exclusivity — a migrated skip yields to an existing keep', () => {
+    upgrade4k();
+    addSkip('userA', 'old'); // "don't care" on the old copy...
+    addKeep('userA', 'new4k'); // ...but they already keep the 4K one
+    relinkReplacedItems();
+    expect(isKeptByUser('userA', 'new4k')).toBe(true);
+    expect(isSkipped('userA', 'new4k')).toBe(false); // skip dropped, not duplicated
+    expect(isSkipped('userA', 'old')).toBe(false); // old side always cleared
+  });
+
+  it('moves verdicts too, and is idempotent', () => {
+    upgrade4k(() => applyVerdict('userA', 'old', 'loved_it'));
+    const first = relinkReplacedItems();
+    expect(first.verdicts).toBe(1);
+    // Second run has nothing left to move.
+    const second = relinkReplacedItems();
+    expect(second).toEqual({
+      items: 0,
+      keeps: 0,
+      skips: 0,
+      deletes: 0,
+      verdicts: 0,
+      watch: 0,
+    });
+  });
+
+  it('leaves a tombstone alone when nothing replaced it', () => {
+    upsertMediaBatch([media('gone', { guidTmdb: '777' })]);
+    getDb().prepare("UPDATE media_items SET removed = 1 WHERE rating_key = 'gone'").run();
+    addKeep('userA', 'gone');
+    expect(relinkReplacedItems().items).toBe(0);
+    // The keep stays put so it still surfaces as "removed but kept".
+    expect(removedButKeptItems().map((i) => i.ratingKey)).toEqual(['gone']);
+  });
+
+  it('does NOT carry a scheduled deletion onto the replacement', () => {
+    upgrade4k(() =>
+      tagForDeletion('old', 'admin', Math.floor(Date.now() / 1000) + 86400)
+    );
+    addKeep('userA', 'old');
+    relinkReplacedItems();
+    const tags = listScheduledDeletions();
+    expect(tags.map((t) => t.rating_key)).toEqual(['old']); // stays on the dead id
   });
 });

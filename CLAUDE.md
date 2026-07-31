@@ -70,6 +70,17 @@ lib/
   seerr.ts           requests client
   arr.ts             Sonarr/Radarr v3 client (shared) + pure normalize fns (fetchSonarr/fetchRadarr/testArr)
   quality.ts         pure resolutionBucket()/RES_ORDER (shared by Browse + Big Picture quality grouping)
+  purge-verify.ts    **FORK:** post-delete disk check — did the bytes actually
+                     leave? Reuses upstream's exported sizeOfDir/normalizeName
+                     rather than editing lib/diskscan.ts (see FORK_SYNC.md).
+                     Roots are re-listed per item on purpose: a listing taken
+                     before a later delete would report phantom residue.
+  post-delete-cleanup.ts **FORK:** finish a purge in the two systems the *arr
+                     delete doesn't touch — clear the Seerr request (else the
+                     title is re-requested and re-downloaded) and trigger ONE
+                     Jellyfin/Emby library refresh (else the server serves empty
+                     entries). Never throws; no-ops on an empty list, so dry-run
+                     is safe by construction. Plex is skipped (no equivalent).
   paths.ts           pure separator-agnostic path-string helpers (lastSegment/
                      parentSegment/normalizeName) — foreign server-side paths may be
                      Windows-style, so never node:path
@@ -101,6 +112,12 @@ lib/
   sync.ts            job runners (backend-agnostic via getBackend()): syncRecentlyAdded /
                      syncLibrary / syncSizes / syncWatchHistory / syncSeerrRequests / syncArr
                      (+ syncSeerrRequestsForUser: warm one user's request cache on first login).
+                     syncLibrary also runs **FORK** `relinkReplacedItems()` after
+                     tombstoning (a re-added title — 4K upgrade, library rebuild —
+                     returns under a NEW rating_key, orphaning its keeps/watch
+                     onto the tombstone and leaving the live copy unprotected and
+                     rule-eligible; matched by tvdb/tmdb→imdb, never carries a
+                     scheduled deletion forward).
                      syncLibrary aborts on zero sections + skips tombstoning
                      empty-but-200 sections; syncArr keeps a failed instance's cache
                      + records cross-instance claim collisions into arr_conflicts
@@ -275,7 +292,13 @@ touching that layout.
   reported, never deleted. Master toggle default OFF, dry-run default ON.
   `notified_week` flags the "entering final 7 days" Discord notice (guarded
   ALTER for fork DBs that predate it; marked only when actually delivered so
-  a transient webhook failure retries nightly). The purge job also sends a
+  a transient webhook failure retries nightly). `verified_at`/`residue_bytes`
+  are the POST-DELETE reality check (`lib/purge-verify.ts`): *arr reporting
+  success doesn't mean the folder is empty, so the purge re-measures it —
+  `residue_bytes` NULL = couldn't verify (section unmapped/root unreadable,
+  never read as "gone"), 0 = really gone, >0 = bytes left behind. The run
+  summary reports MEASURED freed bytes, not the media server's assumed
+  `size_bytes`; `deletionResidueItems()` lists the shortfall. The purge job also sends a
   Discord purge summary (live mode only) and then mirrors the pending set
   into the "Leaving Soon" Jellyfin/Emby collection (`lib/leaving-soon.ts` —
   Plex has no equivalent; collection add/remove lives in `lib/jellyfin.ts`).
@@ -587,6 +610,18 @@ when it has no tvdb/tmdb **and** no imdb.
   audit). Browse's Status filter gains a `scheduledDeletion` bucket (shown only
   when the Deletion toggle is on) and library rows carry
   `scheduledDeleteAfter`/`scheduledDeleteHeld` → the card badge.
+  **FORK:** `POST /api/admin/problem-actions` `{action:'relink'|'rescan'}` →
+  `{ok, message, changed}` — the Problems page's fix-it actions. Deliberately a
+  SEPARATE route from upstream's `/api/admin/problems/*` reads so fork actions
+  never collide on a sync. `relink` runs `relinkReplacedItems()` on demand (the
+  "don't wait for the 03:00 library sweep" button, offered on `removedButKept`);
+  `rescan` calls `triggerServerRefresh()` so the server drops entries whose
+  files are gone (offered on `zeroSize`/`missingFromPlex`). Both are
+  non-destructive — nothing deletes media and the filesystem is never touched.
+  UI: `components/ForkProblemActions.tsx`, an action bar above the table.
+  Upstream's `ProblemsView.tsx` gets exactly ONE line (plus the import) — its
+  per-category switch and ~23 inline action-badge sites are hot upstream code,
+  so no fork markup goes in there.
   **FORK:** `GET/POST/PUT/DELETE /api/admin/deletion-rules` (rule CRUD;
   conditions validated by `parseRuleConditions`) +
   `POST /api/admin/deletion-rules/preview` `{conditions}` →

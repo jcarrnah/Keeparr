@@ -27,6 +27,8 @@ import {
   replaceSeerrRequests,
   showRatingKeys,
   tombstoneStale,
+  logEvent,
+  relinkReplacedItems, // FORK: carry keeps/watch across a replaced item id
   updateItemSize,
   upsertMediaBatch,
   upsertWatchBatch,
@@ -141,9 +143,32 @@ export async function syncLibrary(): Promise<JobResult> {
   const emptyNote = emptySections.length
     ? `; ${emptySections.length} section(s) returned no items (removal check skipped)`
     : '';
+
+  // FORK: a title that was re-added (4K upgrade, library rebuild) comes back
+  // under a NEW rating_key, orphaning its keeps onto the tombstone we just
+  // wrote. Carry that state over now, while both rows are visible — otherwise
+  // the live copy is unkept and unwatched, and the rules job may tag it.
+  let relinkNote = '';
+  try {
+    const relinked = relinkReplacedItems();
+    if (relinked.items > 0) {
+      relinkNote = `; re-linked ${relinked.items} replaced item(s) (${relinked.keeps} keep(s), ${relinked.watch} watch row(s))`;
+      logEvent(
+        'info',
+        'job:library',
+        `Re-linked per-user state for ${relinked.items} replaced item(s): ` +
+          `${relinked.keeps} keep(s), ${relinked.skips} skip(s), ${relinked.deletes} ok-to-delete, ` +
+          `${relinked.verdicts} verdict(s), ${relinked.watch} watch row(s).`
+      );
+    }
+  } catch (e) {
+    // Never fail the sweep over the re-link — the scan itself already succeeded.
+    logEvent('error', 'job:library', `Re-link of replaced items failed: ${String(e)}`);
+  }
+
   return {
     result: itemsSynced,
-    message: `Synced ${itemsSynced} items${removed ? `, removed ${removed}` : ''}${emptyNote}.`,
+    message: `Synced ${itemsSynced} items${removed ? `, removed ${removed}` : ''}${emptyNote}${relinkNote}.`,
   };
 }
 

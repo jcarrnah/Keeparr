@@ -148,3 +148,61 @@ export async function requestedRatingKeysForUser(
   }
   return keys;
 }
+
+// ---------------------------------------------------------------------------
+// FORK: request cleanup after a purge. Deleting a title from Sonarr/Radarr does
+// NOT remove its Seerr request — the request stays "available", and a re-request
+// (or an auto-sync) can put the title straight back, re-downloading what we just
+// deleted. Closing that loop is the difference between a deletion and a
+// temporary one. Kept at the end of the file so upstream edits above never
+// collide (see FORK_SYNC.md).
+// ---------------------------------------------------------------------------
+
+/** One Seerr request, with the id needed to delete it. */
+interface SeerrRequestWithId extends SeerrRequest {
+  id: number;
+}
+
+/**
+ * Every request on the server, indexed by the external id it points at:
+ * `"tmdb:603"` / `"tvdb:81967"` → request id. Built once per purge run so a
+ * multi-item purge makes one paged fetch rather than one lookup per title.
+ */
+export async function seerrRequestIdsByExternalId(
+  base: string,
+  apiKey: string
+): Promise<Map<string, number>> {
+  const requests = await seerrGetPaged<SeerrRequestWithId>(base, apiKey, '/request');
+  const map = new Map<string, number>();
+  for (const r of requests) {
+    if (r.id == null || !r.media) continue;
+    // A title can carry both ids; index under each so either resolves.
+    if (r.media.tmdbId != null) map.set(`tmdb:${r.media.tmdbId}`, r.id);
+    if (r.media.tvdbId != null) map.set(`tvdb:${r.media.tvdbId}`, r.id);
+  }
+  return map;
+}
+
+/**
+ * Delete one request. Seerr answers 204 with no body, so `allowEmpty` is
+ * required. A request that is already gone (404) is a success for our purposes
+ * and is swallowed; anything else propagates for the caller to log.
+ */
+export async function deleteSeerrRequest(
+  base: string,
+  apiKey: string,
+  requestId: number
+): Promise<void> {
+  const url = base.replace(/\/$/, '') + '/api/v1/request/' + requestId;
+  try {
+    await fetchJson(url, {
+      method: 'DELETE',
+      headers: { 'X-Api-Key': apiKey },
+      label: `Seerr DELETE /request/${requestId}`,
+      allowEmpty: true,
+    });
+  } catch (e) {
+    if (String(e).includes('HTTP 404')) return; // already gone
+    throw e;
+  }
+}

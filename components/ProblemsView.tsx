@@ -7,6 +7,7 @@ import { copyText } from '@/lib/clipboard';
 import { normalizeName, pathSegments, pathTail } from '@/lib/paths';
 import { useToast } from './Toaster';
 import MultiSelect from './MultiSelect';
+import ForkProblemActions from './ForkProblemActions'; // FORK
 
 // Labels/hints name the ACTUAL connected media server ("Plex", "Jellyfin"…) —
 // a bare "server" reads like the machine/filesystem. `server` comes from the
@@ -483,18 +484,22 @@ export default function ProblemsView() {
           </p>
         ) : (
           active && (
-            <div className="rounded-lg border border-slate-800 overflow-hidden">
-              <table className="w-full text-sm">
-                <ProblemTable
-                  type={active}
-                  items={items}
-                  server={serverName}
-                  sort={view.sort}
-                  dir={view.dir}
-                  onSort={onSort}
-                />
-              </table>
-            </div>
+            <>
+              {/* FORK: fix-it actions (all fork UI lives in that component). */}
+              <ForkProblemActions type={active} onDone={() => load(active, true)} />
+              <div className="rounded-lg border border-slate-800 overflow-hidden">
+                <table className="w-full text-sm">
+                  <ProblemTable
+                    type={active}
+                    items={items}
+                    server={serverName}
+                    sort={view.sort}
+                    dir={view.dir}
+                    onSort={onSort}
+                  />
+                </table>
+              </div>
+            </>
           )
         )}
 

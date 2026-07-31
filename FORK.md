@@ -79,6 +79,35 @@ General → Ratings) and the daily **ratings** job backfills IMDb / Rotten
 Tomatoes / Metacritic scores (under the ~1000/day free cap, resuming
 automatically) for display on swipe cards.
 
+### Deletion integrity
+Three fixes that came out of running a real purge and reading the results on
+upstream's Problems page:
+
+- **Keeps survive a re-add.** `rating_key` is the media server's item id and it
+  is *not* stable — re-adding a title (upgrading a movie to 4K, a library
+  rebuild) mints a new one. Every per-user table keys on it, so a keep was left
+  stranded on the old id while the live copy came back **unkept and
+  never-watched** — unprotected, and matching "big and nobody's watched it"
+  rules on its first evaluation. The library sweep now re-links keeps, skips,
+  "OK to delete", verdicts and watch history onto the replacement (matched by
+  tvdb/tmdb, falling back to imdb). A scheduled deletion is deliberately never
+  carried forward onto a fresh copy.
+- **"Reclaimed" is now measured, not assumed.** The purge used to report the
+  size the media server last knew about. Deletes can leave real bytes behind —
+  artwork, subtitles, `Extras/`, a second copy — which later resurface as disk
+  orphans long after the space was claimed back. Each delete is now re-measured
+  on disk and the run reports what actually left, flagging leftovers.
+- **Deletion finishes in all three systems.** Deleting via Sonarr/Radarr left
+  Jellyfin/Emby serving empty entries until it rescanned, and left the Seerr
+  request in place — so a title could be re-requested and re-downloaded. The
+  purge now clears the request and triggers one library refresh per run.
+
+### Fix-it actions on the Problems page
+Upstream's Problems page diagnoses; the fork adds buttons for the two problems
+it can repair: **re-link keeps to the new copies** (on "Removed but kept") and
+**rescan the library** (on zero-size / missing-from-server rows). Both are
+non-destructive — no media is deleted and the filesystem is never touched.
+
 ## New jobs
 | Job | Default schedule | Notes |
 |---|---|---|
@@ -86,12 +115,38 @@ automatically) for display on swipe cards.
 | `purge` | daily 02:30 | the only job that deletes; dry-run by default |
 | `ratings` | daily 09:00 | inert without an OMDb key |
 
-## Staying current with upstream
+## Auditing a purge
+Job logs are **pruned aggressively** — `logs` keeps the newest 1000 rows and
+`job_runs` the newest 100 runs, and every job run writes a line. With
+`recentlyAdded` running every 5 minutes that's roughly **3 days** of app log and
+**~8 hours** of job history, so a purge from last week is gone from both. Absence
+from the log is not evidence it never ran.
+
+The durable record is the `scheduled_deletions` row, which is never pruned:
+
 ```
-git fetch upstream
-git merge upstream/main   # fork changes are additive; conflicts should be rare
-npm run verify            # tests + build must stay green
-git push origin main      # ships a new fork image
+GET /api/admin/scheduled-deletions
+```
+
+returns every tag with its `status` (`pending`/`held`/`deleted`/`failed`/
+`cancelled`) and `statusDetail` (including which *arr instance did the delete).
+
+Note that Browse's "Scheduled for deletion" filter only matches **live** tags
+(`pending`/`held`), so a *successful* purge makes its tags disappear from that
+view — an empty list there means it completed, not that nothing happened. A
+proper history screen is [planned](FORK_PLAN.md#31-deletion-history-ui).
+
+## Staying current with upstream
+See **[FORK_SYNC.md](FORK_SYNC.md)** for the full procedure — the conflict
+classes, the verification gate (including the fresh-`DATA_DIR` build that
+`npm run verify` cannot catch), and the rule that keeps syncs cheap: fork logic
+lives in fork-owned modules.
+
+```
+git fetch upstream && git fetch origin   # origin too: CI moves main behind you
+git log --oneline main..upstream/main    # scope it first
+git checkout -b sync/upstream-X.Y.Z
+git merge upstream/main
 ```
 
 ### Matches & consensus (`/swipe/matches`)

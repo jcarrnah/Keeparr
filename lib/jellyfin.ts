@@ -547,3 +547,25 @@ export const removeFromCollection = (
   collectionId: string,
   itemIds: string[]
 ) => editCollectionItems(baseUrl, token, collectionId, itemIds, 'DELETE');
+
+/**
+ * FORK: ask the server to rescan its libraries.
+ *
+ * Deleting a title through Sonarr/Radarr removes the files, but Jellyfin/Emby
+ * keeps serving the now-empty entry until it rescans — which is why purged
+ * shows linger at 0.00 GB and show up under Problems as zero-size items. A
+ * refresh makes the server notice and drop them itself.
+ *
+ * NOTE: deliberately a REFRESH, not `DELETE /Items/{id}`. That endpoint deletes
+ * the underlying media from disk — never call it for cleanup.
+ *
+ * Returns 204 with no body, hence `allowEmpty`.
+ */
+export async function refreshLibrary(baseUrl: string, token: string): Promise<void> {
+  await fetchJson(`${base(baseUrl)}/Library/Refresh`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    label: 'Jellyfin Library/Refresh',
+    allowEmpty: true,
+  });
+}

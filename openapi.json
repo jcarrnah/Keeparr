@@ -727,6 +727,32 @@
         "responses": { "200": { "description": "`{arrConfigured, serverType, categories[]}` — one `{type, available, reason?, titles, bytes}` per category in display order; arr-gated categories come back `available:false` (zeroed) without Sonarr/Radarr, `notInArr` also waits for the first successful arr match, and `diskOrphans` needs storage mappings + a completed Disk scan run (until then `reason` is `storage_not_configured` or `not_scanned`). `serverType` (plex|jellyfin|emby) lets clients name the media server in labels." } }
       }
     },
+    "/api/admin/problem-actions": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "FORK: run a fix-it action from the Problems page",
+        "description": "Non-destructive repairs, kept on a separate path from the `/api/admin/problems` reads. `relink` carries keeps/skips/verdicts/watch history from a tombstoned item onto the live copy that replaced it (a re-added title gets a NEW rating_key, which otherwise strands the keep and leaves the live copy unprotected) — the on-demand version of what the nightly library sweep does. `rescan` asks Jellyfin/Emby to refresh so entries whose files are gone drop out. Neither deletes media nor touches the filesystem.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                  "action": { "type": "string", "enum": ["relink", "rescan"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "`{ok:true, message, changed}` — `changed` is the number of items re-linked (or 1/0 for whether a rescan started); `message` is display-ready." },
+          "400": { "description": "`bad_request` — unknown action" },
+          "403": { "description": "Not an admin" }
+        }
+      }
+    },
     "/api/admin/problems": {
       "get": {
         "tags": ["admin"],

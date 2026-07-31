@@ -235,3 +235,280 @@ Rules of the road for every phase: `npm run verify` green before merge;
 additive schema only (upstream uses CREATE TABLE IF NOT EXISTS boot-time
 migration style — follow it); new features behind settings toggles,
 default OFF where destructive; update `openapi.json` for new endpoints.
+
+---
+
+# Phase 3 — Planned, not yet built
+
+Written up 2026-07-30 after the first live purge exposed gaps. Phases 1–2 are
+shipped; everything below is designed but unimplemented. Read
+[FORK_SYNC.md](FORK_SYNC.md) before touching upstream-owned files.
+
+## 3.1 Deletion history UI
+
+**Why.** The fork runs destructive automation whose only audit trail today is a
+raw JSON endpoint. There is no screen anywhere that lists what was tagged,
+what got deleted, and what failed — `components/MediaCard.tsx` is the sole
+surface, and it only shows a per-card badge.
+
+This bit us: after a live purge the question "did it actually delete?" was
+genuinely hard to answer, because
+
+- `logs` keeps only the newest **1000** rows and `job_runs` only the newest
+  **100** runs (`lib/queries.ts`), and *every* job run logs a line. With
+  `recentlyAdded` on a 5-minute interval (288 runs/day) that's roughly **3 days**
+  of app log and **~8 hours** of job history. A purge from last week is gone
+  from both — pruned, not absent.
+- Browse's tag join is restricted to live tags
+  (`AND sd.status IN ('pending','held')`), so a *successful* purge makes its
+  tags vanish from the "Scheduled for deletion" filter. An empty view reads as
+  "nothing ever happened" when it actually means "it completed".
+
+Meanwhile `scheduled_deletions` rows are permanent — nothing in the codebase
+deletes them and no hard-delete of `media_items` can cascade them away. The
+data is all there; it just isn't visible.
+
+**Build.**
+- A fork-only `components/DeletionHistoryCard.tsx`, on a Settings tab or under
+  `/problems` — reuse the existing `GET /api/admin/scheduled-deletions`, which
+  already returns every row with `status`, `statusDetail`, `taggedBy(+Name)`
+  and `deleteAfter`.
+- Group by status (`pending`/`held`/`deleted`/`failed`/`cancelled`); show
+  `statusDetail` (it records which *arr instance performed each delete) and the
+  new `residue_bytes`/`verified_at` from Phase 2's verification, so
+  "reclaimed 13 TB" can be checked against what actually left the disk.
+- Surface `deletionResidueItems()` (already in `lib/queries.ts`) as a
+  "said reclaimed, didn't" list.
+- Consider raising `job_runs` retention, or writing purge outcomes to a store
+  that isn't pruned by a 5-minute job. The scheduled-deletions row already is
+  that store — the UI is what's missing.
+
+## 3.2 Verdict-aware deletion rules
+
+**Why.** Rules currently match on objective facts only — `last_watched_any`,
+`added_at`, `size`, `library`, `requested` (`ratingKeysMatchingRule`,
+`lib/queries.ts`). The household is generating opinions through Swipe and those
+opinions are never consulted, so a title everyone voted to dump still has to
+age out on a date rule.
+
+**Build.** New `RuleCondition` fields in `lib/types.ts`, validated in
+`parseRuleConditions`, evaluated in `ratingKeysMatchingRule`:
+
+- `verdict_score` (`gte`/`lte` N) — the weighted total from 3.3. "Tag anything
+  scoring ≥ 3" is the headline rule.
+- `verdict_count` (verdict, op, N) — e.g. at least 2 `not_interested` votes.
+- `verdict_by` (user, verdict) — e.g. the original requester marked it
+  `done_with_it`.
+- `nobody_kept` — no keep from anyone (the existing baseline already excludes
+  kept items, so this is mainly for explicit rules).
+
+Keep the existing safety baseline untouched: `m.removed = 0`, no keep exists,
+no existing `scheduled_deletions` row. Add a **minimum-voters guard** so a
+single person's swipe can't tag the whole library — a rule matching on votes
+should require N distinct voters before it fires.
+
+## 3.3 Weighted vote scoring ("points")
+
+**Why.** `verdictConsensus` currently reports `delete_votes` as a flat count of
+`done_with_it + not_interested` (`lib/queries.ts`), which flattens a shrug and
+a hard no into the same number, and ignores keep-side votes entirely. A signed
+score orders the library by how much the household actually wants something
+gone.
+
+**The scale** (agreed 2026-07-30). Positive = wants it gone:
+
+| Verdict | Swipe label | Points |
+|---|---|---|
+| `not_interested` | "Let it go / delete this shit" | **+2** |
+| `done_with_it` | "Wouldn't be mad / OK to delete" | **+1** |
+| `dont_care` | "Skip" | **0** |
+| `want_to_watch` | "Save for later" | **−1** |
+| `loved_it` | "Worth keeping" | **−2** |
+
+An item's score is the sum across all voters, so two "let it go" votes (+4)
+outrank one "worth keeping" (−2). Stored verdict values do not change — this is
+purely a projection over `verdicts`.
+
+> One thing to confirm before building: the phrasing that produced this table
+> was "a delete vote is 2, can go / let go is a 1". That maps cleanly onto the
+> two delete-side verdicts as above (hard no = 2, soft = 1), but it's worth a
+> sanity check, since "let go" is wording from the `not_interested` label.
+
+**Build.**
+- A shared `VERDICT_POINTS` map (put it beside `VERDICTS` in `lib/types.ts`) so
+  SQL and UI can't drift.
+- Extend `verdictConsensus` with a summed `score`, and make it sortable by
+  score as well as the existing votes/size.
+- **Filter by who voted what** — the ask was explicitly to slice by voter, not
+  just totals. `verdictConsensus` already rolls names up per verdict; add
+  `voter` + `verdict` query params so you can ask "everything Alice marked
+  'let it go'". Identity is already deliberately visible on this screen.
+- Surface score as a sortable column on `/swipe/matches` consensus, and feed it
+  to 3.2's `verdict_score` condition.
+
+## 3.4 Are Keep / Browse / Swipe actually in sync?
+
+**The question** (raised 2026-07-30): "Is the keep section linked to the browse
+/ swipe section, and is swipe linked to browse? They don't feel in sync."
+
+**What's true today.** They share state through the same tables, and mostly
+agree:
+
+| Surface | Excludes |
+|---|---|
+| Keep feed (`FEED_ELIGIBILITY`) | any keep (anyone's), **my** skip, **my** OK-to-delete |
+| Swipe deck (`getSwipeDeck`) | the same, **plus my existing verdicts** |
+| Browse (default `state=undecided`) | kept, **my** skip, **my** OK-to-delete |
+
+So Swipe is strictly narrower than Keep — anything you've already swiped is
+gone from it but still visible elsewhere. That alone explains a lot of the
+"out of sync" feeling, and it's working as designed.
+
+**The real gap — the write-through is one-way.** `applyVerdict` writes through
+to `keeps`/`user_skips`, so swiping updates the keep state. But keeping an item
+in **Browse or Keep does not record a verdict**. Consequences:
+
+- Someone who does all their triage in Browse never appears in
+  `verdictConsensus` or Movie night — they have opinions, but no votes.
+- **This directly undercuts 3.3's scoring**: a household member who keeps
+  things in Browse contributes 0 points, while a swiper contributes ±2. Decide
+  before building the points model whether a keep should count as an implicit
+  `loved_it` (−2) / a skip as `dont_care` (0), or whether score should stay
+  swipe-only and simply be labelled as such.
+
+**Also worth knowing** (this is what made Murderbot look broken): an item can
+appear in Keep but not Browse with no decision recorded at all, because Browse
+carries **sticky filters** the Keep feed doesn't — the library selection in the
+rail, plus any quality/status/watched/arr filters. Search (`/api/search`)
+applies none of them, so it's the quickest way to prove an item exists before
+hunting for the filter hiding it.
+
+**To do.** Verify the above end-to-end with a live account (it's read from the
+SQL, not observed), then either document the asymmetry as intended or add the
+reverse write-through. Consider showing "kept, never swiped" as a distinct
+state so the two vocabularies stop looking like a bug.
+
+## 3.5 Decision to revisit: keep syncing, or hard-fork?
+
+**The question** (raised 2026-07-30): "Maybe we should just fork it, because
+we're adding too much stuff?" — i.e. stop tracking `drohack/Keeparr` and own
+the codebase outright.
+
+**Not yet — but here's the evidence, so it's a decision and not a vibe.**
+
+What the v0.3.13 sync actually cost (the only real data point so far): 14
+conflicted files, and **zero of them were fork-owned**. Every conflict was
+mechanical — version strings, two field lists that needed unioning, two
+append-at-EOF blocks, and doc prose. One session, no logic merged by hand. The
+"keep fork logic in fork-owned modules" discipline is doing its job; that's
+also why Phases 1–3's new code sits in `lib/purge.ts`, `lib/rules.ts`,
+`lib/rooms.ts`, `lib/purge-verify.ts`, `lib/post-delete-cleanup.ts` and
+`components/ForkProblemActions.tsx` rather than inline.
+
+What syncing buys, concretely: that same merge delivered the entire **Problems
+page + disk-orphan scan** — the feature this whole round of work was built on
+top of, for free. Plus upstream's security hardening, dependency bumps, the
+Jellyfin/Emby backend seam, and the CI/release pipeline. A hard fork inherits
+all of that as *your* maintenance: Next.js upgrades, `better-sqlite3` rebuilds,
+media-server API drift, CVE response.
+
+What genuinely pushes toward divergence: Phase 3.2/3.3 reach into shared
+code (`ratingKeysMatchingRule`, `verdictConsensus`) more deeply than anything so
+far, and upstream will never take the deletion features — they cross its stated
+"never deletes" line.
+
+**Trigger conditions — revisit the moment any of these happen:**
+1. A sync produces conflicts **inside fork-owned modules**, or requires
+   hand-merging fork logic (so far: never).
+2. Upstream refactors something the fork hooks structurally — the `lib/queries.ts`
+   SQL layout, the `lib/mediaserver/*` seam, or `FEED_ELIGIBILITY`.
+3. A sync costs more than roughly a day, twice running.
+4. The fork needs to change upstream *behavior* rather than add to it. Additive
+   is cheap; changing existing semantics is what makes merges painful.
+
+**Cheaper middle paths, in order of preference:**
+- **Contribute the generic fixes upstream.** The keep re-link (3.1's sibling —
+  `relinkReplacedItems`) is a real upstream bug: their keeps are orphaned by any
+  4K re-add too. Upstreaming it deletes fork surface permanently.
+- Keep pushing shared-file edits toward end-of-file fork sections (already the
+  convention — see FORK_SYNC.md).
+- Pin to upstream tags and sync deliberately per release rather than tracking
+  `main`, so syncs are scheduled work rather than surprises.
+
+Related, still unresolved: the repo is a **public** GitHub fork. GitHub can't
+make a fork private — going private means detaching (which is the hard-fork
+decision) or a fresh repo. Raised previously; no action requested.
+
+## 3.6 Click-to-cycle verdict control on cards
+
+**The idea** (raised 2026-07-30): "Clicking on it should cycle all states, since
+we have 5 now."
+
+Today a card's keep control is effectively binary (keep / not), while the five
+verdicts are only reachable by swiping. Turning the card control into a
+**cycling verdict button** would make every surface speak the same vocabulary —
+and it's the cleanest fix for the asymmetry in [3.4](#34-are-keep--browse--swipe-actually-in-sync)
+and the scoring gap in [3.3](#33-weighted-vote-scoring-points): people who
+triage in Browse would finally produce votes instead of silent keeps.
+
+**Cycle order** — follow the points scale so the control has a direction rather
+than being an arbitrary carousel:
+
+```
+none → Worth keeping (−2) → Save for later (−1) → Skip (0)
+     → Wouldn't be mad (+1) → Let it go (+2) → none
+```
+
+Six positions counting the empty state.
+
+**Design notes.**
+- **Make it reversible.** Six states means overshooting is common — shift-click
+  or right-click should step backwards, and long-press could open a direct
+  picker. A forward-only cycle gets irritating fast.
+- Show the current state unambiguously: the existing verdict colours
+  (rose / amber / slate / emerald / sky, from `components/SwipeView.tsx`) plus a
+  label or icon, not colour alone.
+- **Reuse the existing endpoint** — `POST /api/swipe/verdict` already replaces a
+  previous verdict and transitions the write-through state; `DELETE` clears it
+  and maps to the `none` position. No new API needed.
+- Respect the established optimistic-UI rule: an in-flight keep/skip/delete
+  blocks the other two (the states are mutually exclusive and interleaved
+  requests desync the UI). A rapid-cycling control makes this sharper — debounce
+  and send only the final state rather than one request per click.
+- `components/MediaCard.tsx` already carries the admin Schedule/Cancel-deletion
+  button; check the two controls don't crowd each other, especially on mobile.
+- Decide whether this **replaces** the keep button or sits beside it. Replacing
+  is the coherent end state (one vocabulary everywhere) but changes a
+  well-worn interaction — worth trying behind a preference first.
+
+## 3.7 Paper cut: the Swipe watch tabs are unreachable on desktop
+
+**Symptom** (2026-07-30): on the `/swipe` page the watch-mode tab strip is cut
+off mid-word — "Everything · Never played · Not watched in 90d+ · Watched
+recently · M…" — so **My unwatched** can't be clicked. On a phone you can swipe
+the strip sideways, so it only bites on desktop.
+
+**Cause** — `components/SwipeView.tsx:247`:
+
+```
+flex items-center gap-1 overflow-x-auto … [scrollbar-width:none] [&::-webkit-scrollbar]:hidden
+```
+
+inside a `w-full max-w-md` column (`:232`). Five tabs don't fit in `max-w-md`
+(448px), so the strip overflows and `overflow-x-auto` makes it scrollable — but
+the scrollbar is **deliberately hidden** in both Firefox and WebKit. Touch users
+can still drag; on desktop there's no scrollbar, no affordance, and a mouse
+wheel won't scroll horizontally without Shift. The hidden scrollbar was a mobile
+polish tweak that silently broke the desktop case.
+
+**Fix options**, cheapest first:
+- Let the strip wrap on wider screens (`md:flex-wrap`) — the desktop layout has
+  vertical room, though the page is intentionally no-scroll so check it still
+  fits `100dvh`.
+- Or let the tab strip exceed the card column on `md:`+ (it's only capped
+  because it shares the card's `max-w-md`).
+- Or re-enable the scrollbar on non-touch (`@media (hover: hover)`), or add
+  edge-fade/arrow affordances.
+
+Low severity — every tab is still reachable on mobile, and Everything is the
+default. Worth doing next time the swipe layout is touched.
