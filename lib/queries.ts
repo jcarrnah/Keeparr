@@ -14,6 +14,8 @@ import type {
   SyncStatus,
   Verdict,
 } from './types';
+// FORK: the verdict scale lives in types.ts so SQL and UI share one source.
+import { IMPLIED_VERDICTS, VERDICTS, VERDICT_POINTS } from './types';
 
 export type { FeedWatchMode, RuleCondition, Verdict };
 
@@ -921,6 +923,9 @@ export interface LibraryRow extends MediaWithKeep {
   // FORK: live scheduled-deletion tag (null when not tagged / tag not live).
   scheduled_delete_after: number | null;
   scheduled_delete_status: string | null; // 'pending' | 'held'
+  /** FORK: this user's swipe verdict (null = never swiped) — the card's cycle
+   *  control needs the current position, not just the derived keep/skip flags. */
+  my_verdict: Verdict | null;
 }
 
 /** Arr-matched titles whose Plex vs arr size differ by >10% AND >1 GB (the
@@ -985,7 +990,15 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
       dontcare: 's.rating_key IS NOT NULL',
       okDeleteMine: 'ud.rating_key IS NOT NULL',
       okDeleteAny: deletedAnyExists,
-      undecided: `NOT (${keptExists}) AND s.rating_key IS NULL AND ud.rating_key IS NULL`,
+      // FORK: a verdict counts as a decision too. The delete-side ones
+      // (done_with_it / not_interested) write no keep, skip or "OK to delete"
+      // row, so without this a title you just cycled to "Let it go" would sit
+      // in the default Browse view forever and never drain. Deliberately NOT
+      // mirrored in librarySummary(): its three buckets have to partition the
+      // library's bytes exactly, and a delete-side verdict belongs to none of
+      // them.
+      undecided: `NOT (${keptExists}) AND s.rating_key IS NULL AND ud.rating_key IS NULL
+                  AND vv.verdict IS NULL`,
       scheduledDeletion: 'sd.rating_key IS NOT NULL',
     };
     const parts = q.stateBuckets
@@ -1068,10 +1081,13 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
               a.quality AS arr_quality, a.quality_kind AS arr_quality_kind,
               a.tags AS arr_tags, a.arr_size_bytes AS arr_size_bytes,
               sd.delete_after AS scheduled_delete_after,
-              sd.status AS scheduled_delete_status
+              sd.status AS scheduled_delete_status,
+              vv.verdict AS my_verdict
        FROM media_items m
        LEFT JOIN keeps km
          ON km.rating_key = m.rating_key AND km.plex_user_id = @uid
+       LEFT JOIN verdicts vv
+         ON vv.rating_key = m.rating_key AND vv.plex_user_id = @uid
        LEFT JOIN user_skips s
          ON s.rating_key = m.rating_key AND s.plex_user_id = @uid
        LEFT JOIN user_deletes ud
@@ -1103,6 +1119,8 @@ export interface SearchRow extends MediaItem {
   marked_for_delete_by_me: number;
   marked_for_delete_any: number;
   score: number;
+  /** FORK: this user's swipe verdict (null = never swiped) — the cycle control. */
+  my_verdict: Verdict | null;
 }
 
 /**
@@ -1160,10 +1178,13 @@ export function searchMedia(params: {
               (sr.rating_key IS NOT NULL) AS requested_by_me,
               (ud.rating_key IS NOT NULL) AS marked_for_delete_by_me,
               EXISTS (SELECT 1 FROM user_deletes d WHERE d.rating_key = m.rating_key) AS marked_for_delete_any,
+              vv.verdict AS my_verdict,
               ${score} AS score
        FROM media_items m
        LEFT JOIN keeps km
          ON km.rating_key = m.rating_key AND km.plex_user_id = @uid
+       LEFT JOIN verdicts vv
+         ON vv.rating_key = m.rating_key AND vv.plex_user_id = @uid
        LEFT JOIN user_skips s
          ON s.rating_key = m.rating_key AND s.plex_user_id = @uid
        LEFT JOIN user_deletes ud
@@ -3957,39 +3978,146 @@ export interface ConsensusRow extends MediaItem {
   never_names: string | null; // not_interested (let it go — unseen)
   skip_count: number; // dont_care abstentions
   delete_votes: number; // done_with_it + not_interested
+  // --- FORK (3.3): the weighted projection ---
+  /** Summed VERDICT_POINTS across every voter; positive = wanted gone. */
+  score: number;
+  /** Distinct people with an opinion (explicit or implied). */
+  voters: number;
+  /** Names whose "worth keeping" / "can go" / "skip" is IMPLIED by a keep,
+   *  an "OK to delete" or a "don't care" rather than an actual swipe. */
+  keep_implicit_names: string | null;
+  done_implicit_names: string | null;
+  skip_implicit_count: number;
 }
 
 /**
- * Per-item verdict rollup over every item ANYONE has sworn a verdict on —
- * feeds the human decision of what to tag for deletion. Sort: 'votes' =
- * most delete votes first (ties by size), 'size' = largest first.
+ * FORK (3.3): SQL CASE mapping a verdict column to its points, generated from
+ * VERDICT_POINTS so the scale can't drift from the UI. Interpolation is safe —
+ * both the labels and the numbers are our own compile-time constants.
+ */
+function verdictPointsSql(col: string): string {
+  const whens = VERDICTS.map((v) => `WHEN '${v}' THEN ${VERDICT_POINTS[v]}`).join(' ');
+  return `CASE ${col} ${whens} ELSE 0 END`;
+}
+
+/**
+ * FORK (3.3): every opinion on every item — explicit swipe verdicts, plus the
+ * verdict a keep / "don't care" / "OK to delete" stands in for when that person
+ * never swiped the title. Without this a household member who triages in Browse
+ * scores 0 while a swiper scores ±2, which would quietly bias the whole model.
+ *
+ * Implicit rows are excluded wherever a verdict exists for the same
+ * (user, item), so an actual swipe always wins; the three source tables are
+ * mutually exclusive per user, so nobody is double-counted either way.
+ */
+const VOTES_CTE = `votes AS (
+      SELECT plex_user_id, rating_key, verdict, 0 AS implicit FROM verdicts
+      UNION ALL
+      SELECT k.plex_user_id, k.rating_key, '${IMPLIED_VERDICTS.keep}', 1
+        FROM keeps k
+       WHERE NOT EXISTS (SELECT 1 FROM verdicts v
+                          WHERE v.plex_user_id = k.plex_user_id AND v.rating_key = k.rating_key)
+      UNION ALL
+      SELECT s.plex_user_id, s.rating_key, '${IMPLIED_VERDICTS.skip}', 1
+        FROM user_skips s
+       WHERE NOT EXISTS (SELECT 1 FROM verdicts v
+                          WHERE v.plex_user_id = s.plex_user_id AND v.rating_key = s.rating_key)
+      UNION ALL
+      SELECT d.plex_user_id, d.rating_key, '${IMPLIED_VERDICTS.okToDelete}', 1
+        FROM user_deletes d
+       WHERE NOT EXISTS (SELECT 1 FROM verdicts v
+                          WHERE v.plex_user_id = d.plex_user_id AND v.rating_key = d.rating_key)
+    )`;
+
+/**
+ * Per-item verdict rollup over every item ANYONE has an opinion on — feeds the
+ * human decision of what to tag for deletion. Sort: 'votes' = most delete votes
+ * first (ties by size), 'size' = largest first, 'score' = most wanted gone
+ * first (FORK 3.3).
+ *
+ * `voter`/`verdict` slice the list without changing any row's rollup: they ask
+ * "show me the titles X marked Y", and each surviving row still reports what
+ * everybody said about it.
  */
 export function verdictConsensus(
-  opts: { sort?: 'votes' | 'size'; limit: number; offset: number }
+  opts: {
+    sort?: 'votes' | 'size' | 'score';
+    voter?: string;
+    verdict?: Verdict;
+    limit: number;
+    offset: number;
+  }
 ): ConsensusRow[] {
   const name = `COALESCE(u.username, v.plex_user_id)`;
   const order =
     opts.sort === 'size'
       ? 'm.size_bytes DESC'
-      : 'delete_votes DESC, m.size_bytes DESC';
+      : opts.sort === 'score'
+        ? 'score DESC, m.size_bytes DESC'
+        : 'delete_votes DESC, m.size_bytes DESC';
+  const params: Record<string, unknown> = {
+    limit: opts.limit,
+    offset: opts.offset,
+  };
+  // Filter by who said what. Either half alone is meaningful: a voter with no
+  // verdict = "everything X has an opinion on".
+  const filters: string[] = [];
+  if (opts.voter) {
+    filters.push('f.plex_user_id = @voter');
+    params.voter = opts.voter;
+  }
+  if (opts.verdict) {
+    filters.push('f.verdict = @verdictFilter');
+    params.verdictFilter = opts.verdict;
+  }
+  const filterSql = filters.length
+    ? `WHERE EXISTS (SELECT 1 FROM votes f
+                      WHERE f.rating_key = m.rating_key AND ${filters.join(' AND ')})`
+    : '';
   return getDb()
     .prepare(
-      `SELECT m.*,
+      `WITH ${VOTES_CTE}
+       SELECT m.*,
               EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = m.rating_key) AS kept,
               GROUP_CONCAT(CASE WHEN v.verdict = 'want_to_watch' THEN ${name} END) AS want_names,
-              GROUP_CONCAT(CASE WHEN v.verdict = 'loved_it' THEN ${name} END) AS keep_names,
-              GROUP_CONCAT(CASE WHEN v.verdict = 'done_with_it' THEN ${name} END) AS done_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'loved_it' AND v.implicit = 0 THEN ${name} END) AS keep_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'loved_it' AND v.implicit = 1 THEN ${name} END) AS keep_implicit_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'done_with_it' AND v.implicit = 0 THEN ${name} END) AS done_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'done_with_it' AND v.implicit = 1 THEN ${name} END) AS done_implicit_names,
               GROUP_CONCAT(CASE WHEN v.verdict = 'not_interested' THEN ${name} END) AS never_names,
-              SUM(v.verdict = 'dont_care') AS skip_count,
-              SUM(v.verdict IN ('done_with_it', 'not_interested')) AS delete_votes
-       FROM verdicts v
+              SUM(v.verdict = 'dont_care' AND v.implicit = 0) AS skip_count,
+              SUM(v.verdict = 'dont_care' AND v.implicit = 1) AS skip_implicit_count,
+              SUM(v.verdict IN ('done_with_it', 'not_interested')) AS delete_votes,
+              SUM(${verdictPointsSql('v.verdict')}) AS score,
+              COUNT(*) AS voters
+       FROM votes v
        JOIN media_items m ON m.rating_key = v.rating_key AND m.removed = 0
        LEFT JOIN users u ON u.plex_user_id = v.plex_user_id
+       ${filterSql}
        GROUP BY v.rating_key
        ORDER BY ${order}, m.title COLLATE NOCASE
        LIMIT @limit OFFSET @offset`
     )
-    .all({ limit: opts.limit, offset: opts.offset }) as ConsensusRow[];
+    .all(params) as ConsensusRow[];
+}
+
+/**
+ * FORK (3.3): everyone with an opinion the consensus list can be sliced by —
+ * swipers and Browse-only triagers alike, so the voter filter never offers an
+ * empty selection or hides someone who only ever kept things.
+ */
+export function consensusVoters(): { plex_user_id: string; username: string | null }[] {
+  return getDb()
+    .prepare(
+      `WITH ${VOTES_CTE}
+       SELECT v.plex_user_id, MAX(u.username) AS username
+       FROM votes v
+       JOIN media_items m ON m.rating_key = v.rating_key AND m.removed = 0
+       LEFT JOIN users u ON u.plex_user_id = v.plex_user_id
+       GROUP BY v.plex_user_id
+       ORDER BY COALESCE(MAX(u.username), v.plex_user_id) COLLATE NOCASE`
+    )
+    .all() as { plex_user_id: string; username: string | null }[];
 }
 
 // ---------------------------------------------------------------------------

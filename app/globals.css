@@ -64,6 +64,11 @@
   --c-rose-900: 136 19 55;
   --c-rose-950: 76 5 25;
 
+  /* FORK: sky carries the "worth keeping" verdict (swipe + the card control),
+     so it needs the same themed ladder as the other meaning-bearing hues. */
+  --c-sky-300: 125 211 252;
+  --c-sky-400: 56 189 248;
+  --c-sky-500: 14 165 233;
   --c-sky-600: 2 132 199;
 
   /* Categorical "by library" palette (breakdown.tsx). Not remapped in
@@ -113,6 +118,9 @@
 
   --c-emerald-400: 5 150 105; /* ← emerald-600 */
 
+  --c-sky-300: 3 105 161; /* ← sky-700 */
+  --c-sky-400: 2 132 199; /* ← sky-600 */
+
   --c-red-300: 185 28 28; /* ← red-700 */
   --c-red-400: 220 38 38; /* ← red-600 */
   --c-red-950: 254 226 226; /* ← red-100 (tint backgrounds) */
@@ -156,6 +164,12 @@
   --c-emerald-400: 0 184 132;
   --c-emerald-500: 0 158 115; /* #009E73 */
 
+  /* Okabe-Ito sky blue — stays clearly apart from the bluish-green emerald,
+     which is the pair that has to survive: "worth keeping" vs "save for later". */
+  --c-sky-300: 130 200 240;
+  --c-sky-400: 86 180 233; /* #56B4E9 */
+  --c-sky-500: 60 150 200;
+
   --c-red-300: 235 148 100;
   --c-red-400: 228 122 64;
   --c-red-500: 213 94 0; /* #D55E00 */
@@ -173,6 +187,9 @@
   --c-rose-950: 245 224 236;
 
   --c-emerald-400: 0 132 96;
+
+  --c-sky-300: 20 90 135;
+  --c-sky-400: 30 110 160;
 
   --c-red-300: 150 66 0;
   --c-red-400: 184 81 0;

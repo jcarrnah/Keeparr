@@ -154,8 +154,43 @@ git merge upstream/main
   and Sam want to watch this" — with a participant picker and a
   "nobody's watched it yet" filter.
 - **Consensus**: a per-item rollup of who wants each title, who's keeping it,
-  and who released it, sortable by delete votes or size — the human input for
-  deciding what to tag for deletion.
+  and who released it, sortable by delete votes, size or **score** — the human
+  input for deciding what to tag for deletion. Filter it by **who voted what**
+  ("everything Sam let go").
+
+### Vote scoring
+Each verdict carries a weight, and a title's **score** is the sum across
+everyone. Positive means the household wants it gone, so sorting by score puts
+the safest reclaims on top:
+
+| Verdict | Points |
+|---|---|
+| Let it go / delete this shit | **+2** |
+| Wouldn't be mad / OK to delete | **+1** |
+| Skip | **0** |
+| Save for later | **−1** |
+| Worth keeping | **−2** |
+
+Two "let it go" votes (+4) therefore outrank one "worth keeping" (−2). Keeping
+something in **Browse, Search or the Keep page counts too** — a keep reads as
+"worth keeping", a "don't care" as a skip, an "OK to delete" as "wouldn't be
+mad" — so people who never open Swipe still have a say. Those inferred opinions
+are marked (*"Sam (kept)"*) so they're never mistaken for an actual swipe, and
+an actual swipe always overrides them.
+
+### One vocabulary on every card
+Browse (grid and list) and Search cards no longer toggle a plain keep. The
+control **cycles through all five verdicts** in score order, so triage anywhere
+produces the same votes swiping does:
+
+```
+no vote → Worth keeping → Save for later → Skip → Wouldn't be mad → Let it go → …
+```
+
+Click to advance, **shift-click or right-click to step back** (six positions
+means overshooting is easy), and only the state you land on is saved. Keeps and
+"don't care" are still written underneath exactly as before — this changes the
+vocabulary, not the machinery. The Keep page keeps its own fast keep/skip loop.
 
 ### Movie night — live rooms (`/swipe/rooms`)
 Start a room from **/swipe/matches** ("Start a room"), share the short code, and

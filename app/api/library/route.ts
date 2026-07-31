@@ -160,6 +160,8 @@ export async function GET(req: Request) {
         // FORK: live scheduled-deletion tag → date badge on cards.
         scheduledDeleteAfter: r.scheduled_delete_after ?? undefined,
         scheduledDeleteHeld: r.scheduled_delete_status === 'held' || undefined,
+        // FORK: this user's verdict → the card's cycle control position.
+        myVerdict: r.my_verdict ?? undefined,
       };
     });
     return NextResponse.json({ items, hasMore, nextOffset: offset + PAGE });

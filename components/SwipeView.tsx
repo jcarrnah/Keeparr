@@ -17,6 +17,7 @@ import {
   type Verdict,
 } from '@/lib/types';
 import { useToast } from './Toaster';
+import { VERDICT_META, type VerdictMeta } from './verdict-meta';
 
 type WatchSelection = 'all' | FeedWatchMode;
 const WATCH_LABELS: Record<WatchSelection, string> = {
@@ -30,22 +31,18 @@ const WATCH_KEY = 'keeparr.swipeWatchMode';
 
 const SWIPE_THRESHOLD = 90; // px of drag that commits a verdict
 
-interface VerdictDef {
-  verdict: Verdict;
-  label: string;
-  color: string; // overlay + button accent classes
+// Labels and colours come from the shared vocabulary (components/verdict-meta)
+// so this screen and the card cycle control can't drift; only the gesture each
+// verdict is bound to lives here.
+interface VerdictDef extends VerdictMeta {
   dir: 'left' | 'right' | 'up' | 'down' | null;
 }
-// Outcome-focused labels (user-chosen); stored values keep their original
-// names — no migration, and the semantics are unchanged:
-//   Save for later = unseen, keep to watch · Worth keeping = seen, keep ·
-//   Let it go = never watching, releases my claim · Can go = watched, done.
 const VERDICT_DEFS: VerdictDef[] = [
-  { verdict: 'not_interested', label: 'Let it go / delete this shit', color: 'text-rose-400 border-rose-500', dir: 'left' },
-  { verdict: 'done_with_it', label: "Wouldn't be mad / OK to delete", color: 'text-amber-400 border-amber-500', dir: 'down' },
-  { verdict: 'dont_care', label: 'Skip', color: 'text-slate-300 border-slate-500', dir: null },
-  { verdict: 'want_to_watch', label: 'Save for later', color: 'text-emerald-400 border-emerald-500', dir: 'right' },
-  { verdict: 'loved_it', label: 'Worth keeping', color: 'text-sky-400 border-sky-500', dir: 'up' },
+  { ...VERDICT_META.not_interested, dir: 'left' },
+  { ...VERDICT_META.done_with_it, dir: 'down' },
+  { ...VERDICT_META.dont_care, dir: null },
+  { ...VERDICT_META.want_to_watch, dir: 'right' },
+  { ...VERDICT_META.loved_it, dir: 'up' },
 ];
 const byDir = (d: 'left' | 'right' | 'up' | 'down') =>
   VERDICT_DEFS.find((v) => v.dir === d)!;

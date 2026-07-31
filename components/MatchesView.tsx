@@ -44,7 +44,24 @@ interface ConsensusItem {
   neverNames: string[];
   skipCount: number;
   deleteVotes: number;
+  // FORK (3.3): weighted score + the opinions inferred from a keep / skip /
+  // "OK to delete" rather than an actual swipe.
+  score: number;
+  voters: number;
+  keepImplicitNames: string[];
+  doneImplicitNames: string[];
+  skipImplicitCount: number;
 }
+
+/** FORK (3.3): the five verdicts as the filter offers them, worst-first so the
+ *  list reads the same direction as the score. */
+const VERDICT_FILTERS: [string, string][] = [
+  ['not_interested', 'Let it go'],
+  ['done_with_it', "Wouldn't be mad"],
+  ['dont_care', 'Skip'],
+  ['want_to_watch', 'Save for later'],
+  ['loved_it', 'Worth keeping'],
+];
 
 /** "You and Sam", "You, Sam and Alex", "Sam and Alex" … */
 function wanterSentence(names: string[], ids: string[], me: string): string {
@@ -75,7 +92,12 @@ export default function MatchesView() {
 
   // Consensus state
   const [rows, setRows] = useState<ConsensusItem[]>([]);
-  const [sort, setSort] = useState<'votes' | 'size'>('votes');
+  const [sort, setSort] = useState<'votes' | 'size' | 'score'>('votes');
+  // FORK (3.3): slice by who said what. Voters come from the same endpoint, so
+  // the list includes people who only ever kept things in Browse.
+  const [consVoters, setConsVoters] = useState<Participant[]>([]);
+  const [voter, setVoter] = useState('');
+  const [verdictFilter, setVerdictFilter] = useState('');
   const [hasMore, setHasMore] = useState(false);
   const [nextOffset, setNextOffset] = useState(0);
   const [loadingCons, setLoadingCons] = useState(true);
@@ -108,12 +130,15 @@ export default function MatchesView() {
     async (offset: number, append: boolean) => {
       const s = ++seq.current;
       setLoadingCons(true);
+      const params = new URLSearchParams({ sort, offset: String(offset) });
+      if (voter) params.set('voter', voter);
+      if (verdictFilter) params.set('verdict', verdictFilter);
       try {
-        const d = await fetch(`/api/swipe/consensus?sort=${sort}&offset=${offset}`).then((r) =>
-          r.json()
-        );
+        const d = await fetch(`/api/swipe/consensus?${params}`).then((r) => r.json());
         if (s !== seq.current) return;
         setRows((cur) => (append ? [...cur, ...(d.items ?? [])] : d.items ?? []));
+        setConsVoters(d.voters ?? []);
+        if (d.me) setMe(d.me);
         setHasMore(!!d.hasMore);
         setNextOffset(d.nextOffset ?? 0);
       } catch {
@@ -122,7 +147,7 @@ export default function MatchesView() {
         if (s === seq.current) setLoadingCons(false);
       }
     },
-    [sort, toast]
+    [sort, voter, verdictFilter, toast]
   );
 
   useEffect(() => {
@@ -142,6 +167,10 @@ export default function MatchesView() {
   }
 
   const names = (list: string[]) => list.join(', ');
+  /** FORK (3.3): explicit swipers first, then the people whose opinion was
+   *  inferred — marked, so "Bob kept it" never reads as "Bob swiped it". */
+  const namesWithImplied = (explicit: string[], implied: string[], why: string) =>
+    [...explicit, ...implied.map((n) => `${n} (${why})`)].join(', ');
 
   async function createRoom() {
     setCreating(true);
@@ -307,35 +336,101 @@ export default function MatchesView() {
         </>
       ) : (
         <>
-          <div className="mt-3 flex items-center gap-3 text-sm">
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
             <span className="text-slate-500">Sort:</span>
             <select
               className="rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-sm"
               value={sort}
-              onChange={(e) => setSort(e.target.value as 'votes' | 'size')}
+              onChange={(e) => setSort(e.target.value as 'votes' | 'size' | 'score')}
             >
+              <option value="score">Most wanted gone (score)</option>
               <option value="votes">Most delete votes</option>
               <option value="size">Largest</option>
             </select>
+            {/* FORK (3.3): "show me everything Alice marked 'let it go'".
+                Identity is deliberately visible on this screen. */}
+            <span className="text-slate-500">Filter:</span>
+            <select
+              aria-label="Voter"
+              className="rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-sm"
+              value={voter}
+              onChange={(e) => setVoter(e.target.value)}
+            >
+              <option value="">Anyone</option>
+              {consVoters.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.id === me ? 'You' : u.username}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Verdict"
+              className="rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-sm"
+              value={verdictFilter}
+              onChange={(e) => setVerdictFilter(e.target.value)}
+            >
+              <option value="">Any verdict</option>
+              {VERDICT_FILTERS.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            {(voter || verdictFilter) && (
+              <button
+                onClick={() => {
+                  setVoter('');
+                  setVerdictFilter('');
+                }}
+                className="text-xs text-slate-400 underline hover:text-white"
+              >
+                Clear
+              </button>
+            )}
           </div>
 
           {loadingCons && rows.length === 0 ? (
             <p className="pt-10 text-center text-slate-500">Loading…</p>
           ) : rows.length === 0 ? (
             <p className="pt-10 text-center text-slate-400">
-              Nothing here yet — the rollup fills in as people swipe.
+              {voter || verdictFilter
+                ? 'Nobody matched that filter.'
+                : 'Nothing here yet — the rollup fills in as people swipe or keep things.'}
             </p>
           ) : (
             <div className="mt-4 overflow-x-auto">
-              <table className="w-full min-w-[720px] text-sm">
+              <table className="w-full min-w-[820px] text-sm">
                 <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
                   <tr className="border-b border-slate-800">
                     <th className="px-3 py-2">Title</th>
-                    <th className="px-3 py-2 text-right">Size</th>
+                    <th className="px-3 py-2 text-right">
+                      <button
+                        onClick={() => setSort('size')}
+                        className={sort === 'size' ? 'text-slate-200' : 'hover:text-slate-300'}
+                      >
+                        Size
+                      </button>
+                    </th>
                     <th className="px-3 py-2">Save for later</th>
                     <th className="px-3 py-2">Worth keeping</th>
                     <th className="px-3 py-2">Can go / let go</th>
-                    <th className="px-3 py-2 text-center">Delete votes</th>
+                    <th className="px-3 py-2 text-center">
+                      <button
+                        onClick={() => setSort('votes')}
+                        className={sort === 'votes' ? 'text-slate-200' : 'hover:text-slate-300'}
+                      >
+                        Delete votes
+                      </button>
+                    </th>
+                    <th className="px-3 py-2 text-center">
+                      <button
+                        onClick={() => setSort('score')}
+                        title="Summed across everyone: let it go +2, wouldn't be mad +1, skip 0, save for later −1, worth keeping −2. Higher = the household wants it gone."
+                        className={sort === 'score' ? 'text-slate-200' : 'hover:text-slate-300'}
+                      >
+                        Score
+                      </button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -354,9 +449,15 @@ export default function MatchesView() {
                         {formatGB(r.sizeBytes)}
                       </td>
                       <td className="px-3 py-2 text-emerald-300">{names(r.wantNames)}</td>
-                      <td className="px-3 py-2 text-sky-300">{names(r.keepNames)}</td>
+                      <td className="px-3 py-2 text-sky-300">
+                        {namesWithImplied(r.keepNames, r.keepImplicitNames, 'kept')}
+                      </td>
                       <td className="px-3 py-2 text-rose-300">
-                        {names([...r.doneNames, ...r.neverNames])}
+                        {namesWithImplied(
+                          [...r.doneNames, ...r.neverNames],
+                          r.doneImplicitNames,
+                          'OK to delete'
+                        )}
                       </td>
                       <td className="px-3 py-2 text-center">
                         {r.deleteVotes > 0 ? (
@@ -369,6 +470,27 @@ export default function MatchesView() {
                         ) : (
                           <span className="text-slate-600">—</span>
                         )}
+                      </td>
+                      {/* FORK (3.3): signed score — positive means the household
+                          wants it gone. Greyed while someone still keeps it, to
+                          match how the delete-vote column reads. */}
+                      <td className="px-3 py-2 text-center">
+                        <span
+                          className={`font-mono font-semibold ${
+                            r.kept
+                              ? 'text-slate-500'
+                              : r.score > 0
+                                ? 'text-rose-400'
+                                : r.score < 0
+                                  ? 'text-emerald-400'
+                                  : 'text-slate-400'
+                          }`}
+                          title={`${r.voters} ${r.voters === 1 ? 'person has' : 'people have'} an opinion${
+                            r.kept ? '; someone keeps it, so it stays protected' : ''
+                          }`}
+                        >
+                          {r.score > 0 ? `+${r.score}` : r.score}
+                        </span>
                       </td>
                     </tr>
                   ))}

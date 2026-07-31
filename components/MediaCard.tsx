@@ -5,6 +5,9 @@ import type { MediaCardData } from '@/lib/types';
 import { formatGB } from '@/lib/format';
 import { useKeepState } from './useKeepState';
 import { useToast } from './Toaster';
+// FORK: the 5-state verdict control (3.6).
+import VerdictCycle from './VerdictCycle';
+import { useVerdictCycle } from './useVerdictCycle';
 
 // Shared so every page sizes its cards identically. CARD_MIN_W must match the
 // px in CARD_GRID_CLASS (kept as a literal so Tailwind's scanner sees it).
@@ -28,6 +31,9 @@ interface Props {
   requested?: boolean;
   /** FORK: admin + Deletion enabled → show a schedule/cancel-deletion button. */
   taggable?: boolean;
+  /** FORK: replace keep/"don't care" with the 5-state verdict cycle, so triage
+   *  here produces the same votes swiping does. */
+  verdictControl?: boolean;
 }
 
 export default function MediaCard({
@@ -39,6 +45,7 @@ export default function MediaCard({
   onDeleteChange,
   requested,
   taggable = false,
+  verdictControl = false,
 }: Props) {
   // FORK: local scheduled-deletion state so tagging updates the badge without
   // a refetch. Initialized from the row; only meaningful when `taggable`.
@@ -77,8 +84,8 @@ export default function MediaCard({
   // protected, but their keep is never ours to remove. Snapshot fixed at load.
   const keptByOthers = item.kept && !item.keptByMe;
   const {
-    keptByMe,
-    skipped,
+    keptByMe: keptByMeDirect,
+    skipped: skippedDirect,
     markedForDelete,
     skipBusy,
     deleteBusy,
@@ -94,12 +101,28 @@ export default function MediaCard({
     onSkipChange,
     onDeleteChange,
   });
+  // FORK (3.6): with the cycle control the verdict IS this user's decision —
+  // applyVerdict writes the keep / "don't care" through — so the badges and the
+  // border read from it rather than from the keep hook.
+  const cycle = useVerdictCycle({
+    ratingKey: item.ratingKey,
+    initial: item.myVerdict ?? null,
+    onKeptChange,
+    onSkipChange,
+    onDeleteChange,
+  });
+  const keptByMe = verdictControl ? cycle.keptByMe : keptByMeDirect;
+  const skipped = verdictControl ? cycle.skipped : skippedDirect;
   // Someone else released it (the by-anyone view) — name-less badge; my own
   // mark is shown by its own badge/button.
   const releasedByOther = !!item.markedForDeleteAny && !markedForDelete;
 
-  const toggle = () => {
-    if (interactive) void toggleKeep();
+  const toggle = (e?: { shiftKey?: boolean }) => {
+    if (!interactive) return;
+    // FORK: shift-click steps back through the cycle — six positions makes
+    // overshooting common, and a forward-only cycle gets irritating fast.
+    if (verdictControl) cycle.step(e?.shiftKey);
+    else void toggleKeep();
   };
   const onSkipClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -118,7 +141,7 @@ export default function MediaCard({
     if (!interactive) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      toggle();
+      toggle(e);
     }
   }
 
@@ -129,9 +152,14 @@ export default function MediaCard({
   // page's overflow-hidden grid, and an inset ring hides behind the poster
   // image. A border frames the card, so it's always fully visible. With
   // box-border (Tailwind default) the 1px↔2px change causes no layout shift.
+  // FORK: a delete-side verdict ("wouldn't be mad" / "let it go") is a decision
+  // too, so it gets the same framing as an explicit "OK to delete".
+  const votedGone =
+    verdictControl &&
+    (cycle.verdict === 'done_with_it' || cycle.verdict === 'not_interested');
   const borderCls = keptByMe
     ? 'border-2 border-brand'
-    : markedForDelete
+    : markedForDelete || votedGone
       ? 'border-2 border-rose-500'
       : releasedByOther && !skipped
         ? 'border border-rose-800/60'
@@ -262,7 +290,12 @@ export default function MediaCard({
           <span>{item.year ?? ''}</span>
           <span className="font-mono">{formatGB(item.sizeBytes)}</span>
         </div>
-        {skippable && (
+        {/* FORK (3.6): the cycle replaces keep + "don't care" — Skip is one of
+            its positions, so a separate button would be a second vocabulary. */}
+        {verdictControl && (
+          <VerdictCycle verdict={cycle.verdict} busy={cycle.busy} onStep={cycle.step} />
+        )}
+        {skippable && !verdictControl && (
           <button
             type="button"
             onClick={onSkipClick}

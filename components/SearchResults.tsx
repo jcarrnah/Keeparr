@@ -92,6 +92,9 @@ export default function SearchResults({ query }: { query: string }) {
               item={item}
               skippable
               requested={requested.has(item.ratingKey)}
+              /* FORK (3.6): same vocabulary as Browse — search is the other
+                 place people triage a title they went looking for. */
+              verdictControl
             />
           ))}
         </div>
