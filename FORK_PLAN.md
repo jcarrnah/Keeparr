@@ -571,3 +571,41 @@ polish tweak that silently broke the desktop case.
 
 Low severity — every tab is still reachable on mobile, and Everything is the
 default. Worth doing next time the swipe layout is touched.
+
+## 3.8 Swipe doesn't work on iOS
+
+**Reported 2026-07-30** by the user, from the live instance: swiping doesn't
+work on iOS. Unlike 3.7 this is not a paper cut — it's the whole feature dead
+on the platform half the household is likely holding.
+
+**Not yet diagnosed.** First job next session is to pin down what "doesn't
+work" means, because the leads diverge sharply:
+
+- the card doesn't move at all (events never fire),
+- it moves but never commits a verdict (threshold or pointer-up path),
+- it commits the wrong one (axis/direction mapping),
+- or the page itself misbehaves — Safari's edge back-swipe hijacking the
+  horizontal drag, rubber-band scrolling, the card stack mispositioned.
+
+**What the code already does**, so these aren't the fix:
+- `touchAction: 'none'` IS set on the draggable card
+  (`components/SwipeView.tsx:292`, `RoomView.tsx:312`), so the usual
+  "Safari scrolls instead of dragging" cause is already handled.
+- Pointer Events are supported by iOS Safari (13+), so the API choice is fine.
+
+**Leading candidate.** Both views call
+`(e.target as HTMLElement).setPointerCapture?.(e.pointerId)` — capture on
+`e.target`, not `e.currentTarget`. The target is whatever child was touched
+(usually the poster `<img>`), and if that node is re-rendered or removed
+mid-gesture the capture goes with it and the move/up events stop arriving on
+the handler. WebKit is stricter here than Chrome, which would explain an
+iOS-only failure. Capturing on `currentTarget` is the one-line thing to try
+first.
+
+**Note it affects rooms too** — `RoomView` uses the same drag implementation,
+so a live movie-night room is presumably just as broken on an iPhone. Fix
+both together; the code is close enough that they should probably share a
+hook rather than keep two copies.
+
+Needs a real iOS device (or Safari with responsive design mode) to confirm —
+this is not something the test suite or a desktop browser will catch.
