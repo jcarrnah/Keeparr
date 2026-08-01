@@ -352,8 +352,15 @@ would. Notes on the edges:
   match, which is a typo rather than an intention.
 - `verdict_score` thresholds are signed and un-voted titles count as 0, matching
   Browse's `minScore`, so "≥ 1" means somebody actively wants it gone.
-- The preview reports `minVoters` + `heldByQuorum` (a second match run with the
-  quorum forced to 0). A vote rule that reports 1 instead of 4 now says why.
+- The preview reports `minVoters` + a full exclusion breakdown
+  (`heldByQuorum`/`excludedKept`/`excludedTagged`, from `ruleExclusionCounts()`
+  in one pass with precedence kept→tagged→quorum). Added 2026-07-31 after the
+  user hit the obvious confusion: **Browse's score filter lists far more than a
+  rule with the same threshold**, because Browse applies none of the rule
+  baseline — no keep exclusion, and no exclusion of titles already carrying a
+  tag of any status (a cancelled tag still blocks a rule). The four numbers
+  partition the condition matches exactly, so the preview reconciles with
+  Browse instead of looking broken.
 
 **Also asked for at the same time** (2026-07-30) — score needs to be usable
 *outside* the rules engine, so tagging decisions can be reviewed by hand:

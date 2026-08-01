@@ -5,7 +5,10 @@ import {
   addDelete,
   addKeep,
   applyVerdict,
+  cancelDeletionsByTagger,
   createDeletionRule,
+  removeVerdict,
+  ruleExclusionCounts,
   listScheduledDeletions,
   ratingKeysMatchingRule,
   replaceSeerrRequests,
@@ -222,6 +225,39 @@ describe('ratingKeysMatchingRule', () => {
 
     addKeep('u3', 'big-old'); // one keep outranks the whole household
     expect(keys(conds)).toEqual([]);
+  });
+
+  it('FORK (3.2): the exclusion breakdown accounts for the whole gap', () => {
+    // Everything here matches the conditions; each is removed for a different
+    // reason, so the four buckets must partition them with none double-counted.
+    const conds: RuleCondition[] = [{ field: 'verdict_score', op: 'gte', value: 2 }];
+    for (const key of ['big-old', 'big-new', 'small-old', 'watched-recent', 'other-lib']) {
+      applyVerdict('u1', key, 'not_interested');
+      applyVerdict('u2', key, 'not_interested'); // +4 each, two voters
+    }
+    addKeep('u3', 'big-old'); // kept
+    tagForDeletion('big-new', 'admin', nowSec + 86400); // already tagged
+    // A cancelled tag still blocks a rule — the audit row is never overwritten.
+    tagForDeletion('small-old', 'admin', nowSec + 86400);
+    cancelDeletionsByTagger('admin', 'changed my mind');
+    removeVerdict('u2', 'watched-recent'); // now a lone voice → below quorum
+
+    const x = ruleExclusionCounts(conds, nowSec);
+    expect(x.kept).toBe(1); // big-old
+    expect(x.tagged).toBe(2); // big-new (live) + small-old (cancelled)
+    expect(x.quorum).toBe(1); // watched-recent
+    expect(x.matched).toBe(1); // other-lib
+    expect(keys(conds)).toEqual(['other-lib']);
+    // The four buckets are the whole condition-matching set.
+    expect(x.matched + x.kept + x.tagged + x.quorum).toBe(5);
+  });
+
+  it('FORK (3.2): no quorum in force means nothing lands in that bucket', () => {
+    addKeep('u1', 'big-old');
+    const x = ruleExclusionCounts([{ field: 'size', op: 'gtGB', value: 20 }], nowSec);
+    expect(x.quorum).toBe(0);
+    expect(x.kept).toBe(1);
+    expect(x.matched).toBe(3); // big-new, watched-recent, other-lib
   });
 
   it('baseline: never matches kept or already-tagged items', () => {

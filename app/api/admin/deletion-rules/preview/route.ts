@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
-import { ratingKeysMatchingRule } from '@/lib/queries';
+import { ratingKeysMatchingRule, ruleExclusionCounts } from '@/lib/queries';
 import { parseRuleConditions } from '@/lib/rules';
 import { effectiveMinVoters } from '@/lib/types';
 
@@ -12,10 +12,11 @@ export const runtime = 'nodejs';
  * the job: kept + already-tagged items excluded). Body: {conditions}.
  * Returns the match count + the largest few titles.
  *
- * FORK (3.2): also reports the voter quorum in force and how many titles it
- * held back. A rule that quietly matches 3 instead of 15 reads as a broken
- * rule; "12 held back: fewer than 2 people voted" reads as the guard working,
- * and points at the fix (lower min_voters, or go get more votes).
+ * FORK (3.2): also reports the voter quorum in force and, for each part of the
+ * baseline, how many titles it removed. A rule matching 3 where the same filter
+ * in Browse lists 40 reads as broken; "31 already tagged, 6 kept" reads as the
+ * baseline doing its job — and Browse applies none of it, which is exactly why
+ * the two screens disagree.
  */
 export async function POST(req: Request) {
   try {
@@ -26,16 +27,17 @@ export async function POST(req: Request) {
     const matches = ratingKeysMatchingRule(conds);
     const totalBytes = matches.reduce((a, m) => a + m.size_bytes, 0);
     const minVoters = effectiveMinVoters(conds);
-    // Only worth the second query when a quorum can actually exclude something.
-    const heldByQuorum =
-      minVoters != null && minVoters > 1
-        ? ratingKeysMatchingRule(conds, undefined, { minVoters: 0 }).length - matches.length
-        : 0;
+    // Why the count is lower than the same conditions look like they'd give —
+    // Browse applies none of this baseline, so the two screens disagree by
+    // exactly these three numbers.
+    const excluded = ruleExclusionCounts(conds);
     return NextResponse.json({
       count: matches.length,
       totalBytes,
       minVoters,
-      heldByQuorum,
+      heldByQuorum: excluded.quorum,
+      excludedKept: excluded.kept,
+      excludedTagged: excluded.tagged,
       sample: matches.slice(0, 10).map((m) => ({
         ratingKey: m.rating_key,
         title: m.title,

@@ -3594,26 +3594,25 @@ export function deleteDeletionRule(id: number): boolean {
   return info.changes > 0;
 }
 
+/** The two halves of a rule's non-negotiable baseline, as expressions — named
+ *  so the match query and the preview's "why fewer?" breakdown can't disagree
+ *  about what "excluded" means. */
+const RULE_KEPT_EXPR = 'EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = m.rating_key)';
+const RULE_TAGGED_EXPR =
+  'EXISTS (SELECT 1 FROM scheduled_deletions sd WHERE sd.rating_key = m.rating_key)';
+
 /**
- * Items a rule's conditions would tag RIGHT NOW: conditions AND'd on top of the
- * non-negotiable baseline — present, not kept by anyone, and no existing
- * scheduled_deletions row of ANY status (a manual tag, a cancelled tag, or a
- * past purge outcome is never overwritten). Mirrors the filter-builder style of
- * queryLibrary. Conditions must be pre-validated (lib/rules.ts).
+ * The conditions half of a rule — everything the admin actually wrote, with
+ * none of the baseline. Extracted so `ratingKeysMatchingRule` (which adds the
+ * baseline) and `ruleExclusionCounts` (which counts what the baseline removed)
+ * are built from one place. Not exported: conditions without the baseline must
+ * never reach anything that tags.
  */
-export function ratingKeysMatchingRule(
+function ruleConditionSql(
   conditions: RuleCondition[],
-  nowSec: number = now(),
-  /** FORK (3.2): force the voter quorum instead of deriving it from the
-   *  conditions. The preview uses 0 to ask "what would this tag with no quorum
-   *  at all?" and reports the difference as held back. */
-  opts: { minVoters?: number } = {}
-): { rating_key: string; title: string; size_bytes: number }[] {
-  const where: string[] = [
-    'm.removed = 0',
-    'NOT EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = m.rating_key)',
-    'NOT EXISTS (SELECT 1 FROM scheduled_deletions sd WHERE sd.rating_key = m.rating_key)',
-  ];
+  nowSec: number
+): { where: string[]; params: Record<string, unknown> } {
+  const where: string[] = ['m.removed = 0'];
   const params: Record<string, unknown> = {};
 
   conditions.forEach((c, i) => {
@@ -3680,11 +3679,31 @@ export function ratingKeysMatchingRule(
         break;
       case 'min_voters':
       case 'nobody_kept':
-        // Not per-item filters: the quorum is applied once below (two of them
-        // would fight), and "nobody keeps it" is already in the baseline.
+        // Not per-item filters: the quorum is applied once by the caller (two
+        // of them would fight), and "nobody keeps it" is already the baseline.
         break;
     }
   });
+
+  return { where, params };
+}
+
+/**
+ * Items a rule's conditions would tag RIGHT NOW: conditions AND'd on top of the
+ * non-negotiable baseline — present, not kept by anyone, and no existing
+ * scheduled_deletions row of ANY status (a manual tag, a cancelled tag, or a
+ * past purge outcome is never overwritten). Mirrors the filter-builder style of
+ * queryLibrary. Conditions must be pre-validated (lib/rules.ts).
+ */
+export function ratingKeysMatchingRule(
+  conditions: RuleCondition[],
+  nowSec: number = now(),
+  /** FORK (3.2): force the voter quorum instead of deriving it from the
+   *  conditions. */
+  opts: { minVoters?: number } = {}
+): { rating_key: string; title: string; size_bytes: number }[] {
+  const { where, params } = ruleConditionSql(conditions, nowSec);
+  where.push(`NOT ${RULE_KEPT_EXPR}`, `NOT ${RULE_TAGGED_EXPR}`);
 
   // FORK (3.2): the voter quorum — a rule that reads opinions doesn't fire
   // until enough different people have expressed one. Derived from the
@@ -3706,6 +3725,61 @@ export function ratingKeysMatchingRule(
        ORDER BY m.size_bytes DESC`
     )
     .all(params) as { rating_key: string; title: string; size_bytes: number }[];
+}
+
+/** FORK (3.2): why a rule tags fewer titles than its conditions alone suggest.
+ *  Counts only — this deliberately cannot hand rows to anything that tags. */
+export interface RuleExclusionCounts {
+  /** Titles the rule would actually tag (same set as ratingKeysMatchingRule). */
+  matched: number;
+  /** Matched the conditions, but somebody keeps it. */
+  kept: number;
+  /** Matched, but already carries a deletion tag of some status (including a
+   *  cancelled one or a past purge — a rule never overwrites those). */
+  tagged: number;
+  /** Matched and free, but too few people have voted on it. */
+  quorum: number;
+}
+
+/**
+ * FORK (3.2): the same conditions, counted by what the baseline removed.
+ *
+ * A rule preview that just says "4" next to a Browse filter showing 40 reads as
+ * a broken rule. It usually isn't: Browse's score filter applies no baseline,
+ * so it happily lists titles somebody keeps and titles already tagged (a
+ * cancelled tag counts). Reasons are assigned in one pass with a fixed
+ * precedence — kept, then tagged, then quorum — so the four numbers add up to
+ * the condition matches exactly, with nothing double-counted.
+ */
+export function ruleExclusionCounts(
+  conditions: RuleCondition[],
+  nowSec: number = now()
+): RuleExclusionCounts {
+  const { where, params } = ruleConditionSql(conditions, nowSec);
+  const minVoters = effectiveMinVoters(conditions);
+  // No quorum in force → the quorum bucket can never fill, so compare against 0.
+  params.minVoters = minVoters ?? 0;
+  const row = getDb()
+    .prepare(
+      `WITH ${VOTES_CTE}, ${ITEM_SCORES_CTE}
+       SELECT
+         SUM(CASE WHEN ${RULE_KEPT_EXPR} THEN 1 ELSE 0 END) AS kept,
+         SUM(CASE WHEN NOT ${RULE_KEPT_EXPR} AND ${RULE_TAGGED_EXPR} THEN 1 ELSE 0 END) AS tagged,
+         SUM(CASE WHEN NOT ${RULE_KEPT_EXPR} AND NOT ${RULE_TAGGED_EXPR}
+                   AND COALESCE(vs.voters, 0) < @minVoters THEN 1 ELSE 0 END) AS quorum,
+         SUM(CASE WHEN NOT ${RULE_KEPT_EXPR} AND NOT ${RULE_TAGGED_EXPR}
+                   AND COALESCE(vs.voters, 0) >= @minVoters THEN 1 ELSE 0 END) AS matched
+       FROM media_items m
+       LEFT JOIN item_scores vs ON vs.rating_key = m.rating_key
+       WHERE ${where.join(' AND ')}`
+    )
+    .get(params) as { kept: number | null; tagged: number | null; quorum: number | null; matched: number | null };
+  return {
+    matched: row.matched ?? 0,
+    kept: row.kept ?? 0,
+    tagged: row.tagged ?? 0,
+    quorum: row.quorum ?? 0,
+  };
 }
 
 /**
