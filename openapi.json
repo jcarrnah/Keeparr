@@ -613,9 +613,10 @@
       },
       "post": {
         "tags": ["admin"],
-        "summary": "FORK: tag an item \"delete after date\" (held immediately if anyone keeps it)",
-        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" }, "graceDays": { "type": "integer", "description": "Override the configured grace period for this tag" } }, "required": ["ratingKey"] } } } },
-        "responses": { "200": { "description": "`{ok, deleteAfter}`" }, "404": { "description": "Unknown or tombstoned item" } }
+        "summary": "FORK: tag an item (or a batch) \"delete after date\" — held immediately if anyone keeps it",
+        "description": "Send `ratingKey` for one item or `ratingKeys` for a batch (max 200, one shared deadline, one Discord summary). A batch reports `skipped` for ids that are unknown or tombstoned rather than failing; the single-key form still 404s.",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "ratingKey": { "type": "string" }, "ratingKeys": { "type": "array", "items": { "type": "string" }, "maxItems": 200 }, "graceDays": { "type": "integer", "description": "Override the configured grace period for this tag" } } } } } },
+        "responses": { "200": { "description": "`{ok, deleteAfter, tagged, skipped}`" }, "400": { "description": "Neither ratingKey nor ratingKeys, or a batch over 200" }, "404": { "description": "Single-key form: unknown or tombstoned item" } }
       },
       "delete": {
         "tags": ["admin"],
@@ -737,7 +738,7 @@
       "post": {
         "tags": ["admin"],
         "summary": "FORK: run a fix-it action from the Problems page",
-        "description": "Non-destructive repairs, kept on a separate path from the `/api/admin/problems` reads. `relink` carries keeps/skips/verdicts/watch history from a tombstoned item onto the live copy that replaced it (a re-added title gets a NEW rating_key, which otherwise strands the keep and leaves the live copy unprotected) — the on-demand version of what the nightly library sweep does. `rescan` asks Jellyfin/Emby to refresh so entries whose files are gone drop out. Neither deletes media nor touches the filesystem.",
+        "description": "Non-destructive repairs, kept on a separate path from the `/api/admin/problems` reads. `relink` carries keeps/skips/verdicts/watch history from a tombstoned item onto the live copy that replaced it (a re-added title gets a NEW rating_key, which otherwise strands the keep and leaves the live copy unprotected) — the on-demand version of what the nightly library sweep does. `rescan` asks Jellyfin/Emby to refresh so entries whose files are gone drop out. `diskscan` fires the weekly Disk scan job on demand (fire-and-forget, single-flight, so it always returns `changed: 0` — the job is still walking when the response returns) to measure real on-disk sizes and refresh the orphan list. None of them delete media or touch the filesystem.",
         "requestBody": {
           "required": true,
           "content": {
@@ -746,7 +747,7 @@
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                  "action": { "type": "string", "enum": ["relink", "rescan"] }
+                  "action": { "type": "string", "enum": ["relink", "rescan", "diskscan"] }
                 }
               }
             }
