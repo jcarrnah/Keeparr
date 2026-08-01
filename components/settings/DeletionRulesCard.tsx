@@ -47,8 +47,11 @@ interface Preview {
   sample: { title: string }[];
   /** FORK (3.2): the quorum in force (null = the rule reads no opinions). */
   minVoters?: number | null;
-  /** FORK (3.2): titles that matched but lacked the quorum. */
+  /** FORK (3.2): matched the conditions but were held back by the baseline —
+   *  the difference between this count and the same filter in Browse. */
   heldByQuorum?: number;
+  excludedKept?: number;
+  excludedTagged?: number;
 }
 
 // FORK (3.2): the quorum a set of conditions runs with, mirrored from
@@ -616,17 +619,33 @@ export default function DeletionRulesCard() {
                 <> — e.g. {preview.sample.slice(0, 5).map((s) => s.title).join(', ')}</>
               )}
               .
-              {/* FORK (3.2): a smaller number than expected should say WHY. */}
+            </p>
+          )}
+          {/* FORK (3.2): a smaller number than the same filter gives in Browse
+              should say WHY — Browse applies none of this baseline. */}
+          {preview && !!(preview.excludedKept || preview.excludedTagged || preview.heldByQuorum) && (
+            <ul className="mt-1 space-y-0.5 text-xs text-amber-400">
+              {!!preview.excludedTagged && (
+                <li>
+                  {preview.excludedTagged} matched but already carry a deletion tag (including
+                  cancelled ones and past purges — a rule never overwrites those).
+                </li>
+              )}
+              {!!preview.excludedKept && (
+                <li>{preview.excludedKept} matched but somebody keeps {preview.excludedKept === 1 ? 'it' : 'them'}.</li>
+              )}
               {!!preview.heldByQuorum && (
-                <span className="text-amber-400">
-                  {' '}
-                  {preview.heldByQuorum} more matched but{' '}
+                <li>
+                  {preview.heldByQuorum} matched but{' '}
                   {preview.heldByQuorum === 1 ? 'was' : 'were'} held back: fewer than{' '}
                   {preview.minVoters} people have voted on{' '}
                   {preview.heldByQuorum === 1 ? 'it' : 'them'}.
-                </span>
+                </li>
               )}
-            </p>
+              <li className="text-slate-500">
+                Browse’s score filter applies none of these, which is why it lists more.
+              </li>
+            </ul>
           )}
           {msg && <p className="mt-2 text-xs text-amber-400">{msg}</p>}
         </div>

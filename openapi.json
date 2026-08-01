@@ -652,9 +652,9 @@
       "post": {
         "tags": ["admin"],
         "summary": "FORK: preview what a rule's conditions would tag right now",
-        "description": "Conditions are validated exactly as a save would validate them (400 otherwise). `minVoters` is the quorum in force (null when the rule reads no opinions) and `heldByQuorum` counts titles that matched the conditions but lacked it.",
+        "description": "Conditions are validated exactly as a save would validate them (400 otherwise). `minVoters` is the quorum in force (null when the rule reads no opinions); `heldByQuorum`, `excludedKept` and `excludedTagged` count titles that matched the conditions but were removed by the rule baseline — together they explain why the same filter in Browse lists more.",
         "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "conditions": { "type": "array" } }, "required": ["conditions"] } } } },
-        "responses": { "200": { "description": "`{count, totalBytes, sample[], minVoters, heldByQuorum}`" } }
+        "responses": { "200": { "description": "`{count, totalBytes, sample[], minVoters, heldByQuorum, excludedKept, excludedTagged}`" } }
       }
     },
     "/api/admin/cache": {

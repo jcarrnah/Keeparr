@@ -337,7 +337,15 @@ touching that layout.
   applied once; the keep exclusion is already baseline). Preview
   (`/api/admin/deletion-rules/preview`) returns `minVoters` + `heldByQuorum`
   (a second match run with `{minVoters: 0}`, only when a quorum > 1 is in
-  force) so a smaller-than-expected count explains itself.
+  force) plus `excludedKept`/`excludedTagged` (`ruleExclusionCounts()` — ONE
+  pass, reasons assigned with fixed precedence kept→tagged→quorum so the four
+  buckets partition the condition matches exactly). This exists because **the
+  same filter in Browse always lists more**: Browse applies none of the rule
+  baseline, so it shows kept titles and titles already carrying a tag of any
+  status (cancelled ones included). `ruleConditionSql()` is the shared
+  conditions-only builder behind both; it is deliberately NOT exported —
+  conditions without the baseline must never reach anything that tags, and
+  `ruleExclusionCounts` returns counts only for the same reason.
 - `verdicts` — **FORK-ONLY**: per-user swipe verdicts, PK
   `(plex_user_id, rating_key)`. Values: `want_to_watch`/`loved_it` (imply a
   keep), `dont_care` (maps to `user_skips`), `done_with_it`/`not_interested`

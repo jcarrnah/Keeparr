@@ -21,7 +21,14 @@ vi.mock('next/headers', () => ({
 }));
 
 import { __setTestDbToMemory, __closeDb } from '@/lib/db';
-import { applyVerdict, upsertMediaBatch, upsertUser, type UpsertMediaInput } from '@/lib/queries';
+import {
+  addKeep,
+  applyVerdict,
+  tagForDeletion,
+  upsertMediaBatch,
+  upsertUser,
+  type UpsertMediaInput,
+} from '@/lib/queries';
 import { setSessionCookie } from '@/lib/auth';
 import { POST as previewPost } from '@/app/api/admin/deletion-rules/preview/route';
 
@@ -95,6 +102,27 @@ describe('POST /api/admin/deletion-rules/preview', () => {
     expect(body.sample[0].title).toBe('Title a');
     expect(body.minVoters).toBe(2);
     expect(body.heldByQuorum).toBe(1); // 'b' — matched, but only one person said so
+    expect(body.excludedKept).toBe(0);
+    expect(body.excludedTagged).toBe(0);
+  });
+
+  it('names the baseline exclusions that make Browse look bigger', async () => {
+    await loginAdmin();
+    upsertMediaBatch([media('a'), media('b'), media('c')]);
+    for (const id of ['u1', 'u2']) {
+      upsertUser({ plexUserId: id, username: id, email: null, thumb: null, isAdmin: false });
+      for (const key of ['a', 'b', 'c']) applyVerdict(id, key, 'not_interested');
+    }
+    addKeep('u1', 'b'); // a keep beats the household
+    tagForDeletion('c', 'admin', 2_000_000_000); // already tagged
+
+    const body = await (
+      await previewPost(req([{ field: 'verdict_score', op: 'gte', value: 2 }]))
+    ).json();
+    expect(body.count).toBe(1); // only 'a'
+    expect(body.excludedKept).toBe(1);
+    expect(body.excludedTagged).toBe(1);
+    expect(body.heldByQuorum).toBe(0);
   });
 
   it('reports no quorum for a rule that reads no opinions', async () => {

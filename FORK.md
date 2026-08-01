@@ -75,6 +75,19 @@ like a broken rule. Rules that only use dates, sizes or libraries are unaffected
 A keep still beats everything: no score, however lopsided, tags a title someone
 is keeping.
 
+**Why the rule matches fewer than Browse.** Filtering Browse by "Score ≥ +3"
+will almost always list more titles than a rule with the same threshold, and
+that's not a bug — Browse is a browsing screen and applies none of the rule
+baseline. The preview now spells out the difference:
+
+- **already carry a deletion tag** — of *any* status, including cancelled ones
+  and titles a past purge already handled. A rule never overwrites those.
+- **somebody keeps it.**
+- **held back by the quorum** — fewer than N people have voted on it.
+
+Those three plus the match count are exactly the titles the conditions hit, so
+the preview always adds up to what Browse shows you.
+
 ### "Leaving Soon" collection + Discord notifications
 - On Jellyfin/Emby, pending tags are mirrored into a **Leaving Soon**
   collection on the server itself, so the household sees doomed titles where
