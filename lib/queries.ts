@@ -3598,8 +3598,19 @@ export function deleteDeletionRule(id: number): boolean {
  *  so the match query and the preview's "why fewer?" breakdown can't disagree
  *  about what "excluded" means. */
 const RULE_KEPT_EXPR = 'EXISTS (SELECT 1 FROM keeps k WHERE k.rating_key = m.rating_key)';
-const RULE_TAGGED_EXPR =
-  'EXISTS (SELECT 1 FROM scheduled_deletions sd WHERE sd.rating_key = m.rating_key)';
+/**
+ * FORK: only a LIVE tag blocks a rule.
+ *
+ * This used to be any row at all, which made every finished outcome permanent:
+ * cancel a tag once and no rule could ever consider that title again. A cancel
+ * means "not this time", not "exempt forever" — the way to protect something
+ * permanently is to keep it, which no rule can override. Terminal rows
+ * (cancelled / failed / deleted) are therefore re-taggable; `insertRuleTags`
+ * overwrites them and records what the previous outcome was.
+ */
+const RULE_LIVE_STATUSES = "('pending', 'held')";
+const RULE_TAGGED_EXPR = `EXISTS (SELECT 1 FROM scheduled_deletions sd
+     WHERE sd.rating_key = m.rating_key AND sd.status IN ${RULE_LIVE_STATUSES})`;
 
 /**
  * The conditions half of a rule — everything the admin actually wrote, with
@@ -3690,10 +3701,11 @@ function ruleConditionSql(
 
 /**
  * Items a rule's conditions would tag RIGHT NOW: conditions AND'd on top of the
- * non-negotiable baseline — present, not kept by anyone, and no existing
- * scheduled_deletions row of ANY status (a manual tag, a cancelled tag, or a
- * past purge outcome is never overwritten). Mirrors the filter-builder style of
- * queryLibrary. Conditions must be pre-validated (lib/rules.ts).
+ * non-negotiable baseline — present, not kept by anyone, and not already
+ * carrying a LIVE tag (pending/held: a countdown in progress, or a manual tag,
+ * is never disturbed). A finished tag no longer blocks — see RULE_TAGGED_EXPR.
+ * Mirrors the filter-builder style of queryLibrary. Conditions must be
+ * pre-validated (lib/rules.ts).
  */
 export function ratingKeysMatchingRule(
   conditions: RuleCondition[],
@@ -3734,8 +3746,8 @@ export interface RuleExclusionCounts {
   matched: number;
   /** Matched the conditions, but somebody keeps it. */
   kept: number;
-  /** Matched, but already carries a deletion tag of some status (including a
-   *  cancelled one or a past purge — a rule never overwrites those). */
+  /** Matched, but already carries a LIVE tag — it's counting down already
+   *  (or paused by a keep), so there's nothing for a rule to add. */
   tagged: number;
   /** Matched and free, but too few people have voted on it. */
   quorum: number;
@@ -3746,10 +3758,10 @@ export interface RuleExclusionCounts {
  *
  * A rule preview that just says "4" next to a Browse filter showing 40 reads as
  * a broken rule. It usually isn't: Browse's score filter applies no baseline,
- * so it happily lists titles somebody keeps and titles already tagged (a
- * cancelled tag counts). Reasons are assigned in one pass with a fixed
- * precedence — kept, then tagged, then quorum — so the four numbers add up to
- * the condition matches exactly, with nothing double-counted.
+ * so it happily lists titles somebody keeps and titles already counting down.
+ * Reasons are assigned in one pass with a fixed precedence — kept, then tagged,
+ * then quorum — so the four numbers add up to the condition matches exactly,
+ * with nothing double-counted.
  */
 export function ruleExclusionCounts(
   conditions: RuleCondition[],
@@ -3783,9 +3795,10 @@ export function ruleExclusionCounts(
 }
 
 /**
- * Tag rule matches, skipping any key that gained a scheduled_deletions row in
- * the meantime (INSERT OR IGNORE — never overwrites). Returns how many were
- * newly tagged.
+ * Tag rule matches. A key that gained a LIVE tag in the meantime is left alone
+ * (never overwrite a countdown, or a manual tag's chosen date); a key whose
+ * previous tag finished — cancelled, failed, or deleted — is re-tagged fresh.
+ * Returns how many rows were written.
  */
 export function insertRuleTags(
   ratingKeys: string[],
@@ -3793,15 +3806,33 @@ export function insertRuleTags(
   deleteAfter: number
 ): number {
   const db = getDb();
+  // FORK: a finished row is replaced, a live one is left strictly alone — the
+  // WHERE on the upsert is what keeps a rule from stamping over a manual tag's
+  // date or restarting a countdown someone is already watching. The old row's
+  // outcome is carried into status_detail so re-tagging a cancelled title still
+  // shows, in the deletion history, that it had been cancelled before.
   const ins = db.prepare(
-    `INSERT OR IGNORE INTO scheduled_deletions
+    `INSERT INTO scheduled_deletions
        (rating_key, tagged_by, tagged_at, delete_after, status, status_at)
-     VALUES (?, ?, ?, ?, 'pending', ?)`
+     VALUES (@rk, @by, @at, @after, 'pending', @at)
+     ON CONFLICT(rating_key) DO UPDATE SET
+       tagged_by = excluded.tagged_by,
+       tagged_at = excluded.tagged_at,
+       delete_after = excluded.delete_after,
+       status = 'pending',
+       status_at = excluded.status_at,
+       status_detail = 'Re-tagged; previous outcome: ' || scheduled_deletions.status,
+       verified_at = NULL,
+       residue_bytes = NULL,
+       notified_week = 0
+     WHERE scheduled_deletions.status NOT IN ${RULE_LIVE_STATUSES}`
   );
   const t = now();
   return db.transaction(() => {
     let n = 0;
-    for (const rk of ratingKeys) n += ins.run(rk, taggedBy, t, deleteAfter, t).changes;
+    for (const rk of ratingKeys) {
+      n += ins.run({ rk, by: taggedBy, at: t, after: deleteAfter }).changes;
+    }
     return n;
   })();
 }

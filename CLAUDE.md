@@ -316,9 +316,18 @@ touching that layout.
   (in), `requested` (eq), and **(3.2)** `verdict_score` (gte/lte, signed),
   `verdict_count` (gte/lte + a `verdict`), `verdict_by` (a user id + a
   `verdict`), `min_voters` (gte), `nobody_kept` (eq true only) — AND'd on a
-  fixed baseline that excludes kept items
-  and ANY existing `scheduled_deletions` row (manual tags / cancelled /
-  purge outcomes are never overwritten). Matches are INSERT-OR-IGNOREd as
+  fixed baseline that excludes kept items and any item carrying a **LIVE**
+  (`pending`/`held`) `scheduled_deletions` row — a countdown in progress, or a
+  manual tag's chosen date, is never disturbed. **A FINISHED row does not block
+  (policy set 2026-07-31, `RULE_TAGGED_EXPR`):** it used to be any row of any
+  status, which made one cancel exempt a title from every future rule forever.
+  Cancelling means "not this time"; **keeping** is the permanent protection, and
+  no rule can override a keep. So `cancelled`/`failed`/`deleted` rows are
+  re-taggable and `insertRuleTags` upserts over them (`ON CONFLICT … WHERE
+  status NOT IN ('pending','held')` — the WHERE is what protects live rows),
+  resetting `verified_at`/`residue_bytes`/`notified_week` and writing
+  `status_detail = 'Re-tagged; previous outcome: <old status>'` so the deletion
+  history still shows the title had been cancelled before. Matches are tagged
   `pending`, `tagged_by = 'rule:<id>'`. Inert unless `deletion_enabled`.
   Deleting a rule cancels its live tags (`cancelDeletionsByTagger`); disabling
   it leaves them counting down.
@@ -335,14 +344,13 @@ touching that layout.
   "OK to delete" made in Browse counts as a `done_with_it` vote for
   `verdict_by`. `min_voters`/`nobody_kept` emit no per-item SQL (the quorum is
   applied once; the keep exclusion is already baseline). Preview
-  (`/api/admin/deletion-rules/preview`) returns `minVoters` + `heldByQuorum`
-  (a second match run with `{minVoters: 0}`, only when a quorum > 1 is in
-  force) plus `excludedKept`/`excludedTagged` (`ruleExclusionCounts()` — ONE
+  (`/api/admin/deletion-rules/preview`) returns `minVoters` +
+  `heldByQuorum`/`excludedKept`/`excludedTagged` (`ruleExclusionCounts()` — ONE
   pass, reasons assigned with fixed precedence kept→tagged→quorum so the four
   buckets partition the condition matches exactly). This exists because **the
   same filter in Browse always lists more**: Browse applies none of the rule
-  baseline, so it shows kept titles and titles already carrying a tag of any
-  status (cancelled ones included). `ruleConditionSql()` is the shared
+  baseline, so it shows kept titles and titles already counting down
+  (`excludedTagged` counts LIVE tags only). `ruleConditionSql()` is the shared
   conditions-only builder behind both; it is deliberately NOT exported —
   conditions without the baseline must never reach anything that tags, and
   `ruleExclusionCounts` returns counts only for the same reason.
