@@ -357,10 +357,20 @@ would. Notes on the edges:
   in one pass with precedence kept→tagged→quorum). Added 2026-07-31 after the
   user hit the obvious confusion: **Browse's score filter lists far more than a
   rule with the same threshold**, because Browse applies none of the rule
-  baseline — no keep exclusion, and no exclusion of titles already carrying a
-  tag of any status (a cancelled tag still blocks a rule). The four numbers
-  partition the condition matches exactly, so the preview reconciles with
-  Browse instead of looking broken.
+  baseline — no keep exclusion, and no exclusion of titles already counting
+  down. The four numbers partition the condition matches exactly, so the
+  preview reconciles with Browse instead of looking broken.
+- **Policy change, 2026-07-31 (user's call): a finished tag no longer blocks a
+  rule.** Previously ANY `scheduled_deletions` row did, so cancelling a tag
+  once made that title permanently invisible to every future rule — "something
+  getting cancelled shouldn't make it immutable from further changes". Now only
+  `pending`/`held` block. `cancelled`/`failed`/`deleted` are re-taggable and
+  `insertRuleTags` upserts over them, carrying the old outcome into
+  `status_detail`. The user was offered a cooling-off window (30d/7d) and chose
+  the simple version — a cancelled title a rule still matches gets re-tagged on
+  the next nightly run, and **keeping** is the way to protect it for good.
+  Consequence to watch: with an enabled rule, "cancel" alone is a temporary
+  reprieve. If that turns out to nag, the cooling-off design is the fallback.
 
 **Also asked for at the same time** (2026-07-30) — score needs to be usable
 *outside* the rules engine, so tagging decisions can be reviewed by hand:

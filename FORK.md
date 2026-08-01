@@ -80,13 +80,21 @@ will almost always list more titles than a rule with the same threshold, and
 that's not a bug — Browse is a browsing screen and applies none of the rule
 baseline. The preview now spells out the difference:
 
-- **already carry a deletion tag** — of *any* status, including cancelled ones
-  and titles a past purge already handled. A rule never overwrites those.
+- **already tagged and counting down** — nothing for a rule to add.
 - **somebody keeps it.**
 - **held back by the quorum** — fewer than N people have voted on it.
 
 Those three plus the match count are exactly the titles the conditions hit, so
 the preview always adds up to what Browse shows you.
+
+**Cancelling is "not this time", not "never again."** A tag you cancel — or one
+that failed, or one a past purge already handled — stops blocking rules: the
+next nightly run may tag that title again if it still matches. The permanent
+protection is **keeping** it, which no rule and no score can override. When a
+rule re-tags something, the deletion history records what happened last time
+("*Re-tagged; previous outcome: cancelled*"), so the trail isn't lost. A tag
+that's still **counting down** is never disturbed — neither its date nor a
+manual tag you set by hand.
 
 ### "Leaving Soon" collection + Discord notifications
 - On Jellyfin/Emby, pending tags are mirrored into a **Leaving Soon**

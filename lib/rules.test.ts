@@ -9,6 +9,7 @@ import {
   createDeletionRule,
   removeVerdict,
   ruleExclusionCounts,
+  setDeletionResult,
   listScheduledDeletions,
   ratingKeysMatchingRule,
   replaceSeerrRequests,
@@ -236,18 +237,19 @@ describe('ratingKeysMatchingRule', () => {
       applyVerdict('u2', key, 'not_interested'); // +4 each, two voters
     }
     addKeep('u3', 'big-old'); // kept
-    tagForDeletion('big-new', 'admin', nowSec + 86400); // already tagged
-    // A cancelled tag still blocks a rule — the audit row is never overwritten.
-    tagForDeletion('small-old', 'admin', nowSec + 86400);
-    cancelDeletionsByTagger('admin', 'changed my mind');
+    tagForDeletion('big-new', 'admin', nowSec + 86400); // live tag → blocks
+    // A CANCELLED tag no longer blocks: cancelling means "not this time", not
+    // "exempt from every future rule". Keeping is how you protect something.
+    tagForDeletion('small-old', 'someone-else', nowSec + 86400);
+    cancelDeletionsByTagger('someone-else', 'changed my mind');
     removeVerdict('u2', 'watched-recent'); // now a lone voice → below quorum
 
     const x = ruleExclusionCounts(conds, nowSec);
     expect(x.kept).toBe(1); // big-old
-    expect(x.tagged).toBe(2); // big-new (live) + small-old (cancelled)
+    expect(x.tagged).toBe(1); // big-new only — the cancelled row is eligible again
     expect(x.quorum).toBe(1); // watched-recent
-    expect(x.matched).toBe(1); // other-lib
-    expect(keys(conds)).toEqual(['other-lib']);
+    expect(x.matched).toBe(2); // other-lib + small-old
+    expect(keys(conds)).toEqual(['other-lib', 'small-old']);
     // The four buckets are the whole condition-matching set.
     expect(x.matched + x.kept + x.tagged + x.quorum).toBe(5);
   });
@@ -309,6 +311,29 @@ describe('runRules', () => {
       expect(r.delete_after - r.tagged_at).toBeGreaterThan(6 * 86400);
       expect(r.delete_after - r.tagged_at).toBeLessThan(8 * 86400);
     }
+  });
+
+  it('re-tags a title whose previous tag finished, but never a live one', async () => {
+    setDeletionEnabled(true);
+    const id = bigRule(true);
+    await runRules(); // tags 'a' + 'b'
+    const detail = (key: string) =>
+      listScheduledDeletions().find((r) => r.rating_key === key)!;
+
+    // 'a' cancelled, 'b' failed a purge: both finished, so tonight may try again.
+    cancelDeletionsByTagger(`rule:${id}`, 'not yet'); // cancels a + b
+    setDeletionResult('b', 'failed', 'radarr said no');
+    expect((await runRules()).result).toBe(2);
+    expect(detail('a').status).toBe('pending');
+    // The history still shows it had been cancelled — a re-tag isn't amnesia.
+    expect(detail('a').status_detail).toMatch(/previous outcome: cancelled/);
+    expect(detail('b').status_detail).toMatch(/previous outcome: failed/);
+
+    // A live countdown, though, is left exactly as it is.
+    const before = detail('a');
+    expect((await runRules()).result).toBe(0);
+    expect(detail('a').delete_after).toBe(before.delete_after);
+    expect(detail('a').tagged_at).toBe(before.tagged_at);
   });
 
   it('disabled rules are skipped; existing tags are never overwritten', async () => {

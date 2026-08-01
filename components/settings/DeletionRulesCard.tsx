@@ -627,8 +627,8 @@ export default function DeletionRulesCard() {
             <ul className="mt-1 space-y-0.5 text-xs text-amber-400">
               {!!preview.excludedTagged && (
                 <li>
-                  {preview.excludedTagged} matched but already carry a deletion tag (including
-                  cancelled ones and past purges — a rule never overwrites those).
+                  {preview.excludedTagged} matched but{' '}
+                  {preview.excludedTagged === 1 ? 'is' : 'are'} already tagged and counting down.
                 </li>
               )}
               {!!preview.excludedKept && (
