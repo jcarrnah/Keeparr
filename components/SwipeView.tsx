@@ -241,7 +241,12 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
           </span>
         </div>
         {watchAvailable && (
-          <div className="mt-2 flex items-center gap-1 overflow-x-auto rounded-lg bg-rail p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          /* Five labels don't fit the card column, so the strip scrolls — with
+             the scrollbar hidden, which is right on touch (you just drag it)
+             and leaves a mouse with no way to reach the last tab at all. Wrap
+             onto a second line instead wherever there's a real pointer; the
+             card stack is flex-1, so it simply gets shorter. */
+          <div className="mt-2 flex items-center gap-1 overflow-x-auto rounded-lg bg-rail p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [@media(hover:hover)]:flex-wrap [@media(hover:hover)]:overflow-visible">
             {(Object.keys(WATCH_LABELS) as WatchSelection[]).map((m) => (
               <button
                 key={m}

@@ -595,7 +595,7 @@ the point, and two controls driving overlapping state is exactly the confusion
   keep/skip batch loop — it's a different interaction, and 3.3's inference means
   those keeps still count.
 
-## 3.7 Paper cut: the Swipe watch tabs are unreachable on desktop
+## 3.7 Paper cut: the Swipe watch tabs are unreachable on desktop — FIXED 2026-07-31
 
 **Symptom** (2026-07-30): on the `/swipe` page the watch-mode tab strip is cut
 off mid-word — "Everything · Never played · Not watched in 90d+ · Watched
@@ -626,6 +626,15 @@ polish tweak that silently broke the desktop case.
 
 Low severity — every tab is still reachable on mobile, and Everything is the
 default. Worth doing next time the swipe layout is touched.
+
+**Fixed 2026-07-31** with the first option, but gated on **pointer type rather
+than width**: the container is `max-w-md` at every breakpoint, so the overflow
+exists at all sizes and a `md:` rule would have missed a narrow desktop window
+while needlessly re-laying-out a large phone. `[@media(hover:hover)]:flex-wrap`
++ `:overflow-visible` wraps the strip wherever there's a real pointer and leaves
+touch scrolling exactly as it was — which is the actual distinction, since the
+bug is "a mouse can't drag a scrollbar that isn't drawn". The card stack is
+`flex-1 min-h-0`, so a second tab row just makes it shorter; no-scroll holds.
 
 > **Withdrawn:** an earlier version of this section reported "swipe doesn't
 > work on iOS". It was a false alarm — wrong location, not a bug. Swipe works
