@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { getSessionUser } from '@/lib/auth';
-import { isServerConfigured } from '@/lib/settings';
+import { getDeletionEnabled, isServerConfigured } from '@/lib/settings';
 import AppShell from '@/components/AppShell';
 import MatchesView from '@/components/MatchesView';
 
@@ -17,7 +17,9 @@ export default async function MatchesPage() {
       {!isServerConfigured() ? (
         <p className="text-slate-400 p-6">Not set up yet.</p>
       ) : (
-        <MatchesView />
+        /* Consensus is where the decision gets made, so admins can act on it
+           here — same gate as the Browse cards. */
+        <MatchesView canTagDeletion={user.isAdmin && getDeletionEnabled()} />
       )}
     </AppShell>
   );

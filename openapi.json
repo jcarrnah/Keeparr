@@ -302,7 +302,7 @@
           { "name": "verdict", "in": "query", "schema": { "type": "string", "enum": ["not_interested", "done_with_it", "dont_care", "want_to_watch", "loved_it"] }, "description": "FORK: only titles marked this way; combine with voter for \"everything X let go\"" },
           { "name": "offset", "in": "query", "schema": { "type": "integer" } }
         ],
-        "responses": { "200": { "description": "`{items: [{…card, kept, wantNames[], keepNames[], doneNames[], neverNames[], skipCount, deleteVotes, score, voters, keepImplicitNames[], doneImplicitNames[], skipImplicitCount}], me, voters: [{id, username}], hasMore, nextOffset}` — `score` sums the verdict scale across everyone (let it go +2, wouldn't be mad +1, skip 0, save for later −1, worth keeping −2); a keep / don't-care / OK-to-delete made outside Swipe counts as an implied vote, listed separately in the `*Implicit*` fields" } }
+        "responses": { "200": { "description": "`{items: [{…card, kept, wantNames[], keepNames[], doneNames[], neverNames[], skipCount, skipNames[], deleteVotes, score, voters, keepImplicitNames[], doneImplicitNames[], skipImplicitCount, skipImplicitNames[], scheduledDeleteAfter?, scheduledDeleteHeld?}], me, voters: [{id, username}], hasMore, nextOffset}` — `score` sums the verdict scale across everyone (let it go +2, wouldn't be mad +1, skip 0, save for later −1, worth keeping −2); a keep / don't-care / OK-to-delete made outside Swipe counts as an implied vote, listed separately in the `*Implicit*` fields. `scheduledDelete*` reflect a LIVE tag only (pending/held), so a row can be tagged or cancelled from the consensus screen" } }
       }
     },
     "/api/keep": {

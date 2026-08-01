@@ -56,6 +56,12 @@ export async function GET(req: Request) {
       keepImplicitNames: split(r.keep_implicit_names),
       doneImplicitNames: split(r.done_implicit_names),
       skipImplicitCount: r.skip_implicit_count,
+      // FORK: the per-item detail panel needs who shrugged, not just how many.
+      skipNames: split(r.skip_names),
+      skipImplicitNames: split(r.skip_implicit_names),
+      // FORK: live tag state, so a row can be tagged from here and show it.
+      scheduledDeleteAfter: r.scheduled_delete_after ?? undefined,
+      scheduledDeleteHeld: r.scheduled_delete_status === 'held' || undefined,
     }));
     return NextResponse.json({
       items,
