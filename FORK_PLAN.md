@@ -676,3 +676,39 @@ from `/swipe/matches`, and so are Movie night and Consensus.
   home for the room entry, leaving Matches as the results screen.
 - Mobile first — this is a phone feature. The full-height no-scroll layout and
   the safe-area padding rules apply.
+
+## 3.9 Pin "Leaving Soon" to the front of Jellyfin's collections
+
+**The idea** (raised 2026-07-31, deliberately deferred): the Leaving Soon
+collection should be the **first** item in Collections on the media server, not
+buried alphabetically among the household's other collections. It's the rescue
+window — a countdown nobody sees is a countdown nobody acts on, and the whole
+point of mirroring pending tags onto the server is that people meet them where
+they watch.
+
+**Where it lives.** `lib/leaving-soon.ts` creates the collection once via
+`createCollection()` (`lib/jellyfin.ts:461` — `POST /Collections?Name=…`) and
+caches the id in `leaving_soon_collection_id`. Nothing sets a sort name today,
+so the server files it under "L".
+
+**Likely approach** (unverified — check against a live Jellyfin before
+building): Jellyfin orders by `SortName`, and a `ForcedSortName` set on the
+collection item overrides the title for sorting. That would mean a follow-up
+write after creation — `POST /Items/{id}` with the item's metadata carrying
+`ForcedSortName: '!Leaving Soon'` (or `'0000 …'`) — since the create endpoint
+takes only a name. Points to confirm first:
+
+- Whether the update endpoint needs the FULL item body (Jellyfin's item update
+  is a replace, not a patch — reading the item first and echoing it back is the
+  usual dance) and whether Emby behaves the same way.
+- Whether it should be applied once at creation or re-asserted each sync (a
+  user renaming or editing the collection could clear it — re-asserting is
+  cheap but writes on every purge run).
+- Whether a leading `!`/`0` is the right sigil, or whether it just looks like
+  junk in the UI. The sort name is invisible in most Jellyfin views, but not
+  all.
+- Non-goal: reordering anyone else's collections. Only this one.
+
+Low risk and self-contained — but it writes to the media server, and it's the
+one part of the fork that does, so it wants a look at a real server rather than
+a confident guess.

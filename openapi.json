@@ -634,7 +634,7 @@
       "post": {
         "tags": ["admin"],
         "summary": "FORK: create a rule",
-        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "conditions": { "type": "array", "description": "RuleCondition[]: {field: last_watched_any|added_at|size|library|requested, op, value} AND'd together" }, "enabled": { "type": "boolean" }, "graceDays": { "type": "integer", "nullable": true } }, "required": ["name", "conditions"] } } } },
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "conditions": { "type": "array", "description": "RuleCondition[] AND'd together. Facts: {field: last_watched_any|added_at, op: olderThanDays, value}, {field: size, op: gtGB|ltGB, value}, {field: library, op: in, value: string[]}, {field: requested, op: eq, value: bool}. Opinions (FORK 3.2): {field: verdict_score, op: gte|lte, value} (signed), {field: verdict_count, op: gte|lte, value, verdict}, {field: verdict_by, op: eq, value: userId, verdict}, {field: min_voters, op: gte, value} (overrides the 2-voter quorum vote rules get by default), {field: nobody_kept, op: eq, value: true}." }, "enabled": { "type": "boolean" }, "graceDays": { "type": "integer", "nullable": true } }, "required": ["name", "conditions"] } } } },
         "responses": { "200": { "description": "`{ok, id}`" }, "400": { "description": "Invalid name/conditions" } }
       },
       "put": {

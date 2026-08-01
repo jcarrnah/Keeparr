@@ -22,6 +22,25 @@ So, when adding fork code:
   collision is trivial to resolve, and a tangled mid-file one is not.
 - Additive schema only, so a `/data` volume stays compatible in both directions.
 
+**Worked example — the Problems page.** `components/ProblemsView.tsx` is ~1,300
+lines of upstream code that renders every category through its own hand-written
+`<thead>`/`<tbody>`, with ~23 inline action-badge sites, and upstream actively
+develops it. The fork wanted per-row buttons there. A trailing action cell would
+have meant ~10 insertions into the most-merged part of the file — so instead ALL
+fork UI lives in `components/ForkProblemActions.tsx`, an action bar above the
+table, and upstream's file carries exactly **one** changed line:
+
+```tsx
+<ForkProblemActions type={active} items={items} onDone={() => load(active, true)} />
+```
+
+That constraint shaped the feature (a batch tag picker rather than per-row
+buttons) and the feature is better for it — you triage a list of problems, not
+one. It also means the fork bar reads `deletion.enabled` from
+`/api/admin/settings` itself rather than threading a prop through upstream's
+component. When a fork feature wants to live inside a hot upstream file, look
+for the shape of it that needs one seam instead of twenty.
+
 ## The loop
 
 ```bash
