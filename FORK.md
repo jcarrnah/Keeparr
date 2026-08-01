@@ -202,7 +202,11 @@ git merge upstream/main
 - **Consensus**: a per-item rollup of who wants each title, who's keeping it,
   and who released it, sortable by delete votes, size or **score** — the human
   input for deciding what to tag for deletion. Filter it by **who voted what**
-  ("everything Sam let go").
+  ("everything Sam let go"). **Click any row** to see who said what,
+  person by person, with inferred opinions labelled ("*Sam — Worth keeping —
+  kept it*") so they never read as swipes. Admins with deletion enabled get
+  **Schedule deletion** right there: the screen you use to decide is the screen
+  you decide on.
 
 ### Vote scoring
 Each verdict carries a weight, and a title's **score** is the sum across

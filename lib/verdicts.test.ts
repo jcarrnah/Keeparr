@@ -21,6 +21,7 @@ import {
   verdictConsensus,
   addDelete,
   addSkip,
+  cancelDeletion,
   consensusVoters,
   queryLibrary,
   type UpsertMediaInput,
@@ -310,6 +311,35 @@ describe('FORK: weighted vote scoring + implicit votes (3.3)', () => {
         (r) => r.rating_key
       )
     ).toEqual(['3']);
+  });
+
+  it('names the shruggers, so a row can show WHO said what', () => {
+    // The table cells can live with "3 skipped"; the per-item detail panel
+    // can't — "what did Sam say about this?" needs Sam's name on his verdict.
+    applyVerdict('u1', '1', 'dont_care');
+    addSkip('u2', '1'); // implied dont_care — must stay distinguishable
+
+    const r = row('1');
+    expect(r.skip_names).toBe('Johnny');
+    expect(r.skip_implicit_names).toBe('Sam');
+    expect(r.skip_count).toBe(1);
+    expect(r.skip_implicit_count).toBe(1);
+  });
+
+  it('carries the live deletion tag, and only a live one', () => {
+    applyVerdict('u1', '1', 'not_interested');
+    applyVerdict('u1', '2', 'not_interested');
+    tagForDeletion('1', 'admin', 2_000_000_000);
+    tagForDeletion('2', 'admin', 2_000_000_000);
+    cancelDeletion('2', 'admin');
+
+    expect(row('1').scheduled_delete_after).toBe(2_000_000_000);
+    expect(row('1').scheduled_delete_status).toBe('pending');
+    // A cancelled tag is history, not a countdown — the row must not offer to
+    // cancel something that isn't running.
+    expect(row('2').scheduled_delete_after).toBeNull();
+    // The join must not multiply rows and inflate the vote counts.
+    expect(row('1').voters).toBe(1);
   });
 
   it('voter list includes people who only ever kept things', () => {

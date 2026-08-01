@@ -9,9 +9,11 @@
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { formatGB } from '@/lib/format';
 import { useToast } from './Toaster';
+import { VERDICT_META } from './verdict-meta';
+import type { Verdict } from '@/lib/types';
 
 interface MatchItem {
   ratingKey: string;
@@ -51,6 +53,37 @@ interface ConsensusItem {
   keepImplicitNames: string[];
   doneImplicitNames: string[];
   skipImplicitCount: number;
+  skipNames: string[];
+  skipImplicitNames: string[];
+  // FORK: live deletion tag, so the row can be tagged from here.
+  scheduledDeleteAfter?: number;
+  scheduledDeleteHeld?: boolean;
+}
+
+/**
+ * FORK: one row's votes, expanded — every voter with what they actually said,
+ * worst-first so it reads in the same direction as the score. The table cells
+ * comma-join names by verdict, which answers "who wants this gone" but not
+ * "what did Sam say about it"; this does.
+ *
+ * `implied` marks an opinion inferred from a keep / "don't care" / "OK to
+ * delete" rather than a swipe — the distinction has to survive all the way to
+ * the screen, or an inference starts reading as a statement.
+ */
+function voteDetail(r: ConsensusItem): { name: string; verdict: Verdict; implied?: string }[] {
+  const out: { name: string; verdict: Verdict; implied?: string }[] = [];
+  const add = (names: string[], verdict: Verdict, implied?: string) => {
+    for (const name of names) out.push({ name, verdict, implied });
+  };
+  add(r.neverNames, 'not_interested');
+  add(r.doneNames, 'done_with_it');
+  add(r.doneImplicitNames, 'done_with_it', 'marked OK to delete');
+  add(r.skipNames, 'dont_care');
+  add(r.skipImplicitNames, 'dont_care', 'said “don’t care”');
+  add(r.wantNames, 'want_to_watch');
+  add(r.keepNames, 'loved_it');
+  add(r.keepImplicitNames, 'loved_it', 'kept it');
+  return out;
 }
 
 /** FORK (3.3): the five verdicts as the filter offers them, worst-first so the
@@ -72,7 +105,12 @@ function wanterSentence(names: string[], ids: string[], me: string): string {
   return `${display.slice(0, -1).join(', ')} and ${display[display.length - 1]}`;
 }
 
-export default function MatchesView() {
+export default function MatchesView({
+  canTagDeletion = false,
+}: {
+  /** FORK: admin + deletion enabled → tag straight from a consensus row. */
+  canTagDeletion?: boolean;
+}) {
   const [tab, setTab] = useState<'night' | 'consensus'>('night');
 
   // Live-room entry (create / join by code).
@@ -101,6 +139,10 @@ export default function MatchesView() {
   const [hasMore, setHasMore] = useState(false);
   const [nextOffset, setNextOffset] = useState(0);
   const [loadingCons, setLoadingCons] = useState(true);
+  // FORK: which row is expanded to show who said what (one at a time — this is
+  // a scanning surface, and several open panels stop being scannable).
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  const [tagBusy, setTagBusy] = useState<string | null>(null);
 
   const toast = useToast();
   const seq = useRef(0); // stale-response guard (house style)
@@ -164,6 +206,53 @@ export default function MatchesView() {
       else next.add(id);
       return next;
     });
+  }
+
+  /**
+   * FORK: schedule (or cancel) a deletion straight from the row you just read
+   * the votes on — the whole point of the screen is deciding, and it used to
+   * mean memorising a title and going to find it in Browse.
+   */
+  async function toggleTag(r: ConsensusItem) {
+    const tagged = r.scheduledDeleteAfter != null;
+    setTagBusy(r.ratingKey);
+    try {
+      const res = await fetch('/api/admin/scheduled-deletions', {
+        method: tagged ? 'DELETE' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ratingKey: r.ratingKey }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const d = tagged ? null : await res.json();
+      setRows((cur) =>
+        cur.map((x) =>
+          x.ratingKey === r.ratingKey
+            ? {
+                ...x,
+                scheduledDeleteAfter: tagged ? undefined : d.deleteAfter,
+                // The server tags a kept item as 'held' rather than refusing —
+                // mirror that here so the badge doesn't claim a live countdown.
+                scheduledDeleteHeld: tagged ? undefined : r.kept || undefined,
+              }
+            : x
+        )
+      );
+      // A keep pauses a tag rather than refusing it, so say which happened.
+      if (!tagged) {
+        toast(
+          r.kept
+            ? 'Tagged — but paused: someone keeps it. It resumes if the keeps go.'
+            : `Scheduled for deletion after ${new Date(d.deleteAfter * 1000).toLocaleDateString()}.`,
+          r.kept ? 'info' : 'success'
+        );
+      } else {
+        toast('Deletion cancelled.', 'success');
+      }
+    } catch {
+      toast("Couldn't update the deletion tag.", 'error');
+    } finally {
+      setTagBusy(null);
+    }
   }
 
   const names = (list: string[]) => list.join(', ');
@@ -435,13 +524,34 @@ export default function MatchesView() {
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr key={r.ratingKey} className="border-b border-slate-800/60">
+                    <Fragment key={r.ratingKey}>
+                    <tr
+                      className="cursor-pointer border-b border-slate-800/60 hover:bg-slate-900/60"
+                      onClick={() => setOpenRow((cur) => (cur === r.ratingKey ? null : r.ratingKey))}
+                      title="Show who said what"
+                    >
                       <td className="px-3 py-2">
+                        <span className="mr-1.5 inline-block w-3 text-slate-500">
+                          {openRow === r.ratingKey ? '▾' : '▸'}
+                        </span>
                         <span className="font-medium text-slate-200">{r.title}</span>
                         {r.year && <span className="ml-1.5 text-xs text-slate-500">{r.year}</span>}
                         {r.kept && (
                           <span className="ml-2 rounded-full bg-amber-900/80 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">
                             Kept
+                          </span>
+                        )}
+                        {r.scheduledDeleteAfter != null && (
+                          <span
+                            className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                              r.scheduledDeleteHeld
+                                ? 'bg-slate-700 text-slate-200'
+                                : 'bg-red-500/90 text-paper'
+                            }`}
+                          >
+                            {r.scheduledDeleteHeld
+                              ? '⏸ Paused'
+                              : `⌛ ${new Date(r.scheduledDeleteAfter * 1000).toLocaleDateString()}`}
                           </span>
                         )}
                       </td>
@@ -493,6 +603,58 @@ export default function MatchesView() {
                         </span>
                       </td>
                     </tr>
+                    {/* FORK: who said what, plus the action the whole screen is
+                        building towards — decide here, don't go hunting for the
+                        title in Browse. */}
+                    {openRow === r.ratingKey && (
+                      <tr className="border-b border-slate-800/60 bg-slate-900/40">
+                        <td colSpan={7} className="px-3 py-3">
+                          <div className="flex flex-wrap items-start justify-between gap-4">
+                            <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+                              {voteDetail(r).map((v, i) => (
+                                <li key={`${v.name}-${i}`} className="flex items-center gap-1.5">
+                                  <span className={VERDICT_META[v.verdict].color.split(' ')[0]}>
+                                    {VERDICT_META[v.verdict].icon}
+                                  </span>
+                                  <span className="text-slate-200">{v.name}</span>
+                                  <span className="text-slate-500">
+                                    {VERDICT_META[v.verdict].short}
+                                    {v.implied && ` — ${v.implied}`}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                            {canTagDeletion && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void toggleTag(r);
+                                }}
+                                disabled={tagBusy === r.ratingKey}
+                                className={`shrink-0 rounded-md px-3 py-1.5 text-xs disabled:opacity-60 ${
+                                  r.scheduledDeleteAfter != null
+                                    ? 'border border-slate-600 text-slate-300 hover:border-slate-400'
+                                    : 'border border-rose-900/70 text-rose-300 hover:border-rose-700'
+                                }`}
+                                title={
+                                  r.kept && r.scheduledDeleteAfter == null
+                                    ? 'Someone keeps this — it will be tagged but paused until the keeps go'
+                                    : undefined
+                                }
+                              >
+                                {r.scheduledDeleteAfter != null
+                                  ? 'Cancel deletion'
+                                  : 'Schedule deletion'}
+                              </button>
+                            )}
+                          </div>
+                          {voteDetail(r).length === 0 && (
+                            <p className="text-xs text-slate-500">No individual votes recorded.</p>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

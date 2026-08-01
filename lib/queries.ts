@@ -4175,6 +4175,15 @@ export interface ConsensusRow extends MediaItem {
   keep_implicit_names: string | null;
   done_implicit_names: string | null;
   skip_implicit_count: number;
+  /** FORK (3.2 follow-up): the shruggers by name, so the per-item detail can
+   *  show WHO abstained instead of just how many — a count is enough for a
+   *  table cell, not for "who said what". */
+  skip_names: string | null;
+  skip_implicit_names: string | null;
+  /** FORK (3.2 follow-up): the live deletion tag, if any — so a row can be
+   *  tagged (or shown as already counting down) without a second lookup. */
+  scheduled_delete_after: number | null;
+  scheduled_delete_status: string | null;
 }
 
 /**
@@ -4288,12 +4297,20 @@ export function verdictConsensus(
               GROUP_CONCAT(CASE WHEN v.verdict = 'not_interested' THEN ${name} END) AS never_names,
               SUM(v.verdict = 'dont_care' AND v.implicit = 0) AS skip_count,
               SUM(v.verdict = 'dont_care' AND v.implicit = 1) AS skip_implicit_count,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'dont_care' AND v.implicit = 0 THEN ${name} END) AS skip_names,
+              GROUP_CONCAT(CASE WHEN v.verdict = 'dont_care' AND v.implicit = 1 THEN ${name} END) AS skip_implicit_names,
+              MAX(sd.delete_after) AS scheduled_delete_after,
+              MAX(sd.status) AS scheduled_delete_status,
               SUM(v.verdict IN ('done_with_it', 'not_interested')) AS delete_votes,
               SUM(${verdictPointsSql('v.verdict')}) AS score,
               COUNT(*) AS voters
        FROM votes v
        JOIN media_items m ON m.rating_key = v.rating_key AND m.removed = 0
        LEFT JOIN users u ON u.plex_user_id = v.plex_user_id
+       -- At most one live tag per item (PK rating_key), so this can't multiply
+       -- rows and skew the vote counts above.
+       LEFT JOIN scheduled_deletions sd
+         ON sd.rating_key = v.rating_key AND sd.status IN ('pending', 'held')
        ${filterSql}
        GROUP BY v.rating_key
        ORDER BY ${order}, m.title COLLATE NOCASE

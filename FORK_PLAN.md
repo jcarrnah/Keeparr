@@ -390,10 +390,17 @@ would. Notes on the edges:
   meaning for that word there would be a trap.
   **This is the sanity check for the rest of 3.2** — a `verdict_score >= 3` rule
   should now be previewable as a Browse query first.
-- **Better consensus review.** Beyond the sortable column and voter/verdict
-  filters shipped in 3.3: per-item vote detail (who said what, at a glance
-  rather than as comma-joined names), and a path from a consensus row straight
-  to tagging it. Not started.
+- **Better consensus review — BUILT 2026-07-31.** Click a row to expand a
+  who-said-what panel (`voteDetail()` in `MatchesView`), ordered worst-first so
+  it reads the same direction as the score, with implied opinions labelled by
+  their source ("kept it" / "marked OK to delete" / "said don't care"). Needed
+  two new query columns: `skip_names`/`skip_implicit_names` (the shruggers had
+  only ever been counted, which is fine for a cell and useless for "what did
+  Sam say"), and a LIVE-tag-only join for `scheduled_delete_after`/`_status`.
+  Admins with deletion enabled get Schedule/Cancel in the panel — the decision
+  now happens where the evidence is instead of requiring a trip to Browse to
+  find the title again. A kept item still tags as `held`, and the button says
+  so before you press it.
 
 ## 3.3 Weighted vote scoring ("points") — BUILT 2026-07-30
 

@@ -495,6 +495,16 @@ when it has no tvdb/tmdb **and** no imdb.
   `voter`+`verdict` slice the list — "everything Alice let go" — without
   narrowing any row's rollup. Unknown sort/verdict values fall back to the
   default rather than erroring (it's a browse surface).
+  **Per-item review (3.2 follow-up):** rows also carry `skipNames`/
+  `skipImplicitNames` (a count is enough for a cell, not for "what did Sam
+  say") and `scheduledDeleteAfter`/`scheduledDeleteHeld` from a LIVE-tag-only
+  LEFT JOIN (`scheduled_deletions` is PK'd on rating_key so the join can't
+  multiply rows and skew the vote counts). The UI expands a row into a
+  who-said-what panel (`voteDetail()` in `MatchesView`, worst-first, implied
+  opinions labelled with their source) and — for admins with deletion enabled
+  (`canTagDeletion`, same gate as Browse) — a Schedule/Cancel button, so the
+  decision happens where the evidence is. A kept item tags as `held`; the UI
+  mirrors that from `r.kept` rather than claiming a live countdown.
 - **FORK:** live "movie night" rooms (all `requireUser`, short-poll transport):
   `POST /api/swipe/rooms {section?, watch?}` → create + host-join → `{code, state}`;
   `POST /api/swipe/rooms/{code}/join` → `{state}`;
