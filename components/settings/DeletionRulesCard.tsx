@@ -9,6 +9,14 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { formatSize } from '@/lib/format';
+import {
+  DEFAULT_MIN_VOTERS,
+  VERDICTS,
+  effectiveMinVoters,
+  type RuleCondition,
+  type Verdict,
+} from '@/lib/types';
+import { VERDICT_META } from '../verdict-meta';
 import { Card, btnCls, btnGhost, inputCls } from './ui';
 
 interface Rule {
@@ -21,21 +29,45 @@ interface Rule {
 interface Cond {
   field: string;
   op: string;
-  value: number | boolean | string[];
+  value: number | boolean | string | string[];
+  /** FORK (3.2): which verdict verdict_count / verdict_by is asking about. */
+  verdict?: Verdict;
 }
 interface Section {
   id: string;
   title: string;
 }
+interface Voter {
+  plexUserId: string;
+  username: string | null;
+}
 interface Preview {
   count: number;
   totalBytes: number;
   sample: { title: string }[];
+  /** FORK (3.2): the quorum in force (null = the rule reads no opinions). */
+  minVoters?: number | null;
+  /** FORK (3.2): titles that matched but lacked the quorum. */
+  heldByQuorum?: number;
+}
+
+// FORK (3.2): the quorum a set of conditions runs with, mirrored from
+// lib/types effectiveMinVoters so the builder can show it before saving. Kept
+// as a call to the shared helper rather than a re-implementation — a builder
+// that disagreed with the engine would be worse than not showing it at all.
+function quorumOf(conditions: Cond[]): number | null {
+  return effectiveMinVoters(conditions as RuleCondition[]);
 }
 
 const FIELD_DEFS: Record<
   string,
-  { label: string; ops: { value: string; label: string }[]; kind: 'days' | 'gb' | 'library' | 'bool' }
+  {
+    label: string;
+    ops: { value: string; label: string }[];
+    kind: 'days' | 'gb' | 'library' | 'bool' | 'score' | 'verdictCount' | 'verdictBy' | 'voters' | 'none';
+    /** FORK (3.2): shown under the row — these conditions need explaining. */
+    hint?: string;
+  }
 > = {
   last_watched_any: {
     label: 'Not watched by anyone in',
@@ -65,15 +97,67 @@ const FIELD_DEFS: Record<
     ops: [{ value: 'eq', label: 'is' }],
     kind: 'bool',
   },
+  // --- FORK (3.2): match on what the household said ---
+  verdict_score: {
+    label: 'Household score',
+    ops: [
+      { value: 'gte', label: 'at least' },
+      { value: 'lte', label: 'at most' },
+    ],
+    kind: 'score',
+    hint: 'Positive = they want it gone (+2 “let it go”, +1 “wouldn’t be mad”, −2 “worth keeping”). Keeps and “don’t care” made outside Swipe count too.',
+  },
+  verdict_count: {
+    label: 'People saying',
+    ops: [
+      { value: 'gte', label: 'at least' },
+      { value: 'lte', label: 'at most' },
+    ],
+    kind: 'verdictCount',
+  },
+  verdict_by: {
+    label: 'A specific person said',
+    ops: [{ value: 'eq', label: 'is' }],
+    kind: 'verdictBy',
+    hint: 'Useful for “the person who requested it is done with it”.',
+  },
+  min_voters: {
+    label: 'Minimum voters',
+    ops: [{ value: 'gte', label: 'at least' }],
+    kind: 'voters',
+    hint: `Overrides the default of ${DEFAULT_MIN_VOTERS}. Set 1 if one clear “no” is enough in your house.`,
+  },
+  nobody_kept: {
+    label: 'Nobody keeps it',
+    ops: [{ value: 'eq', label: '—' }],
+    kind: 'none',
+    hint: 'Always enforced, with or without this row — a keep by anyone protects an item. Add it only to make that visible in the rule.',
+  },
 };
 
 function defaultCond(field: string): Cond {
   const def = FIELD_DEFS[field];
-  const value = def.kind === 'bool' ? false : def.kind === 'library' ? [] : 180;
-  return { field, op: def.ops[0].value, value };
+  switch (def.kind) {
+    case 'bool':
+      return { field, op: def.ops[0].value, value: false };
+    case 'library':
+      return { field, op: def.ops[0].value, value: [] };
+    case 'none':
+      return { field, op: def.ops[0].value, value: true };
+    case 'score':
+      return { field, op: def.ops[0].value, value: 3 };
+    case 'verdictCount':
+      return { field, op: def.ops[0].value, value: 2, verdict: 'not_interested' };
+    case 'verdictBy':
+      return { field, op: def.ops[0].value, value: '', verdict: 'done_with_it' };
+    case 'voters':
+      return { field, op: def.ops[0].value, value: DEFAULT_MIN_VOTERS };
+    default:
+      return { field, op: def.ops[0].value, value: 180 };
+  }
 }
 
-function condSummary(c: Cond, sections: Section[]): string {
+function condSummary(c: Cond, sections: Section[], voters: Voter[]): string {
   const def = FIELD_DEFS[c.field];
   if (!def) return '?';
   if (def.kind === 'library') {
@@ -84,12 +168,25 @@ function condSummary(c: Cond, sections: Section[]): string {
   }
   if (def.kind === 'bool') return `${def.label}: ${c.value ? 'yes' : 'no'}`;
   const op = def.ops.find((o) => o.value === c.op)?.label ?? c.op;
+  // FORK (3.2): the vote conditions read as sentences, not "field op value".
+  if (def.kind === 'none') return def.label;
+  if (def.kind === 'score') return `${def.label} ${op} ${Number(c.value) > 0 ? '+' : ''}${c.value}`;
+  if (def.kind === 'voters') return `${def.label}: ${c.value}`;
+  const verdictLabel = c.verdict ? VERDICT_META[c.verdict].short : '?';
+  if (def.kind === 'verdictCount') return `${def.label} “${verdictLabel}” ${op} ${c.value}`;
+  if (def.kind === 'verdictBy') {
+    const who =
+      voters.find((v) => v.plexUserId === c.value)?.username ?? String(c.value || '(nobody)');
+    return `${who} said “${verdictLabel}”`;
+  }
   return `${def.label} ${op.replace(/\s*\(.*\)/, '')} ${c.value}${def.kind === 'gb' ? ' GB' : ' days'}`;
 }
 
 export default function DeletionRulesCard() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
+  // FORK (3.2): who the "a specific person said…" condition can name.
+  const [voters, setVoters] = useState<Voter[]>([]);
   // Editor state (null = closed; id null = creating a new rule).
   const [editing, setEditing] = useState<{
     id: number | null;
@@ -110,6 +207,19 @@ export default function DeletionRulesCard() {
     fetch('/api/sections')
       .then((r) => r.json())
       .then((d) => setSections((d.sections ?? d ?? []).map((s: { id: string; title: string }) => ({ id: String(s.id), title: s.title }))))
+      .catch(() => {});
+    // Everyone who has logged in — a rule may name someone who hasn't voted
+    // yet ("once Sam says he's done with it"), so this isn't the voter list.
+    fetch('/api/admin/users')
+      .then((r) => r.json())
+      .then((d) =>
+        setVoters(
+          (d.users ?? []).map((u: { plexUserId: string; username: string | null }) => ({
+            plexUserId: u.plexUserId,
+            username: u.username,
+          }))
+        )
+      )
       .catch(() => {});
   }, []);
   useEffect(load, [load]);
@@ -221,6 +331,9 @@ export default function DeletionRulesCard() {
     load();
   }
 
+  // FORK (3.2): the quorum this draft would run with, recomputed as you edit.
+  const quorum = editing ? quorumOf(editing.conditions) : null;
+
   return (
     <Card title="Deletion rules">
       <p className="text-sm text-slate-400 mb-3">
@@ -249,7 +362,7 @@ export default function DeletionRulesCard() {
               <span className="font-medium text-slate-200">{r.name}</span>
             </label>
             <span className="min-w-0 flex-1 truncate text-xs text-slate-500">
-              {r.conditions.map((c) => condSummary(c, sections)).join(' AND ')}
+              {r.conditions.map((c) => condSummary(c, sections, voters)).join(' AND ')}
               {r.graceDays != null ? ` → ${r.graceDays}d grace` : ''}
             </span>
             <button className={`${btnGhost} !px-2 !py-1 text-xs`} onClick={() => openEditor(r)}>
@@ -327,7 +440,7 @@ export default function DeletionRulesCard() {
                       </option>
                     ))}
                   </select>
-                  {def.kind === 'bool' ? (
+                  {def.kind === 'none' ? null : def.kind === 'bool' ? (
                     <select
                       className={`${inputCls} w-24`}
                       value={c.value ? 'yes' : 'no'}
@@ -336,6 +449,72 @@ export default function DeletionRulesCard() {
                       <option value="yes">yes</option>
                       <option value="no">no</option>
                     </select>
+                  ) : def.kind === 'score' ? (
+                    /* Signed: "at most −2" is a legitimate way to ask for the
+                       titles the household is protective of. */
+                    <input
+                      className={`${inputCls} w-24`}
+                      type="number"
+                      value={Number(c.value)}
+                      onChange={(e) => setCond(i, { ...c, value: Math.trunc(Number(e.target.value) || 0) })}
+                    />
+                  ) : def.kind === 'verdictCount' ? (
+                    <>
+                      <input
+                        className={`${inputCls} w-20`}
+                        type="number"
+                        min={0}
+                        value={Number(c.value)}
+                        onChange={(e) => setCond(i, { ...c, value: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })}
+                      />
+                      <span className="text-xs text-slate-500">people said</span>
+                      <select
+                        className={`${inputCls} w-44`}
+                        value={c.verdict ?? 'not_interested'}
+                        onChange={(e) => setCond(i, { ...c, verdict: e.target.value as Verdict })}
+                      >
+                        {VERDICTS.map((v) => (
+                          <option key={v} value={v}>
+                            {VERDICT_META[v].short}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  ) : def.kind === 'verdictBy' ? (
+                    <>
+                      <select
+                        className={`${inputCls} w-40`}
+                        value={String(c.value ?? '')}
+                        onChange={(e) => setCond(i, { ...c, value: e.target.value })}
+                      >
+                        <option value="">(pick someone)</option>
+                        {voters.map((v) => (
+                          <option key={v.plexUserId} value={v.plexUserId}>
+                            {v.username ?? v.plexUserId}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-xs text-slate-500">said</span>
+                      <select
+                        className={`${inputCls} w-44`}
+                        value={c.verdict ?? 'done_with_it'}
+                        onChange={(e) => setCond(i, { ...c, verdict: e.target.value as Verdict })}
+                      >
+                        {VERDICTS.map((v) => (
+                          <option key={v} value={v}>
+                            {VERDICT_META[v].short}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  ) : def.kind === 'voters' ? (
+                    <input
+                      className={`${inputCls} w-24`}
+                      type="number"
+                      min={1}
+                      value={Number(c.value)}
+                      onChange={(e) => setCond(i, { ...c, value: Math.max(1, Math.trunc(Number(e.target.value) || 1)) })}
+                    />
                   ) : def.kind === 'library' ? (
                     <div className="flex flex-wrap gap-2">
                       {sections.map((s) => {
@@ -381,10 +560,28 @@ export default function DeletionRulesCard() {
                       ✕
                     </button>
                   )}
+                  {/* FORK (3.2): the vote conditions need a sentence of
+                      explanation; basis-full drops it onto its own line. */}
+                  {def.hint && (
+                    <p className="basis-full text-[11px] leading-snug text-slate-500">{def.hint}</p>
+                  )}
                 </div>
               );
             })}
           </div>
+
+          {/* FORK (3.2): the quorum, stated before you save rather than
+              discovered when the rule mysteriously tags nothing. */}
+          {quorum != null && (
+            <p className="mt-2 text-xs text-slate-400">
+              Needs at least{' '}
+              <span className="font-semibold text-slate-200">{quorum}</span>{' '}
+              {quorum === 1 ? 'person' : 'different people'} to have weighed in on an item
+              {editing.conditions.some((c) => c.field === 'min_voters')
+                ? ' (set by this rule).'
+                : ` (the default — add a “Minimum voters” condition to change it).`}
+            </p>
+          )}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
@@ -419,6 +616,16 @@ export default function DeletionRulesCard() {
                 <> — e.g. {preview.sample.slice(0, 5).map((s) => s.title).join(', ')}</>
               )}
               .
+              {/* FORK (3.2): a smaller number than expected should say WHY. */}
+              {!!preview.heldByQuorum && (
+                <span className="text-amber-400">
+                  {' '}
+                  {preview.heldByQuorum} more matched but{' '}
+                  {preview.heldByQuorum === 1 ? 'was' : 'were'} held back: fewer than{' '}
+                  {preview.minVoters} people have voted on{' '}
+                  {preview.heldByQuorum === 1 ? 'it' : 'them'}.
+                </span>
+              )}
             </p>
           )}
           {msg && <p className="mt-2 text-xs text-amber-400">{msg}</p>}

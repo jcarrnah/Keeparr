@@ -50,6 +50,31 @@ it never touches kept items and never overwrites an existing tag.
 down); merely *disabling* a rule stops new tagging but leaves existing tags
 in place.
 
+Rules can also match on **what the household said**, not just on dates and
+sizes:
+
+- **Household score** at least / at most N — the weighted total described under
+  [Vote scoring](#vote-scoring). "Tag anything scoring +3 or more" is the
+  headline rule.
+- **N people said** *let it go* (or any other verdict).
+- **A specific person said** *wouldn't be mad* — e.g. the person who originally
+  requested it is done with it.
+- **Nobody keeps it** — always enforced anyway; add it if you want the rule to
+  say so out loud.
+
+**The quorum.** A rule that reads opinions won't tag anything until **2
+different people** have weighed in on that title, so one person's swiping spree
+can't schedule the library for deletion. It's a default, not a law: add a
+**Minimum voters** condition to change it — set it to 1 if, in your house, one
+clear "no" is enough. The builder tells you the number in force while you're
+editing, and the preview says what it held back ("*3 more matched but were held
+back: fewer than 2 people have voted on them*") so a small count never looks
+like a broken rule. Rules that only use dates, sizes or libraries are unaffected
+— they never wait for votes they don't read.
+
+A keep still beats everything: no score, however lopsided, tags a title someone
+is keeping.
+
 ### "Leaving Soon" collection + Discord notifications
 - On Jellyfin/Emby, pending tags are mirrored into a **Leaving Soon**
   collection on the server itself, so the household sees doomed titles where

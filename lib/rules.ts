@@ -14,8 +14,8 @@ import {
   ratingKeysMatchingRule,
 } from './queries';
 import { getDeletionEnabled, getDeletionGraceDays } from './settings';
-import type { RuleCondition } from './types';
-import { RULE_FIELDS } from './types';
+import type { RuleCondition, Verdict } from './types';
+import { RULE_FIELDS, VERDICTS } from './types';
 import type { JobResult } from './sync';
 
 /**
@@ -31,9 +31,14 @@ export function parseRuleConditions(json: string): RuleCondition[] | null {
   }
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const out: RuleCondition[] = [];
+  // A whole number in range — the vote fields are counts and thresholds, and a
+  // fractional quorum ("1.5 people") would be nonsense the SQL wouldn't reject.
+  const int = (v: unknown, min = -Infinity) =>
+    typeof v === 'number' && Number.isInteger(v) && v >= min;
   for (const c of raw) {
     if (!c || typeof c !== 'object') return null;
     const { field, op, value } = c as { field?: unknown; op?: unknown; value?: unknown };
+    const verdict = (c as { verdict?: unknown }).verdict;
     if (!(RULE_FIELDS as readonly string[]).includes(String(field))) return null;
     switch (field) {
       case 'last_watched_any':
@@ -51,6 +56,38 @@ export function parseRuleConditions(json: string): RuleCondition[] | null {
         break;
       case 'requested':
         if (op !== 'eq' || typeof value !== 'boolean') return null;
+        out.push({ field, op, value } as RuleCondition);
+        break;
+      // --- FORK (3.2): opinion-matching conditions ---
+      case 'verdict_score':
+        // Signed: a negative threshold ("score ≤ −2") is a legitimate way to
+        // ask for titles the household is protective of.
+        if ((op !== 'gte' && op !== 'lte') || !int(value)) return null;
+        out.push({ field, op, value } as RuleCondition);
+        break;
+      case 'verdict_count':
+        if ((op !== 'gte' && op !== 'lte') || !int(value, 0)) return null;
+        if (!VERDICTS.includes(verdict as Verdict)) return null;
+        out.push({ field, op, value, verdict } as RuleCondition);
+        break;
+      case 'verdict_by':
+        if (op !== 'eq' || typeof value !== 'string' || !value.trim()) return null;
+        if (!VERDICTS.includes(verdict as Verdict)) return null;
+        out.push({ field, op, value, verdict } as RuleCondition);
+        break;
+      case 'min_voters':
+        // At least one: a rule that matches on votes while requiring nobody to
+        // have voted is a contradiction, not a configuration.
+        if (op !== 'gte' || !int(value, 1)) return null;
+        // Two of them would leave the builder's "effective quorum" and the SQL
+        // disagreeing about which one is in force — refuse rather than pick.
+        if (out.some((o) => o.field === 'min_voters')) return null;
+        out.push({ field, op, value } as RuleCondition);
+        break;
+      case 'nobody_kept':
+        // Only `true`. The baseline already excludes kept items, so this states
+        // the guarantee; `false` would be a rule that can never match anything.
+        if (op !== 'eq' || value !== true) return null;
         out.push({ field, op, value } as RuleCondition);
         break;
       default:

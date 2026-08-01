@@ -313,12 +313,31 @@ touching that layout.
   override). The nightly `rules` job (02:00, `lib/rules.ts`) evaluates enabled
   rules via `ratingKeysMatchingRule()` — condition vocabulary:
   `last_watched_any`/`added_at` (olderThanDays), `size` (gt/ltGB), `library`
-  (in), `requested` (eq) — AND'd on a fixed baseline that excludes kept items
+  (in), `requested` (eq), and **(3.2)** `verdict_score` (gte/lte, signed),
+  `verdict_count` (gte/lte + a `verdict`), `verdict_by` (a user id + a
+  `verdict`), `min_voters` (gte), `nobody_kept` (eq true only) — AND'd on a
+  fixed baseline that excludes kept items
   and ANY existing `scheduled_deletions` row (manual tags / cancelled /
   purge outcomes are never overwritten). Matches are INSERT-OR-IGNOREd as
   `pending`, `tagged_by = 'rule:<id>'`. Inert unless `deletion_enabled`.
   Deleting a rule cancels its live tags (`cancelDeletionsByTagger`); disabling
   it leaves them counting down.
+  **FORK (3.2) voter quorum.** A rule using ANY `VOTE_RULE_FIELDS` condition
+  needs `DEFAULT_MIN_VOTERS` (2) distinct voters per item before it may tag —
+  one person's swiping spree can't schedule the library. It's a default, not a
+  floor: `min_voters` overrides it (1 = "one clear no is enough"), and rules are
+  admin-only so the override is already gated. `effectiveMinVoters()` in
+  `lib/types.ts` is the ONE place that decides — the SQL, the preview and the
+  builder's "needs at least N different people" line all call it, so the number
+  shown is the number that runs. Rules with no vote condition get no quorum
+  (a size rule must not wait for votes it never reads). The vote conditions
+  read the same `VOTES_CTE`/`ITEM_SCORES_CTE` as Browse and consensus, so an
+  "OK to delete" made in Browse counts as a `done_with_it` vote for
+  `verdict_by`. `min_voters`/`nobody_kept` emit no per-item SQL (the quorum is
+  applied once; the keep exclusion is already baseline). Preview
+  (`/api/admin/deletion-rules/preview`) returns `minVoters` + `heldByQuorum`
+  (a second match run with `{minVoters: 0}`, only when a quorum > 1 is in
+  force) so a smaller-than-expected count explains itself.
 - `verdicts` — **FORK-ONLY**: per-user swipe verdicts, PK
   `(plex_user_id, rating_key)`. Values: `want_to_watch`/`loved_it` (imply a
   keep), `dont_care` (maps to `user_skips`), `done_with_it`/`not_interested`
@@ -682,9 +701,12 @@ when it has no tvdb/tmdb **and** no imdb.
   **FORK:** `GET/POST/PUT/DELETE /api/admin/deletion-rules` (rule CRUD;
   conditions validated by `parseRuleConditions`) +
   `POST /api/admin/deletion-rules/preview` `{conditions}` →
-  `{count, totalBytes, sample[]}` (what tonight's run would tag). UI: the
+  `{count, totalBytes, sample[], minVoters, heldByQuorum}` (what tonight's run
+  would tag, plus the 3.2 quorum and what it held back). UI: the
   "Deletion rules" card (`components/settings/DeletionRulesCard.tsx`) in
-  Settings → General.
+  Settings → General — the builder shows the effective quorum while you edit
+  and names verdicts via `components/verdict-meta.ts` (one vocabulary with
+  Swipe and the card cycle).
 
 ## Settings keys (all via `lib/settings.ts`)
 

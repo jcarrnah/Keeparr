@@ -36,7 +36,19 @@ export type RuleCondition =
   /** In one of these libraries (section ids). */
   | { field: 'library'; op: 'in'; value: string[] }
   /** Whether ANY user requested it via Seerr. */
-  | { field: 'requested'; op: 'eq'; value: boolean };
+  | { field: 'requested'; op: 'eq'; value: boolean }
+  // --- FORK (3.2): match on what the household actually said ---
+  /** The weighted score (VERDICT_POINTS summed over voters); positive = gone. */
+  | { field: 'verdict_score'; op: 'gte' | 'lte'; value: number }
+  /** How many people gave it a particular verdict. */
+  | { field: 'verdict_count'; op: 'gte' | 'lte'; value: number; verdict: Verdict }
+  /** One named person said a particular thing (e.g. the requester is done). */
+  | { field: 'verdict_by'; op: 'eq'; value: string; verdict: Verdict }
+  /** Override the quorum a vote-matching rule needs (see DEFAULT_MIN_VOTERS). */
+  | { field: 'min_voters'; op: 'gte'; value: number }
+  /** Spell out the baseline guarantee that no one keeps it. Always true — the
+   *  match query enforces it regardless; this only makes it visible in the rule. */
+  | { field: 'nobody_kept'; op: 'eq'; value: true };
 
 export const RULE_FIELDS = [
   'last_watched_any',
@@ -44,7 +56,45 @@ export const RULE_FIELDS = [
   'size',
   'library',
   'requested',
+  'verdict_score',
+  'verdict_count',
+  'verdict_by',
+  'min_voters',
+  'nobody_kept',
 ] as const;
+
+/**
+ * FORK (3.2): the conditions that match on opinions rather than facts. A rule
+ * using any of them gets the voter quorum below.
+ */
+export const VOTE_RULE_FIELDS = ['verdict_score', 'verdict_count', 'verdict_by'] as const;
+
+/**
+ * FORK (3.2): how many DISTINCT people must have weighed in before a
+ * vote-matching rule may tag anything.
+ *
+ * Two, by default, so one person's swiping spree can't schedule the library for
+ * deletion on its own. It is a default and not a floor: in a two-person house a
+ * quorum that never arrives just means the rule never fires, so a rule can set
+ * its own `min_voters` (1 = "one clear no is enough"). Rules are admin-only to
+ * write, so the override is already behind the right gate.
+ */
+export const DEFAULT_MIN_VOTERS = 2;
+
+/**
+ * FORK (3.2): the quorum a set of conditions actually runs with — an explicit
+ * `min_voters`, else the default for vote-matching rules, else `null` for a
+ * rule that never consults an opinion (a date/size rule is not held up waiting
+ * for votes it doesn't use). The rule builder shows this, the preview reports
+ * what it held back, and the match query applies it — one source, so the number
+ * on screen is the number that runs.
+ */
+export function effectiveMinVoters(conditions: RuleCondition[]): number | null {
+  const explicit = conditions.find((c) => c.field === 'min_voters');
+  if (explicit) return explicit.value as number;
+  const votes = VOTE_RULE_FIELDS as readonly string[];
+  return conditions.some((c) => votes.includes(c.field)) ? DEFAULT_MIN_VOTERS : null;
+}
 
 /**
  * FORK: a swipe verdict. Gestures: right = want_to_watch, up = loved_it,
