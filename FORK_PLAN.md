@@ -339,14 +339,25 @@ period still runs, and Discord announces every tag.
 **Also asked for at the same time** (2026-07-30) — score needs to be usable
 *outside* the rules engine, so tagging decisions can be reviewed by hand:
 
-- **Browse by score.** Browse has no score sort or filter today; the score only
-  exists on `/swipe/matches`. Wants `sort=score` on `/api/library` plus a
-  "score at least N" filter, so the reclaim candidates can be worked through in
-  the normal grid with posters, sizes and the verdict control right there.
+- **Browse by score — BUILT 2026-07-31.** `sort=score` and `minScore=<n>` on
+  `/api/library`; rows carry `verdictScore`/`verdictVoters`. `queryLibrary`
+  joins `ITEM_SCORES_CTE` over the SAME `VOTES_CTE` the consensus screen uses,
+  so a title can't score differently on the two screens — implied votes
+  included. Two deliberate asymmetries: an un-voted title has a NULL score and
+  sorts last in **both** directions (silence is not a keep signal), while
+  `minScore` reads it as 0 (so a threshold of ≤ 0 filters nothing). UI: a
+  "Household score" grid sort, a sortable Score column in List view, a
+  "Score ≥ +N" dropdown, and `components/ScoreBadge.tsx` on cards and rows —
+  the score is visible wherever you can sort by it, with its voter count beside
+  it so a +4 from one person doesn't read like a +4 from four. Search is
+  deliberately left out: `SearchRow.score` is already relevance, and a second
+  meaning for that word there would be a trap.
+  **This is the sanity check for the rest of 3.2** — a `verdict_score >= 3` rule
+  should now be previewable as a Browse query first.
 - **Better consensus review.** Beyond the sortable column and voter/verdict
   filters shipped in 3.3: per-item vote detail (who said what, at a glance
   rather than as comma-joined names), and a path from a consensus row straight
-  to tagging it.
+  to tagging it. Not started.
 
 ## 3.3 Weighted vote scoring ("points") — BUILT 2026-07-30
 
@@ -387,6 +398,7 @@ purely a projection over `verdicts`.
   counted twice — including the keep `applyVerdict` itself writes.
 - Implied names come back in `*_implicit_*` columns and render as "Sam (kept)",
   so an inference never reads as a swipe.
+- Browse sorts and filters by the same score as of 2026-07-31 (see 3.2).
 - Still to do: feed `score` to 3.2's `verdict_score` condition.
 
 ## 3.4 Are Keep / Browse / Swipe actually in sync?

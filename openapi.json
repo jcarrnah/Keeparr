@@ -52,7 +52,9 @@
           "tags": { "type": "array", "items": { "type": "string" } },
           "overview": { "type": "string", "description": "Plot synopsis from the media server (absent until synced)" },
           "genres": { "type": "array", "items": { "type": "string" } },
-          "runtimeMinutes": { "type": "integer", "description": "Runtime in whole minutes" }
+          "runtimeMinutes": { "type": "integer", "description": "Runtime in whole minutes" },
+          "verdictScore": { "type": "integer", "description": "FORK: the household's weighted verdict score (positive = they want it gone). Absent when nobody has voted — which is not the same as a score of 0." },
+          "verdictVoters": { "type": "integer", "description": "FORK: how many people fed verdictScore (swipes plus the keeps / \"don't care\" / \"OK to delete\" they stand in for)." }
         }
       },
       "RoomMember": {
@@ -375,7 +377,7 @@
         "parameters": [
           { "name": "sections", "in": "query", "schema": { "type": "string" }, "description": "Comma list of library ids (empty = all)" },
           { "name": "q", "in": "query", "schema": { "type": "string" } },
-          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["size", "title", "added", "year", "library", "quality", "tags", "status", "watched"] } },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["size", "title", "added", "year", "library", "quality", "tags", "status", "watched", "score"] }, "description": "`score` (FORK) = the household's weighted verdict score; un-voted titles sort last in both directions" },
           { "name": "dir", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"] } },
           { "name": "state", "in": "query", "schema": { "type": "string" }, "description": "Comma list of: keptByMe, keptOther, dontcare, okDeleteMine, okDeleteAny, undecided, scheduledDeletion (FORK)" },
           { "name": "watch", "in": "query", "schema": { "type": "string", "enum": ["all", "watched", "unwatched", "unwatchedAny", "recent30", "recent60", "recent90", "stale90"] } },
@@ -388,6 +390,7 @@
           { "name": "match", "in": "query", "schema": { "type": "string", "enum": ["matched", "unmatched"] } },
           { "name": "sizeMismatch", "in": "query", "schema": { "type": "string", "enum": ["1"] } },
           { "name": "requestedByMe", "in": "query", "schema": { "type": "string", "enum": ["1"] } },
+          { "name": "minScore", "in": "query", "schema": { "type": "integer" }, "description": "FORK: only titles the household scores at least this high (an un-voted title counts as 0). Non-numeric = no threshold." },
           { "name": "offset", "in": "query", "schema": { "type": "integer" } }
         ],
         "responses": {

@@ -172,6 +172,11 @@ export interface MediaCardData {
   runtimeMinutes?: number;
   /** FORK: this user's swipe verdict, if any — drives the card's cycle control. */
   myVerdict?: Verdict;
+  /** FORK (3.2): the household's weighted score (positive = they want it gone)
+   *  and how many people fed it. Undefined when nobody has an opinion — which
+   *  is not the same as a score of 0, so the two travel together. */
+  verdictScore?: number;
+  verdictVoters?: number;
   // --- FORK: scheduled deletion (live tag only) ---
   /** Epoch seconds after which the purge may delete it (undefined = untagged). */
   scheduledDeleteAfter?: number;

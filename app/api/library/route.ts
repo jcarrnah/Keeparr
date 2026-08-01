@@ -28,6 +28,8 @@ const SORTS: LibrarySort[] = [
   'tags',
   'status',
   'watched',
+  // FORK (3.2): the household's weighted verdict score.
+  'score',
 ];
 const KEPT: KeptFilter[] = ['all', 'kept', 'unkept'];
 const SKIP: SkipFilter[] = ['all', 'skipped', 'unskipped'];
@@ -81,6 +83,12 @@ export async function GET(req: Request) {
     const deleted = (p.get('deleted') as DeleteFilter) || 'all';
     const watch = (p.get('watch') as WatchFilter) || 'all';
     const offset = Math.max(0, Number(p.get('offset')) || 0);
+    // FORK (3.2): "score at least N". Absent/blank/garbage = no threshold —
+    // Browse is a browse surface, so a bad value shows everything rather than
+    // erroring.
+    const rawMinScore = p.get('minScore');
+    const minScoreNum = rawMinScore == null || rawMinScore === '' ? NaN : Number(rawMinScore);
+    const minScore = Number.isFinite(minScoreNum) ? minScoreNum : undefined;
 
     // Multi-value arr filters arrive as comma-separated lists.
     const csv = (key: string) =>
@@ -129,6 +137,7 @@ export async function GET(req: Request) {
       matchFilter,
       sizeMismatch: p.get('sizeMismatch') === '1',
       requestedKeys,
+      minScore,
       limit: PAGE + 1, // fetch one extra to detect "has more"
       offset,
     });
@@ -162,6 +171,10 @@ export async function GET(req: Request) {
         scheduledDeleteHeld: r.scheduled_delete_status === 'held' || undefined,
         // FORK: this user's verdict → the card's cycle control position.
         myVerdict: r.my_verdict ?? undefined,
+        // FORK (3.2): the household's weighted score. Both undefined when
+        // nobody has voted — a real score of 0 (one shrug) must still render.
+        verdictScore: r.verdict_score ?? undefined,
+        verdictVoters: r.verdict_voters ?? undefined,
       };
     });
     return NextResponse.json({ items, hasMore, nextOffset: offset + PAGE });

@@ -19,11 +19,19 @@ type Sort =
   | 'quality'
   | 'tags'
   | 'status'
-  | 'watched';
+  | 'watched'
+  // FORK (3.2): the household's weighted verdict score.
+  | 'score';
 type Dir = 'asc' | 'desc';
-const SORT_KEYS: Sort[] = ['size', 'title', 'added', 'year', 'library', 'quality', 'tags', 'status', 'watched'];
+const SORT_KEYS: Sort[] = ['size', 'title', 'added', 'year', 'library', 'quality', 'tags', 'status', 'watched', 'score'];
 // Numeric-ish columns read best high→low by default; text columns A→Z.
-const defaultDir = (col: Sort): Dir => (col === 'size' || col === 'watched' ? 'desc' : 'asc');
+const defaultDir = (col: Sort): Dir =>
+  col === 'size' || col === 'watched' || col === 'score' ? 'desc' : 'asc';
+
+// FORK (3.2): "score at least N" thresholds. Positive scores are the ones worth
+// reviewing — a threshold of 1 already means somebody actively wants it gone —
+// so the options climb from there rather than offering the whole signed range.
+const SCORE_THRESHOLDS = [1, 2, 3, 4, 6];
 type View = 'grid' | 'list';
 // Combinable "Status" buckets (per-user decision states). Any checked are OR'd
 // together server-side; none checked = All. Mirrors lib/queries StateBucket.
@@ -151,6 +159,8 @@ export default function LibraryBrowser({
   // so decided items (kept / don't-care / your own "OK to delete") are hidden.
   const [states, setStates] = useState<string[]>(['undecided']);
   const [watch, setWatch] = useState<Watch>('all');
+  // FORK (3.2): "score at least N" ('' = no threshold).
+  const [minScore, setMinScore] = useState<string>('');
   const [requestedByMe, setRequestedByMe] = useState(false);
   // Sonarr/Radarr multi-select filters (only used/shown when arr is connected).
   const [sources, setSources] = useState<string[]>([]);
@@ -273,6 +283,8 @@ export default function LibraryBrowser({
       // Combinable Status buckets (OR'd server-side); empty = All.
       if (states.length) params.set('state', states.join(','));
       if (tautulli && watch !== 'all') params.set('watch', watch);
+      // FORK (3.2): the household-score threshold.
+      if (minScore) params.set('minScore', minScore);
       if (requestedByMe) params.set('requestedByMe', '1');
       if (arr) {
         if (sources.length) params.set('source', sources.join(','));
@@ -301,13 +313,13 @@ export default function LibraryBrowser({
         if (seq === fetchSeq.current) setLoading(false);
       }
     },
-    [selectedKey, debouncedQ, sort, dir, states, watch, tautulli, requestedByMe,
+    [selectedKey, debouncedQ, sort, dir, states, watch, tautulli, minScore, requestedByMe,
      arr, sources, instanceIds, tags, qualities, statuses, monitoredSel, match, sizeMismatch, offset, toast]
   );
 
   // Reset + reload whenever a filter (or the rail selection) changes. (View
   // toggle is NOT here — Grid/List render the same data, no refetch.)
-  const filterKey = `${selectedKey}|${debouncedQ}|${sort}|${dir}|${states}|${watch}|${requestedByMe}|${sources}|${instanceIds}|${tags}|${qualities}|${statuses}|${monitoredSel}|${match}|${sizeMismatch}`;
+  const filterKey = `${selectedKey}|${debouncedQ}|${sort}|${dir}|${states}|${watch}|${minScore}|${requestedByMe}|${sources}|${instanceIds}|${tags}|${qualities}|${statuses}|${monitoredSel}|${match}|${sizeMismatch}`;
   useEffect(() => {
     setOffset(0);
     fetchPage(true);
@@ -358,6 +370,8 @@ export default function LibraryBrowser({
               <option value="title">Title</option>
               <option value="year">Release year</option>
               <option value="added">Recently added</option>
+              {/* FORK (3.2): order by how much the household wants it gone. */}
+              <option value="score">Household score</option>
             </select>
             <button
               onClick={() => applySort(sort, dir === 'desc' ? 'asc' : 'desc')}
@@ -401,6 +415,22 @@ export default function LibraryBrowser({
             <option value="stale90">Not watched in 90+ days</option>
           </select>
         )}
+        {/* FORK (3.2): the reclaim shortlist — titles the household has actually
+            voted against, worked through in the normal grid with posters, sizes
+            and the verdict control right there. */}
+        <select
+          className={inputCls}
+          value={minScore}
+          onChange={(e) => setMinScore(e.target.value)}
+          title="Only titles the household scores at least this high (positive = they want it gone)"
+        >
+          <option value="">Score: any</option>
+          {SCORE_THRESHOLDS.map((n) => (
+            <option key={n} value={n}>
+              Score ≥ +{n}
+            </option>
+          ))}
+        </select>
         {arr && (
           <>
             <MultiSelect
@@ -546,6 +576,8 @@ export default function LibraryBrowser({
                 <SortTh col="tags" align="left" sort={sort} dir={dir} onSort={sortByHeader}>Tags</SortTh>
                 <SortTh col="status" align="left" sort={sort} dir={dir} onSort={sortByHeader}>Status</SortTh>
                 <SortTh col="watched" align="center" sort={sort} dir={dir} onSort={sortByHeader}>Watched</SortTh>
+                {/* FORK (3.2): the household's weighted verdict score. */}
+                <SortTh col="score" align="center" sort={sort} dir={dir} onSort={sortByHeader}>Score</SortTh>
                 <th className="px-3 py-2 text-right font-medium" />
               </tr>
             </thead>

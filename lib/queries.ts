@@ -815,7 +815,9 @@ export type LibrarySort =
   | 'quality'
   | 'tags'
   | 'status'
-  | 'watched';
+  | 'watched'
+  // FORK (3.2): the household's weighted verdict score (see VERDICT_POINTS).
+  | 'score';
 export type SortDir = 'asc' | 'desc';
 export type KeptFilter = 'all' | 'kept' | 'unkept';
 export type SkipFilter = 'all' | 'skipped' | 'unskipped';
@@ -882,6 +884,12 @@ export interface LibraryQuery {
    * = no restriction; an empty array = match nothing.
    */
   requestedKeys?: string[] | null;
+  /**
+   * FORK (3.2): only titles the household scores at least this high — the
+   * "everyone wants this gone" shortlist, in the normal grid. An item nobody has
+   * an opinion on scores 0, so any threshold above 0 implies "somebody voted".
+   */
+  minScore?: number;
   limit: number;
   offset: number;
 }
@@ -896,6 +904,9 @@ const sortColumn: Record<LibrarySort, string> = {
   tags: 'a.tags COLLATE NOCASE', // raw JSON; roughly groups by first tag
   status: 'a.status COLLATE NOCASE',
   watched: '(wh.rating_key IS NOT NULL)',
+  // FORK (3.2): NULL for a title nobody voted on, so ORDER BY … NULLS LAST puts
+  // the un-opinionated tail after the scored rows in BOTH directions.
+  score: 'vs.score',
 };
 
 /** A media row joined with its kept status. */
@@ -926,6 +937,11 @@ export interface LibraryRow extends MediaWithKeep {
   /** FORK: this user's swipe verdict (null = never swiped) — the card's cycle
    *  control needs the current position, not just the derived keep/skip flags. */
   my_verdict: Verdict | null;
+  /** FORK (3.2): the household's weighted score and how many people fed it.
+   *  Both null when nobody has an opinion (which is not the same as a score of
+   *  0 — one shrug is an opinion). */
+  verdict_score: number | null;
+  verdict_voters: number | null;
 }
 
 /** Arr-matched titles whose Plex vs arr size differ by >10% AND >1 GB (the
@@ -1062,6 +1078,14 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
     }
   }
 
+  // FORK (3.2): "score at least N". An unvoted title counts as 0 rather than
+  // being dropped outright, so a threshold of 0 or below still shows the whole
+  // library — the filter only starts excluding once it asks for real support.
+  if (q.minScore != null && Number.isFinite(q.minScore)) {
+    where.push('COALESCE(vs.score, 0) >= @minScore');
+    params.minScore = q.minScore;
+  }
+
   const col = sortColumn[q.sort ?? 'size'];
   const dir = q.dir === 'asc' ? 'ASC' : 'DESC';
   // NULLs last regardless of direction; stable title tiebreak.
@@ -1069,7 +1093,12 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
 
   return getDb()
     .prepare(
-      `SELECT m.*, ${keptExists} AS kept,
+      // FORK (3.2): the vote CTEs are defined with the consensus screen further
+      // down this file — Browse reads the SAME vote set (explicit swipes plus
+      // the keeps / "don't care" / "OK to delete" they stand in for), so a
+      // title's score can't read differently on the two screens.
+      `WITH ${VOTES_CTE}, ${ITEM_SCORES_CTE}
+       SELECT m.*, ${keptExists} AS kept,
               (km.rating_key IS NOT NULL) AS kept_by_me,
               (s.rating_key IS NOT NULL) AS skipped,
               (wh.rating_key IS NOT NULL) AS watched,
@@ -1082,7 +1111,8 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
               a.tags AS arr_tags, a.arr_size_bytes AS arr_size_bytes,
               sd.delete_after AS scheduled_delete_after,
               sd.status AS scheduled_delete_status,
-              vv.verdict AS my_verdict
+              vv.verdict AS my_verdict,
+              vs.score AS verdict_score, vs.voters AS verdict_voters
        FROM media_items m
        LEFT JOIN keeps km
          ON km.rating_key = m.rating_key AND km.plex_user_id = @uid
@@ -1099,6 +1129,7 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
        LEFT JOIN arr_items a ON a.rating_key = m.rating_key
        LEFT JOIN scheduled_deletions sd
          ON sd.rating_key = m.rating_key AND sd.status IN ('pending', 'held')
+       LEFT JOIN item_scores vs ON vs.rating_key = m.rating_key
        WHERE ${where.join(' AND ')}
        ORDER BY ${order}
        LIMIT @limit OFFSET @offset`
@@ -4027,6 +4058,20 @@ const VOTES_CTE = `votes AS (
         FROM user_deletes d
        WHERE NOT EXISTS (SELECT 1 FROM verdicts v
                           WHERE v.plex_user_id = d.plex_user_id AND v.rating_key = d.rating_key)
+    )`;
+
+/**
+ * FORK (3.2): the per-item rollup of `votes` — the score Browse sorts and
+ * filters on, and the voter count that says how much weight to give it. Split
+ * out of `verdictConsensus`'s big GROUP BY so both screens compute the number
+ * the same way; requires VOTES_CTE to be in the same WITH clause.
+ */
+const ITEM_SCORES_CTE = `item_scores AS (
+      SELECT rating_key,
+             SUM(${verdictPointsSql('verdict')}) AS score,
+             COUNT(*) AS voters
+        FROM votes
+       GROUP BY rating_key
     )`;
 
 /**

@@ -22,6 +22,7 @@ import {
   addDelete,
   addSkip,
   consensusVoters,
+  queryLibrary,
   type UpsertMediaInput,
 } from './queries';
 
@@ -315,5 +316,70 @@ describe('FORK: weighted vote scoring + implicit votes (3.3)', () => {
     applyVerdict('u1', '1', 'dont_care');
     addKeep('u3', '2');
     expect(consensusVoters().map((v) => v.username)).toEqual(['Alex', 'Johnny']);
+  });
+});
+
+describe('FORK: Browse by household score (3.2)', () => {
+  // The reclaim shortlist, worked in the normal grid: sort by how much the
+  // household wants something gone, or cut straight to "score at least N".
+  const browse = (opts: Partial<Parameters<typeof queryLibrary>[0]> = {}) =>
+    queryLibrary({ plexUserId: 'u1', limit: 50, offset: 0, ...opts });
+
+  beforeEach(() => {
+    for (const [id, name] of [['u1', 'Johnny'], ['u2', 'Sam'], ['u3', 'Alex']]) {
+      upsertUser({ plexUserId: id, username: name, email: null, thumb: null, isAdmin: false });
+    }
+  });
+
+  it('carries the same score the consensus screen shows', () => {
+    applyVerdict('u1', '1', 'not_interested'); // +2
+    applyVerdict('u2', '1', 'done_with_it'); // +1
+
+    const row = browse().find((r) => r.rating_key === '1')!;
+    expect(row.verdict_score).toBe(3);
+    expect(row.verdict_voters).toBe(2);
+    expect(verdictConsensus({ limit: 50, offset: 0 }).find((r) => r.rating_key === '1')!.score).toBe(
+      3
+    );
+  });
+
+  it('leaves score null when nobody has an opinion — not 0', () => {
+    applyVerdict('u1', '1', 'dont_care'); // a real score of 0
+
+    const rows = browse();
+    expect(rows.find((r) => r.rating_key === '1')!.verdict_score).toBe(0);
+    expect(rows.find((r) => r.rating_key === '2')!.verdict_score).toBeNull();
+    expect(rows.find((r) => r.rating_key === '2')!.verdict_voters).toBeNull();
+  });
+
+  it('sorts most-wanted-gone first, with the un-voted tail last either way', () => {
+    applyVerdict('u1', '1', 'not_interested');
+    applyVerdict('u2', '1', 'not_interested'); // +4
+    applyVerdict('u1', '3', 'loved_it'); // −2 (and a keep, which must not hide it)
+
+    expect(browse({ sort: 'score', dir: 'desc' }).map((r) => r.rating_key)).toEqual(['1', '3', '2']);
+    // Ascending flips the scored rows but keeps the opinion-less one at the end:
+    // "nobody voted" is not the strongest keep signal in the library.
+    expect(browse({ sort: 'score', dir: 'asc' }).map((r) => r.rating_key)).toEqual(['3', '1', '2']);
+  });
+
+  it('minScore keeps only titles with that much support behind them', () => {
+    applyVerdict('u1', '1', 'not_interested'); // +2
+    applyVerdict('u2', '1', 'done_with_it'); // → +3
+    applyVerdict('u1', '2', 'done_with_it'); // +1
+
+    expect(browse({ minScore: 3 }).map((r) => r.rating_key)).toEqual(['1']);
+    expect(browse({ minScore: 1 }).map((r) => r.rating_key).sort()).toEqual(['1', '2']);
+    // A threshold of 0 is not a filter: an un-voted title scores 0 and stays.
+    expect(browse({ minScore: 0 })).toHaveLength(3);
+  });
+
+  it('counts a Browse-only triager, so score is not a swipers-only number', () => {
+    addDelete('u2', '1'); // implied done_with_it, +1
+    addSkip('u3', '1'); // implied dont_care, 0
+
+    const row = browse({ minScore: 1 }).find((r) => r.rating_key === '1')!;
+    expect(row.verdict_score).toBe(1);
+    expect(row.verdict_voters).toBe(2);
   });
 });

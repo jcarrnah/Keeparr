@@ -178,6 +178,21 @@ mad" — so people who never open Swipe still have a say. Those inferred opinion
 are marked (*"Sam (kept)"*) so they're never mistaken for an actual swipe, and
 an actual swipe always overrides them.
 
+### Browse by score
+The score isn't confined to the consensus screen. **Browse** can sort by
+**Household score** (grid dropdown, or the Score column in List view) and filter
+to **Score ≥ +N**, which turns "what does everyone want gone?" into an ordinary
+grid of posters and sizes with the verdict control on every card. Each card and
+row shows the score with the number of people behind it, so a +4 from four
+people never reads the same as a +4 from one.
+
+Two details worth knowing:
+
+- A title **nobody has voted on** shows no score and sorts to the end in *both*
+  directions — silence isn't a keep signal.
+- The threshold treats an un-voted title as 0, so "Score ≥ +1" means *somebody
+  actively wants this gone*.
+
 ### One vocabulary on every card
 Browse (grid and list) and Search cards no longer toggle a plain keep. The
 control **cycles through all five verdicts** in score order, so triage anywhere
