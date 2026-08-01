@@ -148,11 +148,32 @@ upstream's Problems page:
   request in place — so a title could be re-requested and re-downloaded. The
   purge now clears the request and triggers one library refresh per run.
 
+### Schedule deletions from Problems
+The Problems page finds the junk; now you can act on it there. On **Not in
+Sonarr/Radarr**, **No external ids**, **Zero size** and **Duplicates**,
+*Schedule deletion…* opens a picker of that category's titles with sizes and a
+running total — tick what should go, tag it in one click. Duplicates are
+flattened to individual copies with their folder shown, since the decision is
+*which copy* goes. Zero-size rows are sized by what **\*arr** reports, because
+the *arr is what actually deletes.
+
+Everything a tag normally means still applies: the configured grace period,
+anyone keeping an item pauses its countdown, and it's cancellable from
+**Deletions**. Batches send **one** Discord summary rather than a ping per title.
+
+Not offered where deletion isn't the fix — size mismatches and identity
+mismatches want a rescan or a corrected match — nor on rows that aren't media
+items at all (\*arr-only titles, disk orphans), which have no id to tag.
+
 ### Fix-it actions on the Problems page
-Upstream's Problems page diagnoses; the fork adds buttons for the two problems
-it can repair: **re-link keeps to the new copies** (on "Removed but kept") and
-**rescan the library** (on zero-size / missing-from-server rows). Both are
-non-destructive — no media is deleted and the filesystem is never touched.
+Upstream's Problems page diagnoses; the fork adds buttons for the problems it
+can repair: **re-link keeps to the new copies** (on "Removed but kept"),
+**rescan the library** (on zero-size / missing-from-server rows), and
+**measure on disk now** (on size mismatches, where the measured size is the
+tiebreaker — and on disk orphans, to refresh the list). The Disk scan job only
+runs weekly, so that last one is the difference between settling a mismatch now
+and waiting until Sunday. All non-destructive — no media is deleted and the
+filesystem is never touched.
 
 ## New jobs
 | Job | Default schedule | Notes |

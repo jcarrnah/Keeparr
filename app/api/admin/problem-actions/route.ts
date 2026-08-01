@@ -11,10 +11,11 @@ import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
 import { logEvent, relinkReplacedItems } from '@/lib/queries';
 import { triggerServerRefresh } from '@/lib/post-delete-cleanup';
+import { runJob } from '@/lib/jobs';
 
 export const runtime = 'nodejs';
 
-/** Run a fix. Body: { action: 'relink' | 'rescan' }. */
+/** Run a fix. Body: { action: 'relink' | 'rescan' | 'diskscan' }. */
 export async function POST(req: Request) {
   try {
     await requireAdmin();
@@ -43,6 +44,26 @@ export async function POST(req: Request) {
           ? 'Library rescan started — empty entries clear once the server finishes.'
           : 'No rescan available for this media server (Jellyfin/Emby only).',
         changed: refreshed ? 1 : 0,
+      });
+    }
+
+    if (action === 'diskscan') {
+      // The measured on-disk size is the tiebreaker between what the server
+      // claims and what *arr claims — and the table already tells you to "Run
+      // Disk scan". The job is weekly, so without this you wait up to six days
+      // to settle a mismatch you're looking at right now. Fire-and-forget:
+      // walking library roots takes minutes, far longer than a request should.
+      // Same fire-and-forget shape as /api/admin/jobs; single-flight in
+      // runWithState is what stops an impatient double-click stacking scans.
+      void runJob('diskScan').catch(() => {});
+      logEvent('info', 'problems', 'Disk scan triggered from the Problems page.');
+      return NextResponse.json({
+        ok: true,
+        message:
+          'Disk scan started — sizes and orphans update as it walks your library paths (Settings → Jobs for progress).',
+        // Never refetch on the back of this: the job is still working, so the
+        // rows would come back unchanged and read as "the button did nothing".
+        changed: 0,
       });
     }
 

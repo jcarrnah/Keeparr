@@ -689,9 +689,14 @@ when it has no tvdb/tmdb **and** no imdb.
   `openSignin` toggle; Owner can't be demoted or disabled),
   `POST /api/admin/users/import` (import the Plex shared-user list),
   **FORK:** `GET/POST/DELETE /api/admin/scheduled-deletions` (list / tag
-  `{ratingKey, graceDays?}` / cancel `{ratingKey}` — POST tags `held` when
+  `{ratingKey, graceDays?}` **or `{ratingKeys[], graceDays?}`** / cancel
+  `{ratingKey}` — POST tags `held` when
   anyone currently keeps the item; DELETE keeps the row as `cancelled` for
-  audit). GET is the **deletion audit trail** behind `/deletions`: rows carry
+  audit). The batch form (≤200 keys, → `{ok, deleteAfter, tagged, skipped}`)
+  backs the Problems tag picker: one shared deadline, ONE Discord summary
+  instead of N pings (like the rules job), and a dead id costs only itself
+  (`skipped`) instead of failing the batch. The single-key form keeps its exact
+  old contract, 404 included. GET is the **deletion audit trail** behind `/deletions`: rows carry
   `verifiedAt`/`residueBytes` (null = the disk couldn't be checked — never read
   as "gone"), plus a per-status `summary`, a `reclaim` rollup that measures
   freed bytes across VERIFIED deletions only, and `residueItems`
@@ -712,18 +717,34 @@ when it has no tvdb/tmdb **and** no imdb.
   (list) + a "Score ≥ +N" dropdown, rendered by `components/ScoreBadge.tsx` on
   cards and rows. Search is deliberately NOT scored — `SearchRow.score` is
   already relevance.
-  **FORK:** `POST /api/admin/problem-actions` `{action:'relink'|'rescan'}` →
+  **FORK:** `POST /api/admin/problem-actions`
+  `{action:'relink'|'rescan'|'diskscan'}` →
   `{ok, message, changed}` — the Problems page's fix-it actions. Deliberately a
   SEPARATE route from upstream's `/api/admin/problems/*` reads so fork actions
   never collide on a sync. `relink` runs `relinkReplacedItems()` on demand (the
   "don't wait for the 03:00 library sweep" button, offered on `removedButKept`);
   `rescan` calls `triggerServerRefresh()` so the server drops entries whose
-  files are gone (offered on `zeroSize`/`missingFromPlex`). Both are
+  files are gone (offered on `zeroSize`/`missingFromPlex`); `diskscan` fires the
+  weekly `diskScan` job on demand (offered on `sizeMismatch` — the measured size
+  is the tiebreaker the table already tells you to go get — and on
+  `diskOrphans`), fire-and-forget like `/api/admin/jobs`, always
+  `changed: 0` since the job is still walking when the response returns. All
   non-destructive — nothing deletes media and the filesystem is never touched.
   UI: `components/ForkProblemActions.tsx`, an action bar above the table.
   Upstream's `ProblemsView.tsx` gets exactly ONE line (plus the import) — its
   per-category switch and ~23 inline action-badge sites are hot upstream code,
-  so no fork markup goes in there.
+  so no fork markup goes in there. That constraint is why the **tag picker**
+  (Schedule deletion for rows you select) is a fork-owned panel in the action
+  bar rather than a per-row button: a trailing cell would mean ~10 insertions
+  into the hottest part of upstream's file. The bar reads `items` (the same one
+  line) and maps them per category via `CANDIDATES` — only `notInArr`,
+  `missingIds`, `zeroSize` (sized by `arrBytes`: the *arr is what deletes) and
+  `duplicates` (flattened to individual copies, labelled by folder). NOT
+  `missingFromPlex`/`diskOrphans` (not media items — no id, and the filesystem
+  is off-limits), NOT `removedButKept` (tombstoned, so `tagForDeletion` would
+  fail), and NOT `sizeMismatch`/`identityMismatch`/`arrConflicts` (the fix
+  there is a rescan or a match correction). It reads `deletion.enabled` from
+  `/api/admin/settings` itself rather than threading a prop through upstream.
   **FORK:** `GET/POST/PUT/DELETE /api/admin/deletion-rules` (rule CRUD;
   conditions validated by `parseRuleConditions`) +
   `POST /api/admin/deletion-rules/preview` `{conditions}` →

@@ -364,7 +364,7 @@ export type ProblemType =
   | 'zeroSize' // media server reports the title but no file bytes
   | 'removedButKept' // gone from the media server while someone still keeps it
   | 'missingIds' // no tvdb/tmdb/imdb id — can never match *arr
-  | 'diskOrphans'; // reserved stub (disk-scan job not built yet) — never queryable
+  | 'diskOrphans'; // on disk under a mapped library path, claimed by neither side
 
 /** One pill on the Problems page.
  *  `bytes` semantics vary per category: sizeMismatch = summed |Plex−arr| delta;

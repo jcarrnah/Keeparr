@@ -486,7 +486,7 @@ export default function ProblemsView() {
           active && (
             <>
               {/* FORK: fix-it actions (all fork UI lives in that component). */}
-              <ForkProblemActions type={active} onDone={() => load(active, true)} />
+              <ForkProblemActions type={active} items={items} onDone={() => load(active, true)} />
               <div className="rounded-lg border border-slate-800 overflow-hidden">
                 <table className="w-full text-sm">
                   <ProblemTable
