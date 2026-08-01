@@ -8,6 +8,8 @@ import { useToast } from './Toaster';
 // FORK: the 5-state verdict control (3.6).
 import VerdictCycle from './VerdictCycle';
 import { useVerdictCycle } from './useVerdictCycle';
+// FORK (3.2): the household's weighted score badge.
+import ScoreBadge from './ScoreBadge';
 
 // Shared so every page sizes its cards identically. CARD_MIN_W must match the
 // px in CARD_GRID_CLASS (kept as a literal so Tailwind's scanner sees it).
@@ -286,8 +288,11 @@ export default function MediaCard({
         <div className="truncate text-sm font-medium" title={item.title}>
           {item.title}
         </div>
-        <div className="mt-0.5 flex items-center justify-between text-xs text-slate-400">
+        <div className="mt-0.5 flex items-center justify-between gap-1 text-xs text-slate-400">
           <span>{item.year ?? ''}</span>
+          {/* FORK (3.2): the household's verdict score, so sorting by it is
+              checkable at a glance. Absent until somebody votes. */}
+          <ScoreBadge score={item.verdictScore} voters={item.verdictVoters} />
           <span className="font-mono">{formatGB(item.sizeBytes)}</span>
         </div>
         {/* FORK (3.6): the cycle replaces keep + "don't care" — Skip is one of

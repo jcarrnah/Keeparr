@@ -485,7 +485,7 @@ when it has no tvdb/tmdb **and** no imdb.
   Enforces the same exclusivity server-side (`applySkipBatch` clears the user's
   keep/OK-to-delete on the batch, drops unknown/tombstoned keys); non-array →
   400 `bad_request`, >500 keys → 400 `too_many_items`.
-- `GET /api/library?sections=<id,id,…>&q=&sort=size|title|added|year|library|quality|tags|status|watched&dir=asc|desc&state=keptByMe,keptOther,dontcare,okDeleteMine,okDeleteAny,undecided&kept=all|kept|unkept&keptByMe=1&skip=all|skipped|unskipped&deleted=all|deletedByMe|deletedAny&watch=all|watched|unwatched|unwatchedAny|recent30|recent60|recent90|stale90&source=sonarr|radarr&instance=&tag=&quality=&monitored=monitored,unmonitored&requestedByMe=1&hideKept=&offset=`
+- `GET /api/library?sections=<id,id,…>&q=&sort=size|title|added|year|library|quality|tags|status|watched|score&dir=asc|desc&minScore=<n>&state=keptByMe,keptOther,dontcare,okDeleteMine,okDeleteAny,undecided&kept=all|kept|unkept&keptByMe=1&skip=all|skipped|unskipped&deleted=all|deletedByMe|deletedAny&watch=all|watched|unwatched|unwatchedAny|recent30|recent60|recent90|stale90&source=sonarr|radarr&instance=&tag=&quality=&monitored=monitored,unmonitored&requestedByMe=1&hideKept=&offset=`
   — browse/search; `sections` is a comma list of Plex library ids (omit = all,
   multi-select in the sidebar). Returns `kept` (anyone), per-user `keptByMe`,
   per-user `skipped`, per-user `watched`, per-user `requestedByMe` +
@@ -656,6 +656,17 @@ when it has no tvdb/tmdb **and** no imdb.
   **FORK:** `/api/library` and `/api/search` rows also carry `myVerdict` (this
   user's swipe verdict, from a `verdicts` LEFT JOIN) — the cycle control needs
   its current position, not just the derived keep/skip flags.
+  **FORK (3.2): Browse by household score.** `/api/library` rows carry
+  `verdictScore`/`verdictVoters` (both absent when nobody voted — an absent
+  score is NOT a 0), gained `sort=score` and a `minScore=<n>` threshold.
+  Computed in `queryLibrary` from `ITEM_SCORES_CTE` over the same `VOTES_CTE`
+  the consensus screen uses, so one title can't score differently on the two
+  screens; un-voted rows sort last in BOTH directions (`vs.score` is NULL, not
+  0) while `minScore` treats them as 0, so a threshold of 0 or less is not a
+  filter. UI: a "Household score" sort option (grid) + sortable Score column
+  (list) + a "Score ≥ +N" dropdown, rendered by `components/ScoreBadge.tsx` on
+  cards and rows. Search is deliberately NOT scored — `SearchRow.score` is
+  already relevance.
   **FORK:** `POST /api/admin/problem-actions` `{action:'relink'|'rescan'}` →
   `{ok, message, changed}` — the Problems page's fix-it actions. Deliberately a
   SEPARATE route from upstream's `/api/admin/problems/*` reads so fork actions

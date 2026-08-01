@@ -6,6 +6,8 @@ import { useKeepState } from './useKeepState';
 // FORK: the 5-state verdict control (3.6).
 import VerdictCycle from './VerdictCycle';
 import { useVerdictCycle } from './useVerdictCycle';
+// FORK (3.2): the household's weighted score, so the Score column is legible.
+import ScoreBadge from './ScoreBadge';
 
 /** One row of Browse's List view — the dense, quality/tags-forward counterpart
  *  to MediaCard. Reuses `useKeepState` for keep / "I don't care" / "OK to delete". */
@@ -140,6 +142,15 @@ export default function MediaRow({
       </td>
       <td className="px-3 py-2 text-center">
         {item.watched ? <span className="text-slate-300">✓</span> : <span className="text-slate-600">—</span>}
+      </td>
+      {/* FORK (3.2): the household's verdict score — the column the "everyone
+          wants this gone" sort orders by. */}
+      <td className="px-3 py-2 text-center">
+        {item.verdictVoters ? (
+          <ScoreBadge score={item.verdictScore} voters={item.verdictVoters} />
+        ) : (
+          <span className="text-slate-600">—</span>
+        )}
       </td>
       <td className="px-3 py-2">
         {/* Fixed-width buttons so toggling a label never reflows the column /
