@@ -15,7 +15,7 @@ import type {
   Verdict,
 } from './types';
 // FORK: the verdict scale lives in types.ts so SQL and UI share one source.
-import { IMPLIED_VERDICTS, VERDICTS, VERDICT_POINTS } from './types';
+import { IMPLIED_VERDICTS, VERDICTS, VERDICT_POINTS, effectiveMinVoters } from './types';
 
 export type { FeedWatchMode, RuleCondition, Verdict };
 
@@ -3603,7 +3603,11 @@ export function deleteDeletionRule(id: number): boolean {
  */
 export function ratingKeysMatchingRule(
   conditions: RuleCondition[],
-  nowSec: number = now()
+  nowSec: number = now(),
+  /** FORK (3.2): force the voter quorum instead of deriving it from the
+   *  conditions. The preview uses 0 to ask "what would this tag with no quorum
+   *  at all?" and reports the difference as held back. */
+  opts: { minVoters?: number } = {}
 ): { rating_key: string; title: string; size_bytes: number }[] {
   const where: string[] = [
     'm.removed = 0',
@@ -3645,12 +3649,59 @@ export function ratingKeysMatchingRule(
         where.push(c.value ? exists : `NOT ${exists}`);
         break;
       }
+      // --- FORK (3.2): match on what the household said, not just on dates ---
+      case 'verdict_score':
+        // Un-voted titles count as 0, as they do in Browse's minScore — so
+        // "score ≥ 1" means somebody actively wants it gone. The quorum below
+        // is what stops that somebody being a lone voice.
+        params[p] = c.value;
+        where.push(`COALESCE(vs.score, 0) ${c.op === 'gte' ? '>=' : '<='} @${p}`);
+        break;
+      case 'verdict_count':
+        params[p] = c.value;
+        params[`${p}_v`] = c.verdict;
+        where.push(
+          `(SELECT COUNT(*) FROM votes v
+              WHERE v.rating_key = m.rating_key AND v.verdict = @${p}_v)
+           ${c.op === 'gte' ? '>=' : '<='} @${p}`
+        );
+        break;
+      case 'verdict_by':
+        // Counts an implied vote too: the requester who marked it "OK to
+        // delete" in Browse said the same thing as one who swiped it away.
+        params[p] = c.value;
+        params[`${p}_v`] = c.verdict;
+        where.push(
+          `EXISTS (SELECT 1 FROM votes v
+             WHERE v.rating_key = m.rating_key
+               AND v.plex_user_id = @${p}
+               AND v.verdict = @${p}_v)`
+        );
+        break;
+      case 'min_voters':
+      case 'nobody_kept':
+        // Not per-item filters: the quorum is applied once below (two of them
+        // would fight), and "nobody keeps it" is already in the baseline.
+        break;
     }
   });
 
+  // FORK (3.2): the voter quorum — a rule that reads opinions doesn't fire
+  // until enough different people have expressed one. Derived from the
+  // conditions unless the caller forces it.
+  const minVoters = opts.minVoters ?? effectiveMinVoters(conditions);
+  if (minVoters != null && minVoters > 0) {
+    params.minVoters = minVoters;
+    where.push('COALESCE(vs.voters, 0) >= @minVoters');
+  }
+
   return getDb()
     .prepare(
-      `SELECT m.rating_key, m.title, m.size_bytes FROM media_items m
+      // Same vote set as Browse and the consensus screen (explicit swipes plus
+      // the keeps / "don't care" / "OK to delete" they stand in for).
+      `WITH ${VOTES_CTE}, ${ITEM_SCORES_CTE}
+       SELECT m.rating_key, m.title, m.size_bytes FROM media_items m
+       LEFT JOIN item_scores vs ON vs.rating_key = m.rating_key
        WHERE ${where.join(' AND ')}
        ORDER BY m.size_bytes DESC`
     )

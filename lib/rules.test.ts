@@ -2,7 +2,9 @@
 import { beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { __setTestDbToMemory, __closeDb } from './db';
 import {
+  addDelete,
   addKeep,
+  applyVerdict,
   createDeletionRule,
   listScheduledDeletions,
   ratingKeysMatchingRule,
@@ -14,7 +16,7 @@ import {
 } from './queries';
 import { setDeletionEnabled, setDeletionGraceDays } from './settings';
 import { parseRuleConditions, runRules } from './rules';
-import type { RuleCondition } from './types';
+import { DEFAULT_MIN_VOTERS, effectiveMinVoters, type RuleCondition } from './types';
 
 const GB = 1024 ** 3;
 const nowSec = Math.floor(Date.now() / 1000);
@@ -52,8 +54,53 @@ describe('parseRuleConditions', () => {
       { field: 'size', op: 'gtGB', value: 20 },
       { field: 'library', op: 'in', value: ['1', '2'] },
       { field: 'requested', op: 'eq', value: false },
+      { field: 'verdict_score', op: 'gte', value: 3 },
+      { field: 'verdict_count', op: 'gte', value: 2, verdict: 'not_interested' },
+      { field: 'verdict_by', op: 'eq', value: 'u1', verdict: 'done_with_it' },
+      { field: 'min_voters', op: 'gte', value: 1 },
+      { field: 'nobody_kept', op: 'eq', value: true },
     ];
     expect(parseRuleConditions(JSON.stringify(conds))).toEqual(conds);
+  });
+
+  it('FORK (3.2): rejects vote conditions that would run ambiguously', () => {
+    const one = (c: unknown) => parseRuleConditions(JSON.stringify([c]));
+    // A verdict field with no verdict, or a verdict nobody can cast.
+    expect(one({ field: 'verdict_count', op: 'gte', value: 2 })).toBeNull();
+    expect(one({ field: 'verdict_by', op: 'eq', value: 'u1', verdict: 'meh' })).toBeNull();
+    expect(one({ field: 'verdict_by', op: 'eq', value: '', verdict: 'loved_it' })).toBeNull();
+    // A quorum of nobody, or a fractional one.
+    expect(one({ field: 'min_voters', op: 'gte', value: 0 })).toBeNull();
+    expect(one({ field: 'verdict_score', op: 'gte', value: 1.5 })).toBeNull();
+    // Two quorums would leave the builder and the engine disagreeing.
+    expect(
+      parseRuleConditions(
+        JSON.stringify([
+          { field: 'min_voters', op: 'gte', value: 1 },
+          { field: 'min_voters', op: 'gte', value: 3 },
+        ])
+      )
+    ).toBeNull();
+    // "Nobody keeps it" is a guarantee, not a switch — false can never match.
+    expect(one({ field: 'nobody_kept', op: 'eq', value: false })).toBeNull();
+    // A negative score threshold IS legitimate: "the household protects this".
+    expect(one({ field: 'verdict_score', op: 'lte', value: -2 })).not.toBeNull();
+  });
+
+  it('FORK (3.2): effectiveMinVoters — default, override, and not-applicable', () => {
+    expect(effectiveMinVoters([{ field: 'size', op: 'gtGB', value: 20 }])).toBeNull();
+    expect(effectiveMinVoters([{ field: 'verdict_score', op: 'gte', value: 3 }])).toBe(
+      DEFAULT_MIN_VOTERS
+    );
+    expect(
+      effectiveMinVoters([
+        { field: 'verdict_score', op: 'gte', value: 3 },
+        { field: 'min_voters', op: 'gte', value: 1 },
+      ])
+    ).toBe(1);
+    // An explicit quorum on a rule that reads no opinions still stands — it's
+    // then simply "at least N people have an opinion about this at all".
+    expect(effectiveMinVoters([{ field: 'min_voters', op: 'gte', value: 3 }])).toBe(3);
   });
 
   it('rejects malformed input wholesale', () => {
@@ -108,6 +155,73 @@ describe('ratingKeysMatchingRule', () => {
     replaceSeerrRequests('userA', ['small-old']);
     expect(keys([{ field: 'requested', op: 'eq', value: true }])).toEqual(['small-old']);
     expect(keys([{ field: 'library', op: 'in', value: [] }])).toEqual([]); // empty = nothing
+  });
+
+  it('FORK (3.2): matches on the household score, past the quorum', () => {
+    // Two people want big-old gone (+2 +1 = 3); one person wants other-lib gone.
+    applyVerdict('u1', 'big-old', 'not_interested');
+    applyVerdict('u2', 'big-old', 'done_with_it');
+    applyVerdict('u1', 'other-lib', 'not_interested');
+
+    const conds: RuleCondition[] = [{ field: 'verdict_score', op: 'gte', value: 2 }];
+    // other-lib scores +2 but only one person said so — the default quorum of
+    // 2 holds it back. That's the guard doing its job, not a miss.
+    expect(keys(conds)).toEqual(['big-old']);
+    // …and a rule may lower it when a quorum will never arrive.
+    expect(keys([...conds, { field: 'min_voters', op: 'gte', value: 1 }]).sort()).toEqual([
+      'big-old',
+      'other-lib',
+    ]);
+  });
+
+  it('FORK (3.2): the quorum does not apply to a rule that reads no opinions', () => {
+    // A size rule must not sit waiting for votes it never consults.
+    expect(keys([{ field: 'size', op: 'gtGB', value: 20 }])).toEqual([
+      'big-new',
+      'big-old',
+      'other-lib',
+      'watched-recent',
+    ]);
+  });
+
+  it('FORK (3.2): counts a verdict, and names a person who gave one', () => {
+    applyVerdict('u1', 'big-old', 'not_interested');
+    applyVerdict('u2', 'big-old', 'not_interested');
+    applyVerdict('u1', 'other-lib', 'not_interested');
+    applyVerdict('u2', 'other-lib', 'dont_care');
+
+    expect(
+      keys([{ field: 'verdict_count', op: 'gte', value: 2, verdict: 'not_interested' }])
+    ).toEqual(['big-old']);
+    // "u2 is done with it" — with the quorum satisfied by u1's vote too.
+    expect(
+      keys([{ field: 'verdict_by', op: 'eq', value: 'u2', verdict: 'not_interested' }])
+    ).toEqual(['big-old']);
+    expect(
+      keys([{ field: 'verdict_by', op: 'eq', value: 'u2', verdict: 'dont_care' }])
+    ).toEqual(['other-lib']);
+  });
+
+  it('FORK (3.2): an "OK to delete" in Browse counts as a vote', () => {
+    // The requester signing off never touches `verdicts`, but it is an opinion
+    // and a verdict_by rule has to see it.
+    addDelete('u1', 'other-lib'); // implied done_with_it, +1
+    applyVerdict('u2', 'other-lib', 'not_interested'); // +2, and makes quorum
+
+    expect(
+      keys([{ field: 'verdict_by', op: 'eq', value: 'u1', verdict: 'done_with_it' }])
+    ).toEqual(['other-lib']);
+    expect(keys([{ field: 'verdict_score', op: 'gte', value: 3 }])).toEqual(['other-lib']);
+  });
+
+  it('FORK (3.2): a keep still beats every vote against it', () => {
+    applyVerdict('u1', 'big-old', 'not_interested');
+    applyVerdict('u2', 'big-old', 'not_interested'); // +4, two voters
+    const conds: RuleCondition[] = [{ field: 'verdict_score', op: 'gte', value: 1 }];
+    expect(keys(conds)).toEqual(['big-old']);
+
+    addKeep('u3', 'big-old'); // one keep outranks the whole household
+    expect(keys(conds)).toEqual([]);
   });
 
   it('baseline: never matches kept or already-tagged items', () => {

@@ -292,7 +292,7 @@ is a full table plus rollups, and it's an operational screen, not a preference.
   `scheduled_deletions` row already IS the durable store, so raising
   `job_runs` would only duplicate it.
 
-## 3.2 Verdict-aware deletion rules
+## 3.2 Verdict-aware deletion rules — BUILT 2026-07-31
 
 **Why.** Rules currently match on objective facts only — `last_watched_any`,
 `added_at`, `size`, `library`, `requested` (`ratingKeysMatchingRule`,
@@ -335,6 +335,25 @@ So:
 
 The remaining safety net is unchanged either way: keeps always win, the grace
 period still runs, and Discord announces every tag.
+
+**As built (2026-07-31).** All five conditions landed as described, validated in
+`parseRuleConditions` and evaluated in `ratingKeysMatchingRule` over the same
+`VOTES_CTE`/`ITEM_SCORES_CTE` as Browse and consensus — so an "OK to delete"
+made in Browse satisfies a `verdict_by … done_with_it` rule, exactly as a swipe
+would. Notes on the edges:
+
+- `effectiveMinVoters()` (`lib/types.ts`) is the single decider of the quorum;
+  the SQL, the preview route and the rule builder all call it, so the number on
+  screen can't drift from the number that runs. No vote condition → no quorum.
+- `min_voters` and `nobody_kept` emit no per-item SQL: the quorum is applied
+  once (two competing thresholds would be ambiguous — the parser refuses a
+  second `min_voters`), and the keep exclusion is already in the baseline.
+  `nobody_kept` accepts only `true`; `false` would be a rule that can never
+  match, which is a typo rather than an intention.
+- `verdict_score` thresholds are signed and un-voted titles count as 0, matching
+  Browse's `minScore`, so "≥ 1" means somebody actively wants it gone.
+- The preview reports `minVoters` + `heldByQuorum` (a second match run with the
+  quorum forced to 0). A vote rule that reports 1 instead of 4 now says why.
 
 **Also asked for at the same time** (2026-07-30) — score needs to be usable
 *outside* the rules engine, so tagging decisions can be reviewed by hand:
