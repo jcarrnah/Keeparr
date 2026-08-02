@@ -364,9 +364,18 @@ touching that layout.
   series-level; UI up-swipe label is "Worth keeping" — stored value stays
   `loved_it`), is feed-eligible, excludes this user's verdicts, honors the
   `watch=` list modes. UI:
-  `app/swipe/page.tsx` → `components/SwipeView.tsx` (pointer-event card stack,
-  no animation dep; arrows/S/U keys; 5-deep client undo buffer); rail entry
-  "Swipe" + a PWA shortcut. Results at `/swipe/matches`
+  `app/swipe/deck/page.tsx` → `components/SwipeView.tsx` (pointer-event card
+  stack, no animation dep; arrows/S/U keys; 5-deep client undo buffer;
+  `?section=&watch=` scope it — an unknown section id is ignored, not empty);
+  rail entry "Swipe" + PWA shortcuts (Swipe → the deck, Movie night → the
+  landing page). **(3.8)** `/swipe` itself is the **landing page**
+  (`app/swipe/page.tsx` → `components/SwipeHome.tsx`): the library/list choice
+  with its remaining count, the room entry (start/join, lifted out of Matches),
+  and a peek at the top Movie night matches + highest-scoring "wanted gone"
+  titles. `keeparr.swipeSkipLanding` sends returning swipers straight to
+  `/swipe/deck`; `?home=1` always renders the landing page, so the deck's
+  "Swipe home" link can't bounce. Labels + the localStorage keys live in
+  `components/swipe-prefs.ts` (shared by both screens). Results at `/swipe/matches`
   (`components/MatchesView.tsx`): **Movie night** (`movieNightMatches` — ≥2
   chosen users with `want_to_watch`, optional nobody-watched filter, names
   deliberately visible) + **Consensus** (`verdictConsensus` — per-item name

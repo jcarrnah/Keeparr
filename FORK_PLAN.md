@@ -641,7 +641,7 @@ bug is "a mouse can't drag a scrollbar that isn't drawn". The card stack is
 > on iOS. Don't go chasing `setPointerCapture`; nothing is known to be broken
 > there.
 
-## 3.8 A landing page for Swipe
+## 3.8 A landing page for Swipe — BUILT 2026-08-02
 
 **The idea** (raised 2026-07-30): "we should make a landing page for swipe
 maybe, since that's the biggest feature I feel like people use."
@@ -676,6 +676,32 @@ from `/swipe/matches`, and so are Movie night and Consensus.
   home for the room entry, leaving Matches as the results screen.
 - Mobile first — this is a phone feature. The full-height no-scroll layout and
   the safe-area padding rules apply.
+
+**What was built** (three of the four sections — the user picked; "where you
+left off" was deliberately left out):
+
+- `/swipe` is now `components/SwipeHome.tsx`; the card stack moved to
+  `/swipe/deck`. **Start swiping** carries the library select + the watch-list
+  chips and the remaining count for that exact combination (`/api/swipe/deck?
+  limit=1` — the count is the payload, the one card is the cost of not adding an
+  endpoint), then hands the choice to the deck as `?section=&watch=`.
+  **Movie night** lifts the start/join room controls out of Matches (they stay
+  there too — it's still the results screen, per the open question above).
+  **What the household is landing on** peeks at the top 4 matches and the top 5
+  positive-scoring titles, each linking into `/swipe/matches`; both fail
+  silently, since the real screens are one click away.
+- The returning swiper is answered with `keeparr.swipeSkipLanding` (a checkbox,
+  same shape as the watch-mode preference) → `/swipe` replaces to `/swipe/deck`.
+  `?home=1` overrides it, which is what the deck's "Swipe home" link and the
+  Movie-night PWA shortcut use — otherwise the preference would make the front
+  door unreachable.
+- `components/swipe-prefs.ts` holds the labels + the three localStorage keys,
+  since both screens now offer the same choice. The deck gained a `section`
+  filter it never had (the API always accepted one); an unknown section id is
+  ignored rather than emptying the deck, so a stale bookmark still swipes.
+- PWA shortcuts: "Swipe" → `/swipe/deck` (the shortcut means *swipe now*),
+  new "Movie night" → `/swipe?home=1`.
+- Verified: tsc, 607 tests, `next build`. No API or schema change.
 
 ## 3.9 Pin "Leaving Soon" to the front of Jellyfin's collections
 

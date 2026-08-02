@@ -105,7 +105,13 @@ manual tag you set by hand.
   purge results (items + GB reclaimed, plus failures).
 
 ### Swipe mode ("Tinder for the library")
-**/swipe** (also a PWA shortcut): a card stack over **movies and whole TV
+**/swipe** is the front door: pick the library and list you want to swipe (with
+the count of what's waiting), start or join a **movie night room**, and see the
+titles the household is converging on — what everyone wants to watch, and what
+they most want gone. Tick *go straight to swiping* and `/swipe` takes you
+straight to the deck from then on; **Swipe home** on the deck gets you back.
+
+**/swipe/deck** (also a PWA shortcut): a card stack over **movies and whole TV
 series** (a verdict always covers the entire show — never a season).
 Right = **Save for later** (unseen, keep to watch) · up = **Worth keeping**
 (seen, keep) · left = **Let it go / delete this shit** (never watching —
@@ -279,7 +285,7 @@ means overshooting is easy), and only the state you land on is saved. Keeps and
 vocabulary, not the machinery. The Keep page keeps its own fast keep/skip loop.
 
 ### Movie night — live rooms (`/swipe/rooms`)
-Start a room from **/swipe/matches** ("Start a room"), share the short code, and
+Start a room from **/swipe** or **/swipe/matches** ("Start a room"), share the short code, and
 everyone swipes the **same** deck together in real time (right = want, left =
 pass). The room lands on the first title **everyone currently in it** wants to
 watch, then celebrates the match. Live updates use lightweight polling (no
