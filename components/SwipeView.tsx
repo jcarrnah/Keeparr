@@ -18,16 +18,11 @@ import {
 } from '@/lib/types';
 import { useToast } from './Toaster';
 import { VERDICT_META, type VerdictMeta } from './verdict-meta';
-
-type WatchSelection = 'all' | FeedWatchMode;
-const WATCH_LABELS: Record<WatchSelection, string> = {
-  all: 'Everything',
-  never_played: 'Never played',
-  stale_90: 'Not watched in 90d+',
-  recent_30: 'Watched recently',
-  my_unwatched: 'My unwatched',
-};
-const WATCH_KEY = 'keeparr.swipeWatchMode';
+import {
+  SWIPE_WATCH_KEY as WATCH_KEY,
+  WATCH_LABELS,
+  type WatchSelection,
+} from './swipe-prefs';
 
 const SWIPE_THRESHOLD = 90; // px of drag that commits a verdict
 
@@ -71,10 +66,22 @@ interface UndoEntry {
   verdict: Verdict;
 }
 
-export default function SwipeView({ watchAvailable = false }: { watchAvailable?: boolean }) {
+export default function SwipeView({
+  watchAvailable = false,
+  sectionId,
+  sectionTitle,
+  initialWatch,
+}: {
+  watchAvailable?: boolean;
+  /** FORK (3.8): one library, chosen on the landing page (undefined = all). */
+  sectionId?: string;
+  sectionTitle?: string;
+  /** FORK (3.8): list mode from the URL — beats the remembered one. */
+  initialWatch?: WatchSelection;
+}) {
   const [deck, setDeck] = useState<MediaCardData[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
-  const [watchMode, setWatchMode] = useState<WatchSelection>('all');
+  const [watchMode, setWatchMode] = useState<WatchSelection>(initialWatch ?? 'all');
   const [loading, setLoading] = useState(true);
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   // Drag state for the top card; leaving = fling animation in progress.
@@ -84,21 +91,24 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   const feedSeq = useRef(0); // stale-response guard (house style)
 
-  // Restore the persisted list filter.
+  // Restore the persisted list filter — unless the landing page just named one
+  // in the URL, in which case that IS the choice.
   useEffect(() => {
+    if (initialWatch) return;
     try {
       const saved = localStorage.getItem(WATCH_KEY);
       if (saved && FEED_WATCH_MODES.includes(saved as FeedWatchMode)) {
         setWatchMode(saved as WatchSelection);
       }
     } catch { /* ignore */ }
-  }, []);
+  }, [initialWatch]);
 
   const loadDeck = useCallback(
     async (replace: boolean) => {
       const seq = ++feedSeq.current;
       if (replace) setLoading(true);
       const params = new URLSearchParams({ limit: '30' });
+      if (sectionId) params.set('section', sectionId);
       if (watchAvailable && watchMode !== 'all') params.set('watch', watchMode);
       try {
         const d = await fetch(`/api/swipe/deck?${params}`).then((r) => r.json());
@@ -116,7 +126,7 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
         if (seq === feedSeq.current) setLoading(false);
       }
     },
-    [watchMode, watchAvailable, toast]
+    [watchMode, watchAvailable, sectionId, toast]
   );
 
   useEffect(() => {
@@ -228,8 +238,19 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
     <div className="h-full flex flex-col items-center px-4 pt-4 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:px-6 sm:pb-4">
       <div className="w-full max-w-md">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <h1 className="text-2xl font-bold">Swipe</h1>
+          <h1 className="text-2xl font-bold">
+            Swipe
+            {sectionTitle && (
+              <span className="ml-2 align-middle text-sm font-normal text-slate-500">
+                {sectionTitle}
+              </span>
+            )}
+          </h1>
           <span className="flex items-baseline gap-3">
+            {/* ?home=1 so "go straight to swiping" doesn't bounce you back. */}
+            <Link href="/swipe?home=1" className="text-xs text-slate-400 underline hover:text-white">
+              ← Swipe home
+            </Link>
             <Link href="/swipe/matches" className="text-xs text-brand underline hover:text-brand-light">
               🍿 Movie night · Matches →
             </Link>
@@ -269,7 +290,12 @@ export default function SwipeView({ watchAvailable = false }: { watchAvailable?:
         ) : deck.length === 0 ? (
           <div className="pt-16 text-center text-slate-400">
             <p className="text-lg">Deck's empty — you've swiped this list. 🎉</p>
-            <p className="mt-2 text-sm text-slate-500">Try another list above, or check back after new arrivals.</p>
+            <p className="mt-2 text-sm text-slate-500">
+              <Link href="/swipe?home=1" className="text-brand underline hover:text-brand-light">
+                Pick another list
+              </Link>
+              , or check back after new arrivals.
+            </p>
           </div>
         ) : (
           deck.slice(0, 3).map((item, i) => {

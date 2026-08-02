@@ -283,7 +283,7 @@ export default function MatchesView({
     <div className="h-full overflow-y-auto px-6 py-4">
       <div className="flex items-baseline justify-between gap-4">
         <h1 className="text-2xl font-bold">Matches</h1>
-        <Link href="/swipe" className="text-sm text-slate-400 underline hover:text-white">
+        <Link href="/swipe/deck" className="text-sm text-slate-400 underline hover:text-white">
           ← Back to swiping
         </Link>
       </div>
