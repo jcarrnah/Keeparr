@@ -735,10 +735,23 @@
       }
     },
     "/api/admin/problem-actions": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "FORK: where the selected problem rows can be opened in the app that owns them",
+        "description": "Resolves deep links server-side, because every URL involved (the Sonarr/Radarr instances, the media server) is a stored setting that must not reach a non-admin. Sonarr/Radarr links use the title's own slug (`/series/<slug>`, `/movie/<slug>`), cached by the `arr` job — a row synced before that column existed simply gets no link rather than a guessed one.",
+        "parameters": [
+          { "name": "ratingKeys", "in": "query", "schema": { "type": "string" }, "description": "Comma-separated media-item keys (max 100)" },
+          { "name": "unmatchedKeys", "in": "query", "schema": { "type": "string" }, "description": "Comma-separated `instanceId|extKind|extId` keys for `missingFromPlex` rows (max 100)" }
+        ],
+        "responses": {
+          "200": { "description": "`{links: {[key]: {arr?: {url,label}, server?: {url,label}}}}` — a key with neither is omitted." },
+          "403": { "description": "Not an admin" }
+        }
+      },
       "post": {
         "tags": ["admin"],
         "summary": "FORK: run a fix-it action from the Problems page",
-        "description": "Non-destructive repairs, kept on a separate path from the `/api/admin/problems` reads. `relink` carries keeps/skips/verdicts/watch history from a tombstoned item onto the live copy that replaced it (a re-added title gets a NEW rating_key, which otherwise strands the keep and leaves the live copy unprotected) — the on-demand version of what the nightly library sweep does. `rescan` asks Jellyfin/Emby to refresh so entries whose files are gone drop out. `diskscan` fires the weekly Disk scan job on demand (fire-and-forget, single-flight, so it always returns `changed: 0` — the job is still walking when the response returns) to measure real on-disk sizes and refresh the orphan list. None of them delete media or touch the filesystem.",
+        "description": "Kept on a separate path from the `/api/admin/problems` reads. Two families.\n\n**Keeparr-side:** `relink` carries keeps/skips/verdicts/watch history from a tombstoned item onto the live copy that replaced it (a re-added title gets a NEW rating_key, which otherwise strands the keep and leaves the live copy unprotected) — the on-demand version of what the nightly library sweep does. `rescan` asks Jellyfin/Emby to refresh so entries whose files are gone drop out. `diskscan` fires the weekly Disk scan job on demand (fire-and-forget, single-flight, so it always returns `changed: 0` — the job is still walking when the response returns).\n\n**Source actions** act in the app that owns the title, on the rows named by `ratingKeys` / `unmatchedKeys` (max 100 each, at least one required). `arr-rescan` queues Sonarr `RescanSeries` / Radarr `RescanMovie` (re-read the files on disk); `arr-refresh` queues `RefreshSeries`/`RefreshMovie` (metadata); `server-rescan` and `server-reidentify` call Jellyfin/Emby `POST /Items/{id}/Refresh` (the latter a FullRefresh that replaces stored metadata, so missing/wrong tmdb·tvdb ids can be repopulated — artwork is never replaced). Each target is one call and a failure is counted, not fatal. `arr-remove-stale` removes a *arr RECORD with `deleteFiles=false`, and ONLY for rows the disk scan confirmed are missing from disk (`on_disk = 0`) — that gate is re-read from the database, never taken from the request. Nothing here deletes media or touches the filesystem.\n\nThe *arr commands and server refreshes are queued upstream, so they answer `changed: 0`: nothing has changed here yet and a refetch would show identical rows.",
         "requestBody": {
           "required": true,
           "content": {
@@ -747,15 +760,17 @@
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                  "action": { "type": "string", "enum": ["relink", "rescan", "diskscan"] }
+                  "action": { "type": "string", "enum": ["relink", "rescan", "diskscan", "arr-rescan", "arr-refresh", "server-rescan", "server-reidentify", "arr-remove-stale"] },
+                  "ratingKeys": { "type": "array", "items": { "type": "string" }, "description": "Source actions only: media items to act on (max 100)" },
+                  "unmatchedKeys": { "type": "array", "items": { "type": "string" }, "description": "Source actions only: `instanceId|extKind|extId` keys from `missingFromPlex` (max 100)" }
                 }
               }
             }
           }
         },
         "responses": {
-          "200": { "description": "`{ok:true, message, changed}` — `changed` is the number of items re-linked (or 1/0 for whether a rescan started); `message` is display-ready." },
-          "400": { "description": "`bad_request` — unknown action" },
+          "200": { "description": "`{ok, message, changed}` — `changed` is the number of items re-linked / stale records removed (0 for anything queued upstream); `message` is display-ready and names what was skipped and what failed." },
+          "400": { "description": "`bad_request` (unknown action), `no_targets` (source action with no keys), `too_many_items` (>100)" },
           "403": { "description": "Not an admin" }
         }
       }

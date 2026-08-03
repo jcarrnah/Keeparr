@@ -154,6 +154,36 @@ upstream's Problems page:
   request in place — so a title could be re-requested and re-downloaded. The
   purge now clears the request and triggers one library refresh per run.
 
+### Fix problems at the source
+Most rows on the Problems page can't be fixed *in Keeparr* — the disagreement
+lives in Sonarr/Radarr or on the media server, and walking over to that app to
+find the title is where triage tends to stop. **Fix at the source…** opens a
+picker of the rows you're looking at and acts on them where they live:
+
+- **Rescan files in Sonarr/Radarr** — the *arr looks at the folder again and
+  re-reports its size. The fix when the \*arr is the stale side of a size
+  disagreement, or still thinks it has files it doesn't.
+- **Refresh metadata in Sonarr/Radarr** — re-pulls the title's metadata there.
+- **Rescan items on the server** — Jellyfin/Emby re-reads *just these items*
+  instead of the whole library.
+- **Re-identify on the server** — a full metadata refresh that replaces what the
+  server stored, so an item with missing or wrong tmdb/tvdb ids can finally get
+  the right ones. Those ids are what Sonarr/Radarr matching runs on, so this is
+  the actual cure for "not in \*arr" and "no external ids" rows rather than a
+  note about them. Artwork is never replaced, and the new ids show up in Keeparr
+  after the next library sync.
+- **Remove the stale \*arr record** — for a title your \*arr tracks whose folder
+  the disk scan couldn't find. It deletes **no files** (there are none) and adds
+  no import exclusion, so the title can come back if it's ever downloaded again.
+  Offered only on rows the disk scan actually confirmed are missing — "not
+  checked yet" is not the same as "not there", and Keeparr re-checks that on the
+  server before removing anything.
+
+Each row also carries links straight to the title in Sonarr/Radarr and on your
+media server, for the fixes that are a human decision rather than an API call.
+Scans are queued in the other app, so numbers here update after it finishes and
+Keeparr's next sync runs.
+
 ### Schedule deletions from Problems
 The Problems page finds the junk; now you can act on it there. On **Not in
 Sonarr/Radarr**, **No external ids**, **Zero size** and **Duplicates**,

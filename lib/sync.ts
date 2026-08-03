@@ -336,6 +336,7 @@ function toArrInput(ratingKey: string, r: ArrRecord): ArrItemInput {
     arrSizeBytes: r.sizeOnDisk,
     tags: r.tags,
     folderName: lastSegment(r.path),
+    titleSlug: r.titleSlug,
   };
 }
 
@@ -388,6 +389,8 @@ export async function syncArr(): Promise<JobResult> {
           folderName: lastSegment(r.path),
           path: r.path,
           downloaded: r.sizeOnDisk > 0,
+          arrId: r.arrId,
+          titleSlug: r.titleSlug,
         });
         continue;
       }

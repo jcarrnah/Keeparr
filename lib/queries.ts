@@ -1874,6 +1874,8 @@ export interface ArrItemInput {
   /** Basename of the title's own *arr folder (disk-orphan known-name set).
    *  Optional for back-compat. */
   folderName?: string | null;
+  /** FORK: the *arr's own URL slug ("open it in Sonarr/Radarr"). */
+  titleSlug?: string | null;
 }
 
 /** Replace the arr_items cache atomically (small dataset; avoids stale).
@@ -1887,17 +1889,19 @@ export function replaceArrItems(
   const ins = db.prepare(
     `INSERT INTO arr_items
        (rating_key, source, instance_id, instance_name, arr_id, monitored, status,
-        quality, quality_kind, root_folder, arr_size_bytes, tags, folder_name, last_synced)
+        quality, quality_kind, root_folder, arr_size_bytes, tags, folder_name,
+        title_slug, last_synced)
      VALUES (@rating_key, @source, @instance_id, @instance_name, @arr_id, @monitored,
         @status, @quality, @quality_kind, @root_folder, @arr_size_bytes, @tags,
-        @folder_name, @ts)
+        @folder_name, @title_slug, @ts)
      ON CONFLICT(rating_key) DO UPDATE SET
        source=excluded.source, instance_id=excluded.instance_id,
        instance_name=excluded.instance_name, arr_id=excluded.arr_id,
        monitored=excluded.monitored, status=excluded.status, quality=excluded.quality,
        quality_kind=excluded.quality_kind, root_folder=excluded.root_folder,
        arr_size_bytes=excluded.arr_size_bytes, tags=excluded.tags,
-       folder_name=excluded.folder_name, last_synced=excluded.last_synced`
+       folder_name=excluded.folder_name, title_slug=excluded.title_slug,
+       last_synced=excluded.last_synced`
   );
   const del = preserveInstanceIds.length
     ? db.prepare(
@@ -1924,6 +1928,7 @@ export function replaceArrItems(
         arr_size_bytes: r.arrSizeBytes,
         tags: JSON.stringify(r.tags ?? []),
         folder_name: r.folderName ?? null,
+        title_slug: r.titleSlug ?? null,
         ts,
       });
     }
@@ -2029,8 +2034,15 @@ export interface ArrUnmatchedInput {
   folderName?: string | null;
   /** FULL folder path as the *arr sees it (Problems page Location cell). */
   path?: string | null;
+  /** FORK: series/movie id — what lets the Problems page act on the record
+   *  (rescan it, or remove one whose folder isn't there). */
+  arrId?: number | null;
+  /** FORK: the *arr's own URL slug ("open it in Sonarr/Radarr"). */
+  titleSlug?: string | null;
 }
 export interface ArrUnmatchedRow extends ArrUnmatchedInput {
+  arrId: number | null;
+  titleSlug: string | null;
   lastSynced: number;
   /** Disk reality check (arr + diskScan jobs): null = not verified yet,
    *  false = folder not found under any mapped root, true = found. */
@@ -2047,8 +2059,8 @@ export function replaceArrUnmatched(
 ): number {
   const db = getDb();
   const ins = db.prepare(
-    `INSERT INTO arr_unmatched (source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, folder_name, path, downloaded, last_synced)
-     VALUES (@source, @instanceId, @instanceName, @title, @extKind, @extId, @sizeBytes, @folderName, @path, @downloaded, @ts)`
+    `INSERT INTO arr_unmatched (source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, folder_name, path, downloaded, arr_id, title_slug, last_synced)
+     VALUES (@source, @instanceId, @instanceName, @title, @extKind, @extId, @sizeBytes, @folderName, @path, @downloaded, @arrId, @titleSlug, @ts)`
   );
   const del = preserveInstanceIds.length
     ? db.prepare(
@@ -2066,6 +2078,8 @@ export function replaceArrUnmatched(
         folderName: r.folderName ?? null,
         path: r.path ?? null,
         downloaded: r.downloaded === false ? 0 : 1,
+        arrId: r.arrId ?? null,
+        titleSlug: r.titleSlug ?? null,
         ts,
       });
   })();
@@ -2099,6 +2113,22 @@ export function clearArrUnmatched(): number {
   return getDb().prepare('DELETE FROM arr_unmatched').run().changes;
 }
 
+/** FORK: drop ONE unmatched row (its *arr record was just removed). The next
+ *  arr sync would rebuild the table anyway — this is so the Problems list stops
+ *  showing a title that no longer exists in Sonarr/Radarr. */
+export function deleteArrUnmatchedRow(
+  instanceId: string,
+  extKind: string,
+  extId: string
+): number {
+  return getDb()
+    .prepare(
+      `DELETE FROM arr_unmatched
+        WHERE instance_id = @instanceId AND ext_kind = @extKind AND ext_id = @extId`
+    )
+    .run({ instanceId, extKind, extId }).changes;
+}
+
 /** Unmatched titles, largest first (so the biggest orphaned downloads lead).
  *  Default = downloaded only (media on disk the server can't see — the Match
  *  health / "In *arr, not in server" semantics); pass false to include the
@@ -2106,7 +2136,7 @@ export function clearArrUnmatched(): number {
 export function getArrUnmatched(downloadedOnly = true): ArrUnmatchedRow[] {
   const rows = getDb()
     .prepare(
-      `SELECT source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, folder_name, path, downloaded, on_disk, disk_size_bytes, last_synced
+      `SELECT source, instance_id, instance_name, title, ext_kind, ext_id, size_bytes, folder_name, path, downloaded, on_disk, disk_size_bytes, arr_id, title_slug, last_synced
        FROM arr_unmatched ${downloadedOnly ? 'WHERE downloaded = 1' : ''}
        ORDER BY size_bytes DESC, title COLLATE NOCASE`
     )
@@ -2123,6 +2153,8 @@ export function getArrUnmatched(downloadedOnly = true): ArrUnmatchedRow[] {
     downloaded: number;
     on_disk: number | null;
     disk_size_bytes: number | null;
+    arr_id: number | null;
+    title_slug: string | null;
     last_synced: number;
   }[];
   return rows.map((r) => ({
@@ -2138,7 +2170,55 @@ export function getArrUnmatched(downloadedOnly = true): ArrUnmatchedRow[] {
     downloaded: !!r.downloaded,
     onDisk: r.on_disk == null ? null : !!r.on_disk,
     diskSizeBytes: r.disk_size_bytes,
+    arrId: r.arr_id,
+    titleSlug: r.title_slug,
     lastSynced: r.last_synced,
+  }));
+}
+
+/**
+ * FORK: everything needed to act on a title in its *arr — which instance owns
+ * it, its id there, and its slug for a link. Keyed by rating_key (the Problems
+ * page's media-item rows); titles with no *arr match simply don't come back,
+ * which is how the caller reports "3 of 5 could be rescanned".
+ */
+export interface ArrActionTarget {
+  ratingKey: string;
+  title: string;
+  source: string;
+  instanceId: string;
+  instanceName: string;
+  arrId: number | null;
+  titleSlug: string | null;
+}
+export function arrActionTargets(ratingKeys: string[]): ArrActionTarget[] {
+  if (ratingKeys.length === 0) return [];
+  const marks = ratingKeys.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(
+      `SELECT a.rating_key, m.title, a.source, a.instance_id, a.instance_name,
+              a.arr_id, a.title_slug
+         FROM arr_items a
+         JOIN media_items m ON m.rating_key = a.rating_key
+        WHERE a.rating_key IN (${marks})`
+    )
+    .all(...ratingKeys) as {
+    rating_key: string;
+    title: string;
+    source: string;
+    instance_id: string;
+    instance_name: string;
+    arr_id: number | null;
+    title_slug: string | null;
+  }[];
+  return rows.map((r) => ({
+    ratingKey: r.rating_key,
+    title: r.title,
+    source: r.source,
+    instanceId: r.instance_id,
+    instanceName: r.instance_name,
+    arrId: r.arr_id,
+    titleSlug: r.title_slug,
   }));
 }
 
@@ -3016,6 +3096,8 @@ export interface IdentityMismatchItem {
   arr: {
     title: string;
     source: string;
+    /** FORK: which instance owns it — the Problems page acts on the record. */
+    instanceId: string;
     instanceName: string;
     extKind: 'tvdb' | 'tmdb';
     extId: string;
@@ -3090,6 +3172,7 @@ export function identityMismatchItems(): IdentityMismatchItem[] {
         arr: {
           title: u.title,
           source: u.source,
+          instanceId: u.instanceId,
           instanceName: u.instanceName,
           extKind: u.extKind,
           extId: u.extId,

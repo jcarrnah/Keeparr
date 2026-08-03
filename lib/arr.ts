@@ -31,12 +31,15 @@ export interface ArrRecord {
   path: string | null;
   sizeOnDisk: number;
   tags: string[];
+  /** FORK: the *arr's own URL slug, for "open it there" links. */
+  titleSlug: string | null;
 }
 
 // --- Raw payload shapes (only the fields we read) ---
 interface SonarrSeries {
   id: number;
   title: string;
+  titleSlug?: string;
   tvdbId?: number;
   imdbId?: string;
   monitored?: boolean;
@@ -50,6 +53,7 @@ interface SonarrSeries {
 interface RadarrMovie {
   id: number;
   title: string;
+  titleSlug?: string;
   tmdbId?: number;
   imdbId?: string;
   monitored?: boolean;
@@ -99,6 +103,7 @@ export function normalizeSonarr(
     path: s.path ?? null,
     sizeOnDisk: s.statistics?.sizeOnDisk ?? 0,
     tags: labelsFor(s.tags, tagMap),
+    titleSlug: s.titleSlug || null,
   };
 }
 
@@ -125,6 +130,7 @@ export function normalizeRadarr(
     path: m.path ?? null,
     sizeOnDisk: m.sizeOnDisk ?? 0,
     tags: labelsFor(m.tags, tagMap),
+    titleSlug: m.titleSlug || null,
   };
 }
 
@@ -197,6 +203,97 @@ export async function deleteArrItem(
     label: `${inst.name || inst.url} DELETE ${source} ${arrId}`,
     allowEmpty: true,
   });
+}
+
+// --- FORK: acting on a title at the source (Problems page fix-its) ---
+
+/**
+ * Remove a title's *arr RECORD, leaving any files alone
+ * (`deleteFiles=false`). Deliberately separate from `deleteArrItem` rather than
+ * a flag on it: one deletes media, this one doesn't, and a boolean argument at
+ * the call site is a poor place for that distinction to live.
+ *
+ * Offered only for records whose folder the disk scan couldn't find — the *arr
+ * is tracking something that isn't there, and no import exclusion is added, so
+ * the title can come back if it's ever downloaded again.
+ */
+export async function removeArrRecord(
+  inst: ArrInstance,
+  source: ArrSource,
+  arrId: number
+): Promise<void> {
+  const path =
+    source === 'radarr'
+      ? `/movie/${arrId}?deleteFiles=false&addImportExclusion=false`
+      : `/series/${arrId}?deleteFiles=false`;
+  const url = inst.url.replace(/\/$/, '') + '/api/v3' + path;
+  await fetchJson<unknown>(url, {
+    method: 'DELETE',
+    headers: { 'X-Api-Key': inst.apiKey },
+    label: `${inst.name || inst.url} DELETE record ${source} ${arrId}`,
+    allowEmpty: true,
+  });
+}
+
+/** Queue a command on an instance (`POST /command`). */
+async function arrCommand(
+  inst: ArrInstance,
+  body: Record<string, unknown>
+): Promise<void> {
+  const url = inst.url.replace(/\/$/, '') + '/api/v3/command';
+  await fetchJson<unknown>(url, {
+    method: 'POST',
+    headers: { 'X-Api-Key': inst.apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    label: `${inst.name || inst.url} command ${String(body.name)}`,
+    allowEmpty: true,
+  });
+}
+
+/**
+ * Re-read one title's files from disk (Sonarr `RescanSeries` / Radarr
+ * `RescanMovie`). This is what settles a size disagreement or a title the *arr
+ * still thinks it has: it looks at the folder again and updates `sizeOnDisk`.
+ *
+ * Both commands take a SINGULAR id (`seriesId` / `movieId`, verified against
+ * `RescanSeriesCommand`/`RescanMovieCommand`), so callers issue one per title
+ * rather than a batch — the plural forms belong to the Refresh commands.
+ */
+export async function rescanArrItem(
+  inst: ArrInstance,
+  source: ArrSource,
+  arrId: number
+): Promise<void> {
+  await arrCommand(
+    inst,
+    source === 'radarr'
+      ? { name: 'RescanMovie', movieId: arrId }
+      : { name: 'RescanSeries', seriesId: arrId }
+  );
+}
+
+/**
+ * Re-pull one title's metadata from its indexer (Sonarr `RefreshSeries` /
+ * Radarr `RefreshMovie`) — the *arr-side counterpart to re-identifying an item
+ * on the media server.
+ *
+ * The two apps disagree on the field: Radarr's `RefreshMovieCommand` takes only
+ * `MovieIds` (a list), while Sonarr's `RefreshSeriesCommand` has both `SeriesId`
+ * and `SeriesIds` — and older Sonarr had only the singular. Sending the
+ * singular id to Sonarr works on every version; a list would silently refresh
+ * just the first title on the old ones.
+ */
+export async function refreshArrItem(
+  inst: ArrInstance,
+  source: ArrSource,
+  arrId: number
+): Promise<void> {
+  await arrCommand(
+    inst,
+    source === 'radarr'
+      ? { name: 'RefreshMovie', movieIds: [arrId] }
+      : { name: 'RefreshSeries', seriesId: arrId }
+  );
 }
 
 /** All movies from a Radarr instance, normalized (tags resolved). */

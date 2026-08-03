@@ -75,6 +75,20 @@ lib/
                      rather than editing lib/diskscan.ts (see FORK_SYNC.md).
                      Roots are re-listed per item on purpose: a listing taken
                      before a later delete would report phantom residue.
+  source-actions.ts  **FORK:** the Problems page's "fix it where it lives"
+                     actions — rescan/refresh a title in Sonarr/Radarr
+                     (RescanSeries·RescanMovie / RefreshSeries·RefreshMovie, one
+                     command per title: the singular/plural id fields differ
+                     between the two apps AND across versions, so a batch
+                     command risks acting on only the first), rescan or
+                     **re-identify** an item on Jellyfin/Emby (FullRefresh +
+                     replaceAllMetadata — the only real fix for missing/wrong
+                     provider ids; images never replaced), and remove a stale
+                     *arr RECORD (deleteFiles=false). That last one is the ONLY
+                     removal, gated on `arr_unmatched.on_disk = 0` re-read from
+                     the DB — never from the request. Per-title failures are
+                     counted, not fatal. Also `sourceLinksFor()`: deep links
+                     resolved server-side because every URL is a setting.
   post-delete-cleanup.ts **FORK:** finish a purge in the two systems the *arr
                      delete doesn't touch — clear the Seerr request (else the
                      title is re-requested and re-downloaded) and trigger ONE
@@ -241,7 +255,8 @@ touching that layout.
   (`source`, `instance_id/name`, `arr_id`, `monitored`, `status`, `quality` +
   `quality_kind` file|profile, `root_folder`, `arr_size_bytes`, `tags` JSON,
   `folder_name` — the title's own *arr folder basename, part of the disk-orphan
-  known-name set). Keyed
+  known-name set; **FORK:** `title_slug`, the *arr's own URL slug, so the
+  Problems page can link a row straight to it). Keyed
   by `rating_key`; replaced per-instance by the `arr` job — instances that failed
   a run keep their cached rows; instances removed from settings drop out next
   run. LEFT-JOINed by `queryLibrary`
@@ -264,7 +279,10 @@ touching that layout.
   (scopes the per-instance replace) + `folder_name` (disk-orphan known-name set —
   an *arr title invisible to the media server still occupies disk) + `path`
   (the full *arr-side folder path, shown as the category's Location cell) added
-  via guarded `ALTER`s.
+  via guarded `ALTER`s. **FORK:** `arr_id` + `title_slug` too — a row used to be
+  a report with no way to act on it; the series/movie id is what lets the
+  Problems page rescan the title or remove a record whose folder is gone
+  (`lib/source-actions.ts`).
 - `arr_conflicts` — *arr claim collisions: during the `arr` job the
   first record to claim a rating_key wins `arr_items`; each later claimant is
   recorded here (winner `first_*` cols + loser `source/instance_*` cols + the
@@ -727,18 +745,33 @@ when it has no tvdb/tmdb **and** no imdb.
   cards and rows. Search is deliberately NOT scored — `SearchRow.score` is
   already relevance.
   **FORK:** `POST /api/admin/problem-actions`
-  `{action:'relink'|'rescan'|'diskscan'}` →
+  `{action, ratingKeys?, unmatchedKeys?}` →
   `{ok, message, changed}` — the Problems page's fix-it actions. Deliberately a
   SEPARATE route from upstream's `/api/admin/problems/*` reads so fork actions
-  never collide on a sync. `relink` runs `relinkReplacedItems()` on demand (the
+  never collide on a sync. TWO families.
+  **Source actions (act in the app that owns the title, ≤100 rows each, at
+  least one key required — see `lib/source-actions.ts`):** `arr-rescan` /
+  `arr-refresh` (Sonarr·Radarr Rescan/Refresh commands), `server-rescan` /
+  `server-reidentify` (Jellyfin/Emby `POST /Items/{id}/Refresh`; re-identify =
+  FullRefresh + replaceAllMetadata, which is what repopulates the tmdb/tvdb ids
+  *arr matching runs on), `arr-remove-stale` (DELETE the *arr record with
+  `deleteFiles=false`, ONLY for `arr_unmatched` rows with `on_disk = 0` — the
+  gate is re-read from the DB, never trusted from the body; the local row is
+  dropped on success so the table stops listing a title that no longer exists).
+  All of them answer `changed: 0` when the work is queued upstream, so the UI
+  doesn't refetch and show identical rows. `GET` on the same route returns
+  `{links}` — where each selected row can be opened in Sonarr/Radarr (by
+  `title_slug`) or on the media server — resolved server-side because those URLs
+  are admin-only settings.
+  **Keeparr-side:** `relink` runs `relinkReplacedItems()` on demand (the
   "don't wait for the 03:00 library sweep" button, offered on `removedButKept`);
   `rescan` calls `triggerServerRefresh()` so the server drops entries whose
   files are gone (offered on `zeroSize`/`missingFromPlex`); `diskscan` fires the
   weekly `diskScan` job on demand (offered on `sizeMismatch` — the measured size
   is the tiebreaker the table already tells you to go get — and on
   `diskOrphans`), fire-and-forget like `/api/admin/jobs`, always
-  `changed: 0` since the job is still walking when the response returns. All
-  non-destructive — nothing deletes media and the filesystem is never touched.
+  `changed: 0` since the job is still walking when the response returns.
+  Nothing in either family deletes media or touches the filesystem.
   UI: `components/ForkProblemActions.tsx`, an action bar above the table.
   Upstream's `ProblemsView.tsx` gets exactly ONE line (plus the import) — its
   per-category switch and ~23 inline action-badge sites are hot upstream code,
@@ -752,8 +785,18 @@ when it has no tvdb/tmdb **and** no imdb.
   `missingFromPlex`/`diskOrphans` (not media items — no id, and the filesystem
   is off-limits), NOT `removedButKept` (tombstoned, so `tagForDeletion` would
   fail), and NOT `sizeMismatch`/`identityMismatch`/`arrConflicts` (the fix
-  there is a rescan or a match correction). It reads `deletion.enabled` from
-  `/api/admin/settings` itself rather than threading a prop through upstream.
+  there is a rescan or a match correction). The **source picker** ("Fix at the
+  source…") is the same fork-owned panel for the same reason, over
+  `SOURCE_FIXES` (which actions a category gets) + `SOURCE_CANDIDATES` (how to
+  read its differently-shaped rows). A candidate can carry BOTH ends —
+  `identityMismatch` is one media item disagreeing with one *arr record, and the
+  two fixes act on opposite sides — so the picker collects `ratingKeys` and
+  `unmatchedKeys` separately from one selection. `arrConflicts` and
+  `diskOrphans` are deliberately absent (the fix is a human choice between two
+  instances, or the filesystem). It reads `deletion.enabled`, the *arr instance
+  count and `mediaServerType` from `/api/admin/settings` itself rather than
+  threading props through upstream — the last one hides the per-item server
+  actions on Plex, which has no equivalent call.
   **FORK:** `GET/POST/PUT/DELETE /api/admin/deletion-rules` (rule CRUD;
   conditions validated by `parseRuleConditions`) +
   `POST /api/admin/deletion-rules/preview` `{conditions}` →
