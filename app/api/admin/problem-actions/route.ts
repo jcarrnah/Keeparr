@@ -3,8 +3,16 @@
  *
  * Deliberately a SEPARATE route from upstream's `app/api/admin/problems/*` so
  * the fork's actions never collide with upstream's read endpoints (see
- * FORK_SYNC.md). Every action here is non-destructive: nothing deletes media,
- * and nothing touches the filesystem.
+ * FORK_SYNC.md).
+ *
+ * Two families. The Keeparr-side fixes (`relink`, `rescan`, `diskscan`) act on
+ * our own bookkeeping or kick off one of our jobs. The **source** actions
+ * (`arr-rescan`, `arr-refresh`, `server-rescan`, `server-reidentify`,
+ * `arr-remove-stale`) reach into Sonarr/Radarr or the media server, because
+ * that's where most of these problems can actually be fixed — see
+ * `lib/source-actions.ts`. Only `arr-remove-stale` removes anything, and only a
+ * *arr RECORD whose folder the disk scan couldn't find; no action here deletes
+ * media or touches the filesystem.
  */
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
@@ -12,14 +20,88 @@ import { errorResponse } from '@/lib/route-helpers';
 import { logEvent, relinkReplacedItems } from '@/lib/queries';
 import { triggerServerRefresh } from '@/lib/post-delete-cleanup';
 import { runJob } from '@/lib/jobs';
+import {
+  arrScanMediaItems,
+  arrScanUnmatched,
+  refreshServerItems,
+  removeStaleArrRecords,
+  sourceLinksFor,
+} from '@/lib/source-actions';
 
 export const runtime = 'nodejs';
 
-/** Run a fix. Body: { action: 'relink' | 'rescan' | 'diskscan' }. */
+/** How many rows one source action may touch — each is an upstream HTTP call,
+ *  and a request that fans out to hundreds would outlive its own timeout. */
+const MAX_TARGETS = 100;
+
+/** Where the selected rows can be opened in the app that owns them.
+ *  Query: ratingKeys / unmatchedKeys (comma lists). Admin-only — these are
+ *  internal service URLs. */
+export async function GET(req: Request) {
+  try {
+    await requireAdmin();
+    const p = new URL(req.url).searchParams;
+    const split = (v: string | null) => (v ?? '').split(',').filter(Boolean).slice(0, MAX_TARGETS);
+    return NextResponse.json({
+      links: sourceLinksFor({
+        ratingKeys: split(p.get('ratingKeys')),
+        unmatchedKeys: split(p.get('unmatchedKeys')),
+      }),
+    });
+  } catch (e) {
+    return errorResponse(e);
+  }
+}
+
+/** Run a fix. Body: { action, ratingKeys?, unmatchedKeys? }. */
 export async function POST(req: Request) {
   try {
     await requireAdmin();
-    const { action } = (await req.json()) as { action?: string };
+    const body = (await req.json()) as {
+      action?: string;
+      ratingKeys?: unknown;
+      unmatchedKeys?: unknown;
+    };
+    const { action } = body;
+    const keyList = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((k): k is string => typeof k === 'string') : [];
+    const ratingKeys = keyList(body.ratingKeys);
+    const unmatchedKeys = keyList(body.unmatchedKeys);
+
+    // --- Source actions: act in Sonarr/Radarr or on the media server --------
+    const SOURCE_ACTIONS = new Set([
+      'arr-rescan',
+      'arr-refresh',
+      'server-rescan',
+      'server-reidentify',
+      'arr-remove-stale',
+    ]);
+    if (action && SOURCE_ACTIONS.has(action)) {
+      if (ratingKeys.length === 0 && unmatchedKeys.length === 0) {
+        return NextResponse.json({ error: 'no_targets' }, { status: 400 });
+      }
+      if (ratingKeys.length > MAX_TARGETS || unmatchedKeys.length > MAX_TARGETS) {
+        return NextResponse.json({ error: 'too_many_items' }, { status: 400 });
+      }
+
+      if (action === 'arr-remove-stale') {
+        // The only removal in the fork's Problems surface; the "folder isn't on
+        // disk" gate is re-checked against the database inside.
+        const r = await removeStaleArrRecords(unmatchedKeys);
+        return NextResponse.json(r);
+      }
+      if (action === 'server-rescan' || action === 'server-reidentify') {
+        const r = await refreshServerItems(ratingKeys, {
+          reidentify: action === 'server-reidentify',
+        });
+        return NextResponse.json(r);
+      }
+      const mode = action === 'arr-refresh' ? 'refresh' : 'rescan';
+      const r = unmatchedKeys.length
+        ? await arrScanUnmatched(unmatchedKeys, mode)
+        : await arrScanMediaItems(ratingKeys, mode);
+      return NextResponse.json(r);
+    }
 
     if (action === 'relink') {
       // Carry keeps/watch onto items that came back under a new id (4K

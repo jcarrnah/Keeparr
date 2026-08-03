@@ -10,8 +10,18 @@
  * line — see FORK_SYNC.md.
  *
  * Renders an action bar above the table, only for categories the fork can
- * actually fix. Everything here is non-destructive: no media is deleted and the
- * filesystem is never touched (the fork deletes via Sonarr/Radarr only).
+ * actually fix. Three groups, in the order you'd reach for them:
+ *
+ *  1. the one-click Keeparr-side fix for the category (re-link / rescan / disk
+ *     scan),
+ *  2. **Fix at the source…** — pick rows and act on them in Sonarr/Radarr or on
+ *     the media server, which is where most of these problems actually live,
+ *  3. **Schedule deletion…** — for the categories where the answer is "this
+ *     shouldn't be here at all".
+ *
+ * No media is deleted from here and the filesystem is never touched. The one
+ * removal offered is a *arr RECORD whose folder the disk scan couldn't find
+ * (`deleteFiles=false`), and the server re-checks that gate itself.
  */
 import { useEffect, useState } from 'react';
 import type { ProblemType } from '@/lib/types';
@@ -80,6 +90,186 @@ const ACTIONS: Partial<Record<ProblemType, ActionSpec>> = {
       'the server, rather than waiting a week to see the list shrink.',
   },
 };
+
+// --- Fix at the source (Sonarr/Radarr + the media server) -------------------
+
+/** One row, as the source picker sees it. A row can have BOTH sides: an
+ *  identity mismatch is one media item disagreeing with one *arr record, and
+ *  the two fixes act on different ends of it. */
+interface SourceCandidate {
+  /** Selection id (unique within the category). */
+  key: string;
+  title: string;
+  detail?: string;
+  /** Media-server side (rating key), when the row has one. */
+  ratingKey?: string;
+  /** *arr side, as `instanceId|extKind|extId`, when the row has one. */
+  unmatchedKey?: string;
+  /** The disk scan confirmed this *arr record's folder is missing. */
+  staleRemovable?: boolean;
+}
+
+type SourceAction =
+  | 'arr-rescan'
+  | 'arr-refresh'
+  | 'server-rescan'
+  | 'server-reidentify'
+  | 'arr-remove-stale';
+
+interface SourceFix {
+  action: SourceAction;
+  label: string;
+  hint: string;
+  /** Which end of the row it acts on — also what it needs to be enabled. */
+  side: 'arr' | 'server';
+  /** Only ever offered for rows whose folder is confirmed missing. */
+  staleOnly?: boolean;
+  /** Renders as a warning: it removes something. */
+  destructive?: boolean;
+}
+
+const ARR_RESCAN: SourceFix = {
+  action: 'arr-rescan',
+  label: 'Rescan files in Sonarr/Radarr',
+  side: 'arr',
+  hint:
+    "Makes the *arr look at the title's folder again and re-report its size. " +
+    'This is the fix when the *arr is the stale side of a disagreement.',
+};
+const ARR_REFRESH: SourceFix = {
+  action: 'arr-refresh',
+  label: 'Refresh metadata in Sonarr/Radarr',
+  side: 'arr',
+  hint: "Re-pulls the title's metadata in the *arr — the *arr-side half of an identity fix.",
+};
+const SERVER_RESCAN: SourceFix = {
+  action: 'server-rescan',
+  label: 'Rescan items on the server',
+  side: 'server',
+  hint:
+    'Asks Jellyfin/Emby to re-read just these items rather than the whole library — ' +
+    'it notices files that arrived, changed or vanished.',
+};
+const SERVER_REIDENTIFY: SourceFix = {
+  action: 'server-reidentify',
+  label: 'Re-identify on the server',
+  side: 'server',
+  hint:
+    'Full metadata refresh that REPLACES what the server stored, so it can pick up ' +
+    'the provider ids (tmdb/tvdb) that Sonarr/Radarr matching runs on. Artwork is ' +
+    'kept. New ids show up here after the next library sync.',
+};
+const ARR_REMOVE_STALE: SourceFix = {
+  action: 'arr-remove-stale',
+  label: 'Remove the stale *arr record',
+  side: 'arr',
+  staleOnly: true,
+  destructive: true,
+  hint:
+    "The *arr is tracking a folder the disk scan couldn't find. Removing the record " +
+    'deletes no files — there are none — and adds no import exclusion, so the title ' +
+    'can come back if it downloads again.',
+};
+
+/** Which source fixes each category gets. Categories whose real fix is a human
+ *  decision (arrConflicts: remove it from one of two instances) or the
+ *  filesystem (diskOrphans) are deliberately absent. */
+const SOURCE_FIXES: Partial<Record<ProblemType, SourceFix[]>> = {
+  sizeMismatch: [ARR_RESCAN, SERVER_RESCAN],
+  zeroSize: [ARR_RESCAN, SERVER_RESCAN],
+  missingFromPlex: [ARR_RESCAN, ARR_REMOVE_STALE],
+  notInArr: [SERVER_REIDENTIFY],
+  missingIds: [SERVER_REIDENTIFY],
+  identityMismatch: [SERVER_REIDENTIFY, ARR_REFRESH],
+  duplicates: [SERVER_RESCAN],
+};
+
+/** Pull `SourceCandidate`s out of each category's differently-shaped rows. */
+const SOURCE_CANDIDATES: Partial<Record<ProblemType, (items: unknown[]) => SourceCandidate[]>> = {
+  sizeMismatch: (items) =>
+    (items as { ratingKey: string; title: string; arrBytes?: number | null; sizeBytes: number }[]).map(
+      (r) => ({
+        key: r.ratingKey,
+        ratingKey: r.ratingKey,
+        title: r.title,
+        detail:
+          r.arrBytes != null
+            ? `server ${formatSize(r.sizeBytes)} · *arr ${formatSize(r.arrBytes)}`
+            : undefined,
+      })
+    ),
+  zeroSize: (items) =>
+    (items as { ratingKey: string; title: string; arrBytes: number | null }[]).map((r) => ({
+      key: r.ratingKey,
+      ratingKey: r.ratingKey,
+      title: r.title,
+      detail: r.arrBytes ? `*arr still has ${formatSize(r.arrBytes)}` : 'no files on either side',
+    })),
+  notInArr: (items) =>
+    (items as { ratingKey: string; title: string }[]).map((r) => ({
+      key: r.ratingKey,
+      ratingKey: r.ratingKey,
+      title: r.title,
+    })),
+  missingIds: (items) =>
+    (items as { ratingKey: string; title: string }[]).map((r) => ({
+      key: r.ratingKey,
+      ratingKey: r.ratingKey,
+      title: r.title,
+    })),
+  missingFromPlex: (items) =>
+    (
+      items as {
+        instanceId: string;
+        extKind: string;
+        extId: string;
+        title: string;
+        instanceName: string;
+        onDisk: boolean | null;
+        path: string | null;
+      }[]
+    ).map((r) => ({
+      key: `${r.instanceId}|${r.extKind}|${r.extId}`,
+      unmatchedKey: `${r.instanceId}|${r.extKind}|${r.extId}`,
+      title: r.title,
+      staleRemovable: r.onDisk === false,
+      detail:
+        r.onDisk === false
+          ? `${r.instanceName} · not on disk`
+          : r.onDisk === true
+            ? `${r.instanceName} · on disk`
+            : `${r.instanceName} · not checked`,
+    })),
+  identityMismatch: (items) =>
+    (
+      items as {
+        media: { ratingKey: string; title: string };
+        arr: { title: string; instanceId: string; extKind: string; extId: string };
+      }[]
+    ).map((r) => ({
+      key: r.media.ratingKey,
+      ratingKey: r.media.ratingKey,
+      unmatchedKey: `${r.arr.instanceId}|${r.arr.extKind}|${r.arr.extId}`,
+      title: r.media.title,
+      detail: `*arr calls it "${r.arr.title}"`,
+    })),
+  duplicates: (items) =>
+    (items as { items: { ratingKey: string; title: string; dirPath: string | null }[] }[])
+      .flatMap((g) => g.items)
+      .map((r) => ({
+        key: r.ratingKey,
+        ratingKey: r.ratingKey,
+        title: r.title,
+        detail: r.dirPath ?? undefined,
+      })),
+};
+
+/** Where one row can be opened in the app that owns it (resolved server-side —
+ *  the *arr URLs live in settings and never reach a non-admin). */
+interface RowLinks {
+  arr?: { url: string; label: string };
+  server?: { url: string; label: string };
+}
 
 /** A row the fork can offer to schedule for deletion. */
 interface Candidate {
@@ -151,15 +341,30 @@ export default function ForkProblemActions({
   // Read the deletion toggle here rather than threading a prop through
   // upstream's component: keeping ProblemsView at one changed line is the
   // whole point of this file (FORK_SYNC.md). The page is already admin-only.
+  // The same call answers "is there an *arr?" and "which media server?", which
+  // decide whether a source fix can work at all.
   const [deletionOn, setDeletionOn] = useState(false);
+  const [arrOn, setArrOn] = useState(false);
+  const [serverOn, setServerOn] = useState(false);
   const [picking, setPicking] = useState(false);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
+  // The source picker is a second panel over the same rows.
+  const [sourcing, setSourcing] = useState(false);
+  const [sourceChosen, setSourceChosen] = useState<Set<string>>(new Set());
+  const [links, setLinks] = useState<Record<string, RowLinks>>({});
   const toast = useToast();
 
   useEffect(() => {
     fetch('/api/admin/settings')
       .then((r) => r.json())
-      .then((d) => setDeletionOn(!!d?.deletion?.enabled))
+      .then((d) => {
+        setDeletionOn(!!d?.deletion?.enabled);
+        setArrOn(
+          (d?.sonarr?.instances?.length ?? 0) + (d?.radarr?.instances?.length ?? 0) > 0
+        );
+        // Per-item refresh is a Jellyfin/Emby call; Plex rescans on its own.
+        setServerOn(!!d?.mediaServerType && d.mediaServerType !== 'plex');
+      })
       .catch(() => {});
   }, []);
   // A stale selection must never survive into another category — the keys would
@@ -167,6 +372,9 @@ export default function ForkProblemActions({
   useEffect(() => {
     setPicking(false);
     setChosen(new Set());
+    setSourcing(false);
+    setSourceChosen(new Set());
+    setLinks({});
   }, [type]);
 
   const spec = type ? ACTIONS[type] : undefined;
@@ -174,6 +382,73 @@ export default function ForkProblemActions({
   const chosenBytes = candidates
     .filter((c) => chosen.has(c.ratingKey))
     .reduce((a, c) => a + c.sizeBytes, 0);
+
+  // --- Fix at the source ----------------------------------------------------
+  const sourceCandidates = type ? (SOURCE_CANDIDATES[type]?.(items) ?? []) : [];
+  const sourceFixes = (type ? (SOURCE_FIXES[type] ?? []) : []).filter((f) =>
+    f.side === 'arr' ? arrOn : serverOn
+  );
+  const sourceSelection = sourceCandidates.filter((c) => sourceChosen.has(c.key));
+  const staleSelected = sourceSelection.filter((c) => c.staleRemovable).length;
+
+  /** Ask the server where these rows can be opened. One call per panel open —
+   *  every URL involved is a setting, so the client never resolves them. */
+  const loadLinks = async (rows: SourceCandidate[]) => {
+    const params = new URLSearchParams();
+    const ratingKeys = rows.map((r) => r.ratingKey).filter(Boolean) as string[];
+    const unmatchedKeys = rows.map((r) => r.unmatchedKey).filter(Boolean) as string[];
+    if (ratingKeys.length) params.set('ratingKeys', ratingKeys.slice(0, 100).join(','));
+    if (unmatchedKeys.length) params.set('unmatchedKeys', unmatchedKeys.slice(0, 100).join(','));
+    if (![...params].length) return;
+    try {
+      const d = await fetch(`/api/admin/problem-actions?${params}`).then((r) => r.json());
+      setLinks(d.links ?? {});
+    } catch {
+      /* links are a convenience — the actions work without them */
+    }
+  };
+
+  const runSourceFix = async (fix: SourceFix) => {
+    // A stale-record removal must only ever carry the rows the disk scan
+    // cleared; the server re-checks, but sending the others would make the
+    // "N skipped" line in the result confusing rather than informative.
+    const rows = fix.staleOnly
+      ? sourceSelection.filter((c) => c.staleRemovable)
+      : sourceSelection;
+    const ratingKeys = fix.side === 'server' ? rows.map((r) => r.ratingKey).filter(Boolean) : [];
+    const unmatchedKeys =
+      fix.side === 'arr' ? rows.map((r) => r.unmatchedKey).filter(Boolean) : [];
+    // An *arr fix on rows that only have a media side acts through their
+    // arr_items match, which the server resolves from the rating key.
+    const arrByRatingKey =
+      fix.side === 'arr' && unmatchedKeys.length === 0
+        ? rows.map((r) => r.ratingKey).filter(Boolean)
+        : [];
+
+    setBusy(true);
+    try {
+      const res = await fetch('/api/admin/problem-actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: fix.action,
+          ratingKeys: [...ratingKeys, ...arrByRatingKey],
+          unmatchedKeys,
+        }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const d = (await res.json()) as { ok?: boolean; message?: string; changed?: number };
+      toast(d.message ?? 'Done.', d.ok === false ? 'error' : d.changed ? 'success' : 'info');
+      if (d.changed) {
+        setSourceChosen(new Set());
+        onDone();
+      }
+    } catch {
+      toast("Couldn't run that fix — see Settings → Logs.", 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const tagChosen = async () => {
     setBusy(true);
@@ -200,7 +475,8 @@ export default function ForkProblemActions({
     }
   };
 
-  if (!spec && candidates.length === 0) return null;
+  const hasSourceFixes = sourceFixes.length > 0 && sourceCandidates.length > 0;
+  if (!spec && candidates.length === 0 && !hasSourceFixes) return null;
 
   const run = async () => {
     if (!spec) return;
@@ -236,6 +512,21 @@ export default function ForkProblemActions({
             {busy ? spec.busyLabel : spec.label}
           </button>
         )}
+        {/* Most of these rows can only really be fixed in the app that owns
+            the title, and walking over to that app is where triage stops. */}
+        {hasSourceFixes && (
+          <button
+            onClick={() => {
+              setSourcing((s) => {
+                if (!s) void loadLinks(sourceCandidates);
+                return !s;
+              });
+            }}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500"
+          >
+            {sourcing ? 'Close' : 'Fix at the source…'}
+          </button>
+        )}
         {/* Deciding a title is junk and acting on it used to be two screens —
             you had to memorise the name and go find it in Browse. */}
         {candidates.length > 0 && (
@@ -248,6 +539,114 @@ export default function ForkProblemActions({
         )}
         {spec && <p className="text-xs text-slate-400 flex-1 min-w-[16rem]">{spec.hint}</p>}
       </div>
+
+      {sourcing && (
+        <div className="mt-3 border-t border-slate-800 pt-3">
+          <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
+            <button
+              onClick={() =>
+                setSourceChosen((cur) =>
+                  cur.size === sourceCandidates.length
+                    ? new Set()
+                    : new Set(sourceCandidates.map((c) => c.key))
+                )
+              }
+              className="text-slate-300 underline hover:text-white"
+            >
+              {sourceChosen.size === sourceCandidates.length ? 'Select none' : 'Select all'}
+            </button>
+            <span className="text-slate-500">
+              {sourceChosen.size} of {sourceCandidates.length} selected
+            </span>
+          </div>
+
+          <ul className="max-h-64 space-y-1 overflow-y-auto pr-1">
+            {sourceCandidates.map((c) => {
+              const l = links[c.ratingKey ?? ''] ?? links[c.unmatchedKey ?? ''] ?? {};
+              return (
+                <li key={c.key} className="flex items-baseline gap-2 text-xs">
+                  <label className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-2 rounded px-1 py-0.5 hover:bg-slate-800/60">
+                    <input
+                      type="checkbox"
+                      checked={sourceChosen.has(c.key)}
+                      onChange={() =>
+                        setSourceChosen((cur) => {
+                          const next = new Set(cur);
+                          if (next.has(c.key)) next.delete(c.key);
+                          else next.add(c.key);
+                          return next;
+                        })
+                      }
+                    />
+                    <span className="truncate text-slate-200">{c.title}</span>
+                    {c.detail && (
+                      <span className="truncate text-[11px] text-slate-500" title={c.detail}>
+                        {c.detail}
+                      </span>
+                    )}
+                    {c.staleRemovable && (
+                      <span className="shrink-0 rounded bg-amber-900/50 px-1 text-[10px] text-amber-200">
+                        folder missing
+                      </span>
+                    )}
+                  </label>
+                  {/* Deep links: the fix that isn't an API call is still one
+                      click away instead of a search in another tab. */}
+                  {l.arr && (
+                    <a
+                      href={l.arr.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={l.arr.label}
+                      className="shrink-0 text-slate-400 underline hover:text-white"
+                    >
+                      *arr ↗
+                    </a>
+                  )}
+                  {l.server && (
+                    <a
+                      href={l.server.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={l.server.label}
+                      className="shrink-0 text-slate-400 underline hover:text-white"
+                    >
+                      server ↗
+                    </a>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {sourceFixes.map((f) => {
+              const n = f.staleOnly ? staleSelected : sourceSelection.length;
+              return (
+                <button
+                  key={f.action}
+                  onClick={() => void runSourceFix(f)}
+                  disabled={busy || n === 0}
+                  title={f.hint}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-40 ${
+                    f.destructive
+                      ? 'border border-amber-800/70 text-amber-200 hover:border-amber-600'
+                      : 'border border-slate-700 text-slate-200 hover:border-slate-500'
+                  }`}
+                >
+                  {f.label}
+                  {n > 0 && ` (${n})`}
+                </button>
+              );
+            })}
+          </div>
+          {sourceFixes.map((f) => (
+            <p key={f.action} className="mt-2 text-[11px] text-slate-500">
+              <span className="text-slate-400">{f.label}:</span> {f.hint}
+            </p>
+          ))}
+        </div>
+      )}
 
       {picking && (
         <div className="mt-3 border-t border-slate-800 pt-3">

@@ -569,3 +569,36 @@ export async function refreshLibrary(baseUrl: string, token: string): Promise<vo
     allowEmpty: true,
   });
 }
+
+/**
+ * FORK: refresh ONE item (`POST /Items/{id}/Refresh`).
+ *
+ * Two jobs, one endpoint. Left alone (`Default`) it re-reads the item's files,
+ * which is what a zero-size or size-disagreeing title needs. With `reidentify`
+ * it asks for a `FullRefresh` that REPLACES the stored metadata — the actual
+ * fix for an item whose provider ids are missing or point at the wrong title,
+ * since those ids are what Sonarr/Radarr matching runs on. Keeparr picks them
+ * up on its next library sync.
+ *
+ * Images are deliberately never replaced: re-identifying shouldn't throw away
+ * artwork the household may have curated. Returns 204, hence `allowEmpty`.
+ */
+export async function refreshItem(
+  baseUrl: string,
+  token: string,
+  itemId: string,
+  opts: { reidentify?: boolean } = {}
+): Promise<void> {
+  const params = new URLSearchParams({
+    metadataRefreshMode: opts.reidentify ? 'FullRefresh' : 'Default',
+    imageRefreshMode: 'Default',
+    replaceAllMetadata: opts.reidentify ? 'true' : 'false',
+    replaceAllImages: 'false',
+  });
+  await fetchJson(`${base(baseUrl)}/Items/${encodeURIComponent(itemId)}/Refresh?${params}`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    label: `Jellyfin Items/${itemId}/Refresh`,
+    allowEmpty: true,
+  });
+}

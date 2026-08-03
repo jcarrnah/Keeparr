@@ -163,6 +163,7 @@ export function applySchema(database: Database.Database): void {
       arr_size_bytes INTEGER,                   -- arr-reported sizeOnDisk (cross-check)
       tags           TEXT,                      -- JSON array of resolved tag labels
       folder_name    TEXT,                      -- title's own *arr folder basename
+      title_slug     TEXT,                      -- FORK: the *arr's own URL slug (deep links)
       last_synced    INTEGER NOT NULL
     );
 
@@ -183,6 +184,8 @@ export function applySchema(database: Database.Database): void {
       downloaded    INTEGER NOT NULL DEFAULT 1, -- sizeOnDisk > 0 in the *arr (fileless rows feed identity matching only)
       on_disk       INTEGER,                    -- reality check: NULL not verified, 0 folder missing, 1 found
       disk_size_bytes INTEGER,                  -- measured size when found (walked, not claimed)
+      arr_id        INTEGER,                    -- FORK: series/movie id, so the record can be acted on
+      title_slug    TEXT,                       -- FORK: the *arr's own URL slug (deep links)
       last_synced   INTEGER NOT NULL
     );
 
@@ -440,6 +443,16 @@ function migrate(database: Database.Database): void {
   if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'disk_size_bytes')) {
     database.exec(`ALTER TABLE arr_unmatched ADD COLUMN disk_size_bytes INTEGER`);
   }
+  // FORK: arr_unmatched gained arr_id + title_slug. A row used to be a report
+  // ("Sonarr has this, the server doesn't") with no way to act on it — the
+  // series/movie id is what lets the Problems page rescan the title or remove a
+  // record whose folder is gone, and the slug is its URL in the *arr's own UI.
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'arr_id')) {
+    database.exec(`ALTER TABLE arr_unmatched ADD COLUMN arr_id INTEGER`);
+  }
+  if (arrUnCols.length > 0 && !arrUnCols.some((c) => c.name === 'title_slug')) {
+    database.exec(`ALTER TABLE arr_unmatched ADD COLUMN title_slug TEXT`);
+  }
 
   // arr_items gained folder_name for the same reason (rebuilt by the arr job).
   const arrItemCols = database
@@ -447,6 +460,10 @@ function migrate(database: Database.Database): void {
     .all() as { name: string }[];
   if (arrItemCols.length > 0 && !arrItemCols.some((c) => c.name === 'folder_name')) {
     database.exec(`ALTER TABLE arr_items ADD COLUMN folder_name TEXT`);
+  }
+  // FORK: …and title_slug, for the "open it in Sonarr/Radarr" links.
+  if (arrItemCols.length > 0 && !arrItemCols.some((c) => c.name === 'title_slug')) {
+    database.exec(`ALTER TABLE arr_items ADD COLUMN title_slug TEXT`);
   }
 
   // media_items gained guid_imdb (an extra arr-match axis). Backfilled to NULL;

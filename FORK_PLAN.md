@@ -738,3 +738,72 @@ takes only a name. Points to confirm first:
 Low risk and self-contained — but it writes to the media server, and it's the
 one part of the fork that does, so it wants a look at a real server rather than
 a confident guess.
+
+## 3.10 Problems that act on the source — BUILT 2026-08-02
+
+**The ask** (2026-08-02): "I kind of wanted more actionable items in the
+problems page. Things that call to Sonarr, Radarr, or Jellyfin and deal with
+the file or mismatches from the source rather than just using options in
+Keeparr."
+
+Fair: the fix-its up to now (`relink`, `rescan`, `diskscan`) either edited
+Keeparr's own bookkeeping or kicked off a Keeparr job. Nearly every row's real
+fix lives in another app, and the page stopped one step short of it.
+
+**Blast radius — the user's call.** Offered three levels (non-destructive only /
+also remove stale *arr records / also delete files from Problems), they chose
+the middle one. So: no file ever gets deleted from this surface, but a *arr
+RECORD pointing at a folder that isn't on disk can be removed. Deleting media
+stays on the scheduled-deletion path, where it has a grace window, keep
+protection and the Deletions audit trail.
+
+**Built** (`lib/source-actions.ts`, one new fork module; UI in the existing
+fork-owned action bar):
+
+- `arr-rescan` / `arr-refresh` — Sonarr `RescanSeries`/`RefreshSeries`, Radarr
+  `RescanMovie`/`RefreshMovie`. **One command per title, deliberately.** The two
+  apps disagree on the field (`RefreshMovieCommand` takes only `MovieIds`;
+  `RefreshSeriesCommand` has `SeriesId` *and* `SeriesIds`, and older Sonarr had
+  only the singular), so a batch command is the thing most likely to silently
+  act on just the first title. Verified against the current command classes,
+  not assumed.
+- `server-rescan` / `server-reidentify` — Jellyfin/Emby
+  `POST /Items/{id}/Refresh`. Re-identify is `FullRefresh` +
+  `replaceAllMetadata`, which is the ONLY real cure for the identity
+  categories: an item with no (or wrong) tmdb/tvdb ids can never match *arr, and
+  no amount of Keeparr-side bookkeeping changes that. Images are never replaced
+  — re-identifying shouldn't discard curated artwork. Plex has no equivalent
+  single call, the same limit `triggerServerRefresh` already carries, so the
+  buttons hide there rather than failing.
+- `arr-remove-stale` — `DELETE /series|movie/{id}?deleteFiles=false`, gated on
+  `arr_unmatched.on_disk = 0`. **The gate is re-read from the database inside
+  the action**, never taken from the request: this is the one removal on the
+  page and "the folder is really gone" is its entire justification. An
+  unverified row (`on_disk IS NULL`) is refused too — unknown is not absent.
+- Deep links per row, resolved **server-side** (`sourceLinksFor`) because every
+  URL involved is an admin-only setting. `title_slug` is new on both `arr_items`
+  and `arr_unmatched`; a row synced before the column existed gets no link
+  rather than a guessed one.
+- `arr_unmatched` also gained `arr_id`. Without it those rows were a report you
+  could read and not act on.
+
+**Failure handling:** every target is one upstream call, each caught, counted
+and named in the summary — a briefly-down *arr costs you that title, not the
+other nine. Queued work answers `changed: 0` so the UI doesn't refetch and show
+identical rows, which reads as "the button did nothing".
+
+**Where the UI went, and why it looks like that.** All of it is in
+`ForkProblemActions.tsx`, as a second picker beside the tag picker. Same reason
+as 3.x before it: upstream's `ProblemsView` renders bespoke tbodys per category,
+so per-row buttons would mean ~10 insertions into the hottest part of an
+upstream file. A candidate can carry both a `ratingKey` and an `unmatchedKey`,
+which is what makes `identityMismatch` work — one row, two ends, two different
+fixes.
+
+**Not offered:** `arrConflicts` (the fix is choosing which of two instances
+keeps the title — a human decision, and doing it wrong deletes files),
+`diskOrphans` (not media items; the filesystem stays off-limits),
+`removedButKept` (already tombstoned).
+
+Verified: tsc, 621 tests (14 new in `lib/source-actions.test.ts`), `next build`,
+and a fresh-`DATA_DIR` build for the two schema additions.
