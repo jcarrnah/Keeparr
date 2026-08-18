@@ -66,6 +66,7 @@ import {
   upsertWatchBatch,
   clearWatchHistory,
   watchHistoryExists,
+  findUserIdByLogin,
   existingShowSizes,
   showRatingKeys,
   updateItemSize,
@@ -1860,5 +1861,31 @@ describe('watchHistoryExists (empty table vs no data yet)', () => {
     expect(watchHistoryExists()).toBe(true);
     clearWatchHistory();
     expect(watchHistoryExists()).toBe(false);
+  });
+});
+
+describe('findUserIdByLogin (resolving the Plex server owner to a Keeparr user)', () => {
+  beforeEach(() => {
+    upsertUser({ plexUserId: '22839572', username: 'juncothebird', email: 'junco3@gmail.com', thumb: null, isAdmin: true });
+    upsertUser({ plexUserId: '3629986', username: 'drohack', email: 'dro@example.com', thumb: null, isAdmin: true });
+  });
+
+  it('matches on username or email, case-insensitively', () => {
+    expect(findUserIdByLogin('juncothebird')).toBe('22839572');
+    expect(findUserIdByLogin('JUNCOTHEBIRD')).toBe('22839572');
+    // PMS /myplex/account reports the owner's EMAIL as its username field,
+    // which is why matching only on username would miss.
+    expect(findUserIdByLogin('junco3@gmail.com')).toBe('22839572');
+    expect(findUserIdByLogin('Junco3@Gmail.com')).toBe('22839572');
+  });
+
+  it('returns null for an unknown or empty login rather than guessing', () => {
+    expect(findUserIdByLogin('nobody')).toBeNull();
+    expect(findUserIdByLogin('')).toBeNull();
+    expect(findUserIdByLogin(null)).toBeNull();
+  });
+
+  it('does not confuse one user for another', () => {
+    expect(findUserIdByLogin('drohack')).toBe('3629986');
   });
 });

@@ -530,6 +530,79 @@ export interface PlexHistoryRow {
   viewedAt?: number;
 }
 
+/**
+ * Who owns this Plex server, as PMS itself reports it (`/myplex/account`).
+ *
+ * Returns the owner's plex.tv login - in practice their EMAIL, not their
+ * username. Needed because play history labels the owner with the bare local
+ * account id `1`, and that person is not necessarily whoever set Keeparr up.
+ *
+ * Never throws: this only drives attribution, so an unreachable or
+ * unauthorised PMS must degrade to "don't remap", not break the watch sync.
+ */
+export async function plexOwnerLogin(
+  baseUrl: string,
+  token: string
+): Promise<string | null> {
+  try {
+    const d = await pmsGet<{ MyPlex?: { username?: string } }>(
+      baseUrl,
+      '/myplex/account',
+      token
+    );
+    return d.MyPlex?.username?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Can this token read EVERY account's play history, or only its own?
+ *
+ * Plex scopes `/status/sessions/history/all` to the token holder unless the
+ * token belongs to the server owner - and it does so SILENTLY: an `accountID=`
+ * filter for someone else is ignored, not rejected, and the response is still
+ * HTTP 200. So a wrongly-scoped token looks like it works and just reports a
+ * quietly small number. This is what the Settings "Test" button calls so the
+ * problem surfaces when the token is pasted, not months later.
+ */
+export async function plexHistoryScope(
+  baseUrl: string,
+  token: string
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const d = await pmsGet<{
+      MediaContainer: { totalSize?: number; Metadata?: PlexHistoryRow[] };
+    }>(
+      baseUrl,
+      '/status/sessions/history/all?X-Plex-Container-Start=0&X-Plex-Container-Size=1000',
+      token
+    );
+    const mc = d.MediaContainer;
+    const total = mc.totalSize ?? 0;
+    const accounts = new Set(
+      (mc.Metadata ?? []).map((r) => String(r.accountID)).filter((a) => a !== 'undefined')
+    ).size;
+    if (total === 0) {
+      return { ok: false, message: 'Reached Plex, but it reports no play history' };
+    }
+    if (accounts <= 1) {
+      return {
+        ok: false,
+        message:
+          `Only 1 account visible in ${total} rows - this is not the server ` +
+          `owner's token, so other users' history cannot be read`,
+      };
+    }
+    return {
+      ok: true,
+      message: `Owner token OK - ${accounts}+ accounts across ${total} history rows`,
+    };
+  } catch (e) {
+    return { ok: false, message: String(e) };
+  }
+}
+
 /** PMS numbers the server owner 1 in its local accounts table. */
 const PMS_OWNER_ACCOUNT_ID = '1';
 

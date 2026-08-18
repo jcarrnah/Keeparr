@@ -412,12 +412,27 @@ when it has no tvdb/tmdb **and** no imdb.
 - `GET /api/health` — public liveness probe (used by the Docker healthcheck).
 - Admin (require `is_admin`): `GET/PUT /api/admin/settings` (PUT accepts
   `storageMappings`, `managedSectionIds`, `appTitle`, `appUrl`, `apiKey`, `plexBaseUrl`,
+  `plexOwnerToken` (blank clears it; GET returns only `plex.ownerTokenSet`, never the value),
+  and a changed `plexBaseUrl` is REFUSED with 400 `different_server` when probing
+  `/identity` proves it is a different machine than `plex_machine_id` - the manual
+  path only writes the URL, so the per-server `plex_server_token`/`plex_machine_id`
+  would be left behind and wrong; switching servers must go through Discover &
+  connect (which writes all three). Unreachable targets still save, since fixing
+  the URL of a server that is down is legitimate,
   `jobSchedules`, `plexServer`, `tautulli`, `seerr`, `sonarrInstances`,
   `radarrInstances`, `backupRetention` — GET returns instances as `[{id,name,url,hasKey}]`, never their
   apiKeys; the automation `apiKey` IS returned so the UI can show a masked
   copy-able field, Servarr-style),
-  `GET /api/admin/plex-servers`, `POST /api/admin/test-connection` (services
-  `plex`/`jellyfin`/`emby`/`tautulli`/`seerr`/`sonarr`/`radarr`),
+  `GET /api/admin/plex-servers`,
+  `POST /api/admin/plex-auth` (start a PIN) + `GET /api/admin/plex-auth?id=` (poll;
+  on success replaces `plex_admin_token` and returns the account's `username`) -
+  re-authenticate the STORED Plex token from Settings WITHOUT touching the session.
+  The admin token is otherwise captured once at first run from whoever installed
+  Keeparr; if that person doesn't own the Plex server, Discover lists nothing they
+  own and only the owner can read all users' watch history, with no in-app fix. `POST /api/admin/test-connection` (services
+  `plex`/`plexOwner`/`jellyfin`/`emby`/`tautulli`/`seerr`/`sonarr`/`radarr` -
+  `plexOwner` runs `plexHistoryScope()`, which reports how many ACCOUNTS the
+  token can see rather than mere reachability),
   `POST /api/admin/sync-libraries` (discover sections only, fast — backend-agnostic
   via `getBackend().listSections()`),
   `GET /api/admin/storage-check?path=`, `GET /api/admin/jobs` (status + recent runs)
@@ -498,7 +513,8 @@ existing installs are unchanged — chosen once at first-run setup), `media_devi
 resolve through type-aware accessors (`getServerBaseUrl/Token/Name/Id`, `getOwnerId`,
 `getAdminToken`, `isServerConfigured`): Plex keeps its historical names —
 `plex_client_id`, `plex_owner_id`, `plex_admin_token`*, `plex_machine_id`,
-`plex_base_url`, `plex_server_token`*, `plex_server_name`; Jellyfin/Emby use a uniform
+`plex_base_url`, `plex_server_token`*, `plex_server_name`, `plex_owner_token`*
+(OPTIONAL server-owner token; see below); Jellyfin/Emby use a uniform
 scheme — `<type>_url`, `<type>_token`*, `<type>_admin_token`*, `<type>_server_id`,
 `<type>_server_name`, `<type>_owner_id` (`<type>` = `jellyfin`|`emby`). `plex_sections` (json;
 includes each section's `paths[]`; reused for all backends), `tautulli_url`, `tautulli_api_key`*,
@@ -515,9 +531,30 @@ all), `open_signin` (`'true'`/`'false'`), `api_key`* (automation), `app_title`,
 `dev_storage_total` (demo-only synthetic capacity, set by the seed). `*` = encrypted
 at rest.
 
-**Local demo mode**: `npm run seed` (`lib/dev-seed.ts` + `scripts/seed.mts`) fills
-`./data` with fake libraries; `KEEPARR_DEV_LOGIN=1` makes `middleware.ts` auto-mint a
-dev session (no Plex/login). `KEEPARR_DEV_SERVER=jellyfin|emby npm run seed` configures
+**Three local modes.** Pick by what you need to exercise; the first two are fake and
+the third is real, and mixing them up is why connection bugs used to reach production.
+
+1. **Fake demo** - `npm run seed` (`lib/dev-seed.ts` + `scripts/seed.mts`) fills
+   `./data` with fake libraries; `KEEPARR_DEV_LOGIN=1` makes `middleware.ts` auto-mint
+   a dev session (no Plex/login). Best for UI work. NOTHING that talks to a server
+   works here: the seeded token is fake, so the Plex "Test" button fails with an
+   HTML-not-JSON error and Discover finds nothing. That is expected, not a bug.
+2. **Seeded demo wired to a REAL Plex** - keeps the fake media so pages are populated,
+   but points the connection at your server so Discover, the Test buttons, the owner
+   token and the watch job all do real work:
+   ```
+   DATA_DIR=./data-realseed    KEEPARR_DEV_PLEX_URL=http://<ip>:32400    KEEPARR_DEV_PLEX_TOKEN=<X-Plex-Token> npm run seed
+   DATA_DIR=./data-realseed KEEPARR_DEV_LOGIN=1 npx next dev -p 3112
+   ```
+   Writes the token to `plex_server_token`, `plex_admin_token` (so Discover works -
+   it is a plex.tv call) and `plex_owner_token`. Use the SERVER OWNER's token or
+   watch history silently covers one account. A real library scan replaces the fake
+   media.
+3. **True first-run** - `npm run dev:real` (`scripts/dev-real.mts`). Separate
+   `DATA_DIR` (default `./data-real`), no seed, and deliberately NO
+   `KEEPARR_DEV_LOGIN`, so `/` redirects to `/login` and you get the genuine
+   setup -> Plex PIN OAuth -> Discover & connect -> run jobs path. This is the only
+   way to test **login** without deploying. `KEEPARR_DEV_SERVER=jellyfin|emby npm run seed` configures
 the demo as that backend (fake connection) instead of Plex, so the setup/login branch +
 backend-aware UI are clickable offline (default = Plex). All inert/absent in production.
 
@@ -621,9 +658,24 @@ backend-aware UI are clickable offline (default = Plex). All inert/absent in pro
   out of `grandparentKey` (`/library/metadata/24186`), and rows for deleted media
   lose `ratingKey`/`grandparentKey` entirely (~4% - skip them);
   (3) **the owner is `accountID: 1`**, PMS's local account id, while shared users
-  appear under their plex.tv id - so the owner must be remapped onto `getOwnerId()`
-  or their rows key to a `plex_user_id` no Keeparr user has. `viewedAt>=<ts>`
-  filtering works (`viewedAt>` is a 400) but is unused: a full pull is cheap.
+  appear under their plex.tv id. Resolve that person with `plexOwnerLogin()`
+  (`/myplex/account`, returns their EMAIL) + `findUserIdByLogin()` - do NOT use
+  `getOwnerId()`, which names whoever set Keeparr up and is often a DIFFERENT
+  person; using it files the server owner's viewing under the wrong user.
+  Unresolvable => don't remap (under-attribution beats mis-attribution).
+  `viewedAt>=<ts>` filtering works (`viewedAt>` is a 400) but is unused: a full
+  pull is cheap.
+  **THE BIG ONE - history is scoped to the token holder.** Plex returns every
+  account's history ONLY to the server owner's token; for anyone else it returns
+  just their own rows, **silently** - HTTP 200, and an `accountID=` filter for
+  another user is IGNORED rather than refused (`/accounts` 403s though). A
+  shared-user token therefore yields a plausible-looking but tiny result. Measured
+  on a live server: owner token = 99,018 rows / 86 accounts, shared-user token =
+  15,714 rows / 1 account. Hence the optional `plex_owner_token` setting, which
+  `plexBackend.getWatchData()` prefers over `plex_server_token` for history only
+  (ordinary PMS reads still use the server token, so a bad/absent owner token
+  cannot regress anything). `plexHistoryScope()` is the Settings "Test" for it -
+  it counts distinct accounts, because reachability alone cannot detect this.
 - **Tautulli**: `GET {url}/api/v2?apikey=&cmd=&out_type=json`; envelope
   `response.{result,message,data}`. `get_history` rows are at
   `response.data.data[]` (object); aggregate by `grandparent_rating_key`

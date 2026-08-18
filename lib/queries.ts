@@ -97,6 +97,32 @@ export function upsertUser(input: UpsertUserInput): void {
     });
 }
 
+/**
+ * Resolve a Plex login (username OR email) to a Keeparr user id, or null.
+ *
+ * Used to identify the PLEX SERVER OWNER, who appears in play history as the
+ * bare local account id `1`. Their real id can NOT be assumed to be
+ * `plex_owner_id` - that setting names whoever first set Keeparr up, which is
+ * often a shared user rather than the person who owns the Plex server. Matching
+ * on email as well as username matters: PMS `/myplex/account` reports the
+ * owner's email in its `username` field.
+ *
+ * Returns null rather than a best guess - mis-attributing one person's viewing
+ * to another is worse than leaving it unattributed.
+ */
+export function findUserIdByLogin(login: string | null | undefined): string | null {
+  const needle = (login ?? '').trim().toLowerCase();
+  if (!needle) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT plex_user_id FROM users
+        WHERE LOWER(username) = @needle OR LOWER(email) = @needle
+        LIMIT 1`
+    )
+    .get({ needle }) as { plex_user_id: string } | undefined;
+  return row?.plex_user_id ?? null;
+}
+
 export function getUser(plexUserId: string): SessionUser | null {
   const row = getDb()
     .prepare(

@@ -8,9 +8,12 @@ import {
   getServerToken,
   getSonarrInstances,
   getTautulliKey,
+  getPlexBaseUrl,
+  getPlexOwnerToken,
 } from '@/lib/settings';
 import { logEvent } from '@/lib/queries';
 import { testTautulli } from '@/lib/tautulli';
+import { plexHistoryScope } from '@/lib/plex';
 import { testSeerr } from '@/lib/seerr';
 import { testArr } from '@/lib/arr';
 import { testJellyfin } from '@/lib/jellyfin';
@@ -18,7 +21,7 @@ import { testJellyfin } from '@/lib/jellyfin';
 export const runtime = 'nodejs';
 
 interface Body {
-  service: 'plex' | 'jellyfin' | 'emby' | 'tautulli' | 'seerr' | 'sonarr' | 'radarr';
+  service: 'plex' | 'plexOwner' | 'jellyfin' | 'emby' | 'tautulli' | 'seerr' | 'sonarr' | 'radarr';
   url: string;
   apiKey?: string;
   token?: string;
@@ -44,6 +47,14 @@ export async function POST(req: Request) {
       } catch (e) {
         result = { ok: false, message: String(e) };
       }
+    } else if (body.service === 'plexOwner') {
+      // Blank token -> re-test the saved one. Reports whether Plex will hand
+      // over EVERY account's history, which a plain reachability check cannot
+      // tell you: a shared-user token returns 200 with just its own rows.
+      result = await plexHistoryScope(
+        body.url || getPlexBaseUrl() || '',
+        body.token || getPlexOwnerToken() || ''
+      );
     } else if (body.service === 'jellyfin' || body.service === 'emby') {
       result = await testJellyfin(body.url);
     } else if (body.service === 'tautulli') {

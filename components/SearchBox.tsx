@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { noAutofill } from './noAutofill';
 
 interface Suggestion {
   ratingKey: string;
@@ -67,6 +68,7 @@ export default function SearchBox() {
     <div ref={boxRef} className="relative w-full">
       <input
         id="global-search"
+        {...noAutofill}
         value={q}
         onChange={(e) => setQ(e.target.value)}
         onFocus={() => suggestions.length && setOpen(true)}

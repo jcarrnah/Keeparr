@@ -30,6 +30,7 @@ import {
   setManagedSectionIds,
   setMediaServerType,
   setOpenSignin,
+  readSetting,
   setPlexSections,
   setRadarrInstances,
   setServerField,
@@ -244,12 +245,37 @@ export interface SeedResult {
  * a reseed. Pass `{ reset: true }` after clearing tables for a fresh load.
  */
 export function seedDevData(opts: { reset?: boolean } = {}): SeedResult {
-  // A fake "connected server" so the pages render (dummy values; the image proxy
-  // simply 503s and cards show titles).
-  writeSetting('plex_machine_id', 'dev-machine');
-  writeSetting('plex_base_url', 'http://localhost:32400');
-  writeSetting('plex_server_token', 'dev-token');
-  writeSetting('plex_server_name', 'Dev Server');
+  // Point the demo at a REAL Plex without going through login:
+  //   KEEPARR_DEV_PLEX_URL=http://192.168.1.2:32400   //   KEEPARR_DEV_PLEX_TOKEN=<X-Plex-Token> npm run seed
+  // Use the SERVER OWNER's token if you want to exercise all-users watch
+  // history - a shared account's token silently returns only its own rows.
+  // The token is written to plex_owner_token too, so the watch job and the
+  // Connections "Test" button have something real to work against. Everything
+  // else (fake libraries/items) still seeds, so the UI is populated before you
+  // run a real scan - a real library job will then replace it.
+  // For the genuine first-run + login + Discover flow instead, use
+  // `npm run dev:real`, which skips seeding entirely.
+  const realUrl = process.env.KEEPARR_DEV_PLEX_URL?.trim();
+  const realToken = process.env.KEEPARR_DEV_PLEX_TOKEN?.trim();
+  if (realUrl && realToken) {
+    writeSetting('plex_base_url', realUrl);
+    writeSetting('plex_server_token', realToken);
+    // Same value drives plex.tv calls (Discover) and PMS reads: an account
+    // token works for both, which a per-device server token does not.
+    writeSetting('plex_admin_token', realToken);
+    writeSetting('plex_owner_token', realToken);
+    writeSetting('plex_server_name', 'Real Plex (dev)');
+    // Placeholder so isServerConfigured() passes; Discover & connect replaces
+    // it with the true machine id.
+    writeSetting('plex_machine_id', readSetting('plex_machine_id') || 'dev-machine');
+  } else {
+    // A fake "connected server" so the pages render (dummy values; the image
+    // proxy simply 503s and cards show titles).
+    writeSetting('plex_machine_id', 'dev-machine');
+    writeSetting('plex_base_url', 'http://localhost:32400');
+    writeSetting('plex_server_token', 'dev-token');
+    writeSetting('plex_server_name', 'Dev Server');
+  }
   writeSetting('plex_owner_id', DEV_USER_ID);
 
   // Demo a non-Plex backend with `KEEPARR_DEV_SERVER=jellyfin|emby npm run seed`.

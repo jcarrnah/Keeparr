@@ -4,6 +4,7 @@ import type { PlexMetadata } from '../plex';
 import * as plexApi from '../plex';
 import { __setTestDbToMemory, __closeDb } from '../db';
 import { writeSetting } from '../settings';
+import { upsertUser } from '../queries';
 
 const node = (over: Partial<PlexMetadata> = {}): PlexMetadata => ({
   ratingKey: '1',
@@ -85,22 +86,48 @@ describe('plex backend mapItem (on-disk name capture)', () => {
   });
 });
 
-describe('plex backend getWatchData', () => {
+describe('plex backend getWatchData (owner attribution)', () => {
   beforeEach(() => {
     __setTestDbToMemory();
     writeSetting('plex_base_url', 'http://plex:32400');
     writeSetting('plex_server_token', 'tok');
-    writeSetting('plex_owner_id', '22839572');
+    // Keeparr was set up by a SHARED user, so plex_owner_id is NOT the person
+    // who owns the Plex server. This is the real-world case that made the
+    // original getOwnerId()-based remap mis-attribute history.
+    writeSetting('plex_owner_id', '3629986');
+    upsertUser({
+      plexUserId: '22839572',
+      username: 'juncothebird',
+      email: 'junco3@gmail.com',
+      thumb: null,
+      isAdmin: true,
+    });
   });
   afterEach(() => vi.restoreAllMocks());
   afterAll(() => __closeDb());
 
-  it('passes the configured creds and the owner id through', async () => {
+  it('remaps PMS account 1 to the SERVER owner, not to plex_owner_id', async () => {
+    vi.spyOn(plexApi, 'plexOwnerLogin').mockResolvedValue('junco3@gmail.com');
     const spy = vi.spyOn(plexApi, 'plexWatchHistory').mockResolvedValue([]);
     await plexBackend.getWatchData();
-    // The owner id is what remaps PMS's local account 1 back onto a real user.
     expect(spy).toHaveBeenCalledWith('http://plex:32400', 'tok', {
       ownerId: '22839572',
     });
+    // The trap: plex_owner_id is 3629986 and must NOT be used here.
+    expect(spy.mock.calls[0][2]).not.toMatchObject({ ownerId: '3629986' });
+  });
+
+  it('does not remap when the owner cannot be resolved to a Keeparr user', async () => {
+    vi.spyOn(plexApi, 'plexOwnerLogin').mockResolvedValue('stranger@example.com');
+    const spy = vi.spyOn(plexApi, 'plexWatchHistory').mockResolvedValue([]);
+    await plexBackend.getWatchData();
+    expect(spy).toHaveBeenCalledWith('http://plex:32400', 'tok', { ownerId: null });
+  });
+
+  it('does not remap when PMS will not say who the owner is', async () => {
+    vi.spyOn(plexApi, 'plexOwnerLogin').mockResolvedValue(null);
+    const spy = vi.spyOn(plexApi, 'plexWatchHistory').mockResolvedValue([]);
+    await plexBackend.getWatchData();
+    expect(spy).toHaveBeenCalledWith('http://plex:32400', 'tok', { ownerId: null });
   });
 });

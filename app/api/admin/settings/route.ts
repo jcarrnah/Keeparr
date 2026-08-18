@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
+import { getServerIdentity } from '@/lib/plex';
 import {
   getPlexBaseUrl,
   getMachineId,
+  getServerToken,
   getMediaServerType,
   getServerBaseUrl,
   getServerName,
@@ -19,6 +21,7 @@ import {
   isSeerrConfigured,
   isServerConfigured,
   isTautulliConfigured,
+  isPlexOwnerTokenSet,
   readSetting,
   setStorageMappings,
   setJobSchedules,
@@ -97,6 +100,8 @@ export async function GET() {
         baseUrl: getPlexBaseUrl(),
         machineId: getMachineId(),
         serverName: readSetting('plex_server_name'),
+        // Presence only - the token itself is never returned.
+        ownerTokenSet: isPlexOwnerTokenSet(),
       },
       tautulli: {
         url: getTautulliUrl(),
@@ -141,6 +146,8 @@ interface PutBody {
   managedSectionIds?: string[];
   /** Manual override of the Plex base URL (host/port/SSL all in one). */
   plexBaseUrl?: string;
+  /** Optional Plex server-owner token (all-users watch history). '' clears it. */
+  plexOwnerToken?: string;
   appTitle?: string;
   appUrl?: string;
   /** New API key value, or '' to clear it. */
@@ -204,8 +211,41 @@ export async function PUT(req: Request) {
       setManagedSectionIds(body.managedSectionIds.map(String));
     }
 
+    if (typeof body.plexOwnerToken === 'string') {
+      // Blank means "clear it"; the UI sends undefined to keep the saved value.
+      writeSetting('plex_owner_token', body.plexOwnerToken.trim());
+    }
     if (typeof body.plexBaseUrl === 'string' && body.plexBaseUrl.trim()) {
-      writeSetting('plex_base_url', body.plexBaseUrl.trim());
+      const nextUrl = body.plexBaseUrl.trim();
+      // Changing the URL by hand must not silently point Keeparr at a DIFFERENT
+      // server: `plex_server_token` and `plex_machine_id` are issued per server,
+      // so they would not work there, and the manual path never replaces them.
+      // The result was a half-configured install with no warning. Switching
+      // servers has to go through Discover & connect, which stores all three.
+      // A same-server address change (the normal case) is allowed, and so is an
+      // unreachable target - fixing the URL of a server that is currently down
+      // is legitimate, so we only block on a POSITIVE mismatch.
+      const storedMachine = getMachineId();
+      const token = getServerToken();
+      if (nextUrl !== getPlexBaseUrl() && storedMachine && token) {
+        try {
+          const id = await getServerIdentity(nextUrl, token);
+          if (id.machineIdentifier && id.machineIdentifier !== storedMachine) {
+            return NextResponse.json(
+              {
+                error: 'different_server',
+                message:
+                  `That address is a different Plex server (${id.friendlyName || id.machineIdentifier}). ` +
+                  `Use "Discover servers" and connect to it, so its token and id are stored too.`,
+              },
+              { status: 400 }
+            );
+          }
+        } catch {
+          // Unreachable: allow the save (see above).
+        }
+      }
+      writeSetting('plex_base_url', nextUrl);
     }
 
     if (typeof body.appTitle === 'string') {

@@ -37,3 +37,7 @@ npm-debug.log*
 
 # typescript
 *.tsbuildinfo
+
+# Local dev data dirs pointed at a real server (npm run dev:real / real-Plex seed)
+/data-real/
+/data-realseed/

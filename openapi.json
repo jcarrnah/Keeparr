@@ -503,7 +503,7 @@
       "post": {
         "tags": ["admin"],
         "summary": "Test a service connection",
-        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "type": "string", "enum": ["plex", "jellyfin", "emby", "tautulli", "seerr", "sonarr", "radarr"] }, "url": { "type": "string" }, "apiKey": { "type": "string" } }, "required": ["service"] } } } },
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "service": { "type": "string", "enum": ["plex", "plexOwner", "jellyfin", "emby", "tautulli", "seerr", "sonarr", "radarr"] }, "url": { "type": "string" }, "apiKey": { "type": "string" } }, "required": ["service"] } } } },
         "responses": { "200": { "description": "`{ok, message}`" } }
       }
     },

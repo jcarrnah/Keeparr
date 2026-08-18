@@ -6,6 +6,8 @@ import {
   plexConnectUrl,
   sumLeafSizes,
   sumPartSizes,
+  plexHistoryScope,
+  plexOwnerLogin,
   plexWatchHistory,
   usefulServerConnections,
   type PlexMetadata,
@@ -459,5 +461,88 @@ describe('plexWatchHistory', () => {
     await expect(
       plexWatchHistory('http://plex:32400', 'tok', { pageSize: 2 })
     ).rejects.toThrow(/ignored history paging/);
+  });
+});
+
+describe('plexOwnerLogin', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('reads the server owner from /myplex/account (an email, not a username)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({
+        contentType: 'application/json',
+        body: { MyPlex: { username: 'junco3@gmail.com', signInState: 'ok' } },
+      })
+    );
+    expect(await plexOwnerLogin('http://plex:32400', 'tok')).toBe('junco3@gmail.com');
+  });
+
+  it('returns null instead of throwing when PMS will not say', async () => {
+    // The caller only uses this to attribute history; failing to resolve must
+    // degrade to "do not remap", never break the watch sync.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({ ok: false, status: 401, contentType: 'application/json', body: {} })
+    );
+    expect(await plexOwnerLogin('http://plex:32400', 'tok')).toBeNull();
+  });
+
+  it('returns null when the payload has no username', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({ contentType: 'application/json', body: { MyPlex: {} } })
+    );
+    expect(await plexOwnerLogin('http://plex:32400', 'tok')).toBeNull();
+  });
+});
+
+describe('plexHistoryScope (catching a non-owner token at paste time)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const hist = (rows: unknown[], totalSize: number) =>
+    fakeRes({
+      contentType: 'application/json',
+      body: { MediaContainer: { totalSize, Metadata: rows } },
+    });
+
+  it('accepts a token that sees several accounts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      hist(
+        [
+          { type: 'movie', accountID: 1, ratingKey: 'a', viewedAt: 1 },
+          { type: 'movie', accountID: 3629986, ratingKey: 'b', viewedAt: 2 },
+        ],
+        99016
+      )
+    );
+    const r = await plexHistoryScope('http://plex:32400', 'tok');
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain('99016');
+  });
+
+  it('rejects a shared-user token that can only see itself', async () => {
+    // The dangerous case: HTTP 200, plausible data, silently one account.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      hist(
+        [
+          { type: 'movie', accountID: 3629986, ratingKey: 'a', viewedAt: 1 },
+          { type: 'episode', accountID: 3629986, grandparentKey: '/library/metadata/9', viewedAt: 2 },
+        ],
+        15714
+      )
+    );
+    const r = await plexHistoryScope('http://plex:32400', 'tok');
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/not the server owner/i);
+  });
+
+  it('reports an empty history rather than calling it a pass', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(hist([], 0));
+    expect((await plexHistoryScope('http://plex:32400', 'tok')).ok).toBe(false);
+  });
+
+  it('never throws on a bad token', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({ ok: false, status: 401, contentType: 'application/json', body: {} })
+    );
+    expect((await plexHistoryScope('http://plex:32400', 'bad')).ok).toBe(false);
   });
 });

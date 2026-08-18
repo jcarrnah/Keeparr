@@ -186,6 +186,15 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   out of "never watched", while Tautulli exclusively held 294 in-library titles somebody
   had started and never finished. Neither source alone is complete.
 
+  **On Plex, check Settings -> Connections -> Server owner token.** Plex hands over
+  *everyone's* play history only to the account that owns the server. If Keeparr was
+  connected by a shared user (whoever set Keeparr up need not own the Plex server),
+  the watch job silently sees just that one person - no error, only a smaller number.
+  Paste the owner's `X-Plex-Token` into that field and hit **Test**: it reports how
+  many accounts the token can actually reach, so a wrongly-scoped token is caught
+  immediately. Nobody has to sign in as the owner, and the field is optional -
+  without it you still get the connected user's full history plus Tautulli's.
+
   All watch surfaces stay hidden until history has actually synced - an empty table
   can't tell "nobody watched this" from "we haven't looked yet", and guessing wrong
   would mark your whole library as reclaimable.
@@ -253,8 +262,31 @@ KEEPARR_DEV_LOGIN=1 npm run dev
   care", search, browse, sizes, library filters, the storage header (~75% full).
 - Data lives only in `./data` (gitignored) and **persists** across restarts, so your
   toggles survive. `npm run seed -- --reset` wipes and reloads; or delete `./data`.
-- **`KEEPARR_DEV_LOGIN` must never be set in production** — it bypasses login. Unset,
+- **`KEEPARR_DEV_LOGIN` must never be set in production** - it bypasses login. Unset,
   it has no effect and the normal Plex login gate applies.
+
+### Testing against your REAL server, locally
+
+The demo above is entirely fake, so anything that actually talks to Plex fails in
+it: the "Test" button reports HTML-not-JSON, and Discover finds nothing. That is
+the seeded dummy token being refused, not a bug - but it does mean the demo can't
+verify connection changes. Two ways to do that without deploying:
+
+```bash
+# 1. Fake media, REAL connection - Discover, the Test buttons, the owner token
+#    and the watch job all hit your actual server.
+DATA_DIR=./data-realseed KEEPARR_DEV_PLEX_URL=http://192.168.1.2:32400 KEEPARR_DEV_PLEX_TOKEN=<X-Plex-Token> npm run seed
+DATA_DIR=./data-realseed KEEPARR_DEV_LOGIN=1 npx next dev -p 3112
+
+# 2. A genuine first-run install - no seed, no auto-login, isolated data dir.
+#    The only way to exercise the SETUP and PLEX LOGIN screens locally.
+npm run dev:real
+```
+
+Use the **server owner's** token: Plex reveals every account's watch history only
+to the owner, and silently returns just the token holder's rows to anyone else.
+Both write to `./data-realseed` / `./data-real`, so your demo data in `./data`
+is untouched. Both directories are gitignored.
 
 ## Tests & build
 

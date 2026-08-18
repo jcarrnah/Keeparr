@@ -4,12 +4,19 @@ import {
   getRecentlyAdded,
   getSectionItems,
   getSections,
+  plexOwnerLogin,
   plexWatchHistory,
   sumLeafSizes,
   sumPartSizes,
   type PlexMetadata,
 } from '../plex';
-import { getOwnerId, getPlexBaseUrl, getPlexSections, getServerToken } from '../settings';
+import {
+  getPlexBaseUrl,
+  getPlexOwnerToken,
+  getPlexSections,
+  getServerToken,
+} from '../settings';
+import { findUserIdByLogin } from '../queries';
 import { deriveShowDirPaths, lastSegment, parentPath, parentSegment } from '../paths';
 import type { LibraryKind } from '../types';
 import type { BackendItem, BackendSection, MediaBackend } from './types';
@@ -112,9 +119,22 @@ export const plexBackend: MediaBackend = {
   },
   // Plex's own play history - deeper than Tautulli's (it starts when the server
   // was built, not when Tautulli was installed). `lib/sync.ts` merges the two.
-  // ownerId remaps PMS's local account 1 back to the owner's plex.tv id.
+  //
+  // History labels the SERVER OWNER with the bare local account id 1, so we ask
+  // PMS who that is and resolve them to a Keeparr user. Do NOT substitute
+  // `getOwnerId()` here: that setting names whoever first set Keeparr up, which
+  // is often a shared user, and using it would file the server owner's viewing
+  // under the wrong person. Unresolvable => no remap, leaving those rows under
+  // "1" - they still count for "never watched by anyone", just not for one
+  // user's own watched badges. Under-attribution beats mis-attribution.
   async getWatchData() {
     const { baseUrl, token } = creds();
-    return plexWatchHistory(baseUrl, token, { ownerId: getOwnerId() });
+    // Prefer an explicitly configured owner token: Plex hands over EVERY
+    // account's history only to the server owner, and silently truncates to
+    // the token holder otherwise. Falls back to the ordinary server token,
+    // which still yields that one user's (much deeper than Tautulli) history.
+    const histToken = getPlexOwnerToken() || token;
+    const ownerId = findUserIdByLogin(await plexOwnerLogin(baseUrl, histToken));
+    return plexWatchHistory(baseUrl, histToken, { ownerId });
   },
 };

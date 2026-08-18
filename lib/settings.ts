@@ -16,6 +16,7 @@ import {
 const SECRET_KEYS = new Set([
   'plex_admin_token',
   'plex_server_token',
+  'plex_owner_token',
   // Jellyfin / Emby access tokens (mirror the Plex token keys per backend).
   'jellyfin_token',
   'jellyfin_admin_token',
@@ -101,6 +102,22 @@ export const getServerToken = () => readSetting(skey('token'));
 export const getServerId = () => readSetting(skey('id'));
 export const getServerName = () => readSetting(skey('name'));
 export const getOwnerId = () => readSetting(skey('ownerId'));
+
+/**
+ * OPTIONAL Plex server-owner token, for reads Plex only grants to the owner.
+ *
+ * Right now that is play history: Plex silently returns just the token
+ * holder's own rows to anyone else, so if Keeparr was connected by a shared
+ * user (common - whoever set Keeparr up need not own the Plex server) the
+ * watch job can only ever see one person. Pasting the owner's token here fixes
+ * that WITHOUT anyone having to sign in as them.
+ *
+ * Deliberately NOT used for ordinary PMS reads - those keep using
+ * `plex_server_token`, so nothing existing can regress if this is wrong or
+ * absent. Empty => fall back to the server token (self-scoped history).
+ */
+export const getPlexOwnerToken = () => readSetting('plex_owner_token');
+export const isPlexOwnerTokenSet = () => !!getPlexOwnerToken();
 export const getAdminToken = () => readSetting(skey('adminToken'));
 
 // Plex-specific aliases kept for the Plex-only code paths (discovery, identity).
