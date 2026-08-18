@@ -515,6 +515,7 @@ describe('plexHistoryScope (catching a non-owner token at paste time)', () => {
     );
     const r = await plexHistoryScope('http://plex:32400', 'tok');
     expect(r.ok).toBe(true);
+    expect(r.status).toBe('all');
     expect(r.message).toContain('99016');
   });
 
@@ -531,6 +532,7 @@ describe('plexHistoryScope (catching a non-owner token at paste time)', () => {
     );
     const r = await plexHistoryScope('http://plex:32400', 'tok');
     expect(r.ok).toBe(false);
+    expect(r.status).toBe('limited');
     expect(r.message).toMatch(/not the server owner/i);
   });
 
@@ -539,10 +541,21 @@ describe('plexHistoryScope (catching a non-owner token at paste time)', () => {
     expect((await plexHistoryScope('http://plex:32400', 'tok')).ok).toBe(false);
   });
 
-  it('never throws on a bad token', async () => {
+  it('reports UNKNOWN rather than "limited" when Plex is unreachable', async () => {
+    // Unreachable says nothing about scope. Calling it limited would tell an
+    // admin their token is too narrow every time their server is down.
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('fetch failed'));
+    const r = await plexHistoryScope('http://plex:32400', 'tok');
+    expect(r.status).toBe('unknown');
+    expect(r.ok).toBe(false);
+  });
+
+  it('never throws on a bad token, and does not call that limited either', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       fakeRes({ ok: false, status: 401, contentType: 'application/json', body: {} })
     );
-    expect((await plexHistoryScope('http://plex:32400', 'bad')).ok).toBe(false);
+    const r = await plexHistoryScope('http://plex:32400', 'bad');
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe('unknown');
   });
 });

@@ -569,7 +569,7 @@ export async function plexOwnerLogin(
 export async function plexHistoryScope(
   baseUrl: string,
   token: string
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; status: 'all' | 'limited' | 'unknown'; message: string }> {
   try {
     const d = await pmsGet<{
       MediaContainer: { totalSize?: number; Metadata?: PlexHistoryRow[] };
@@ -584,11 +584,17 @@ export async function plexHistoryScope(
       (mc.Metadata ?? []).map((r) => String(r.accountID)).filter((a) => a !== 'undefined')
     ).size;
     if (total === 0) {
-      return { ok: false, message: 'Reached Plex, but it reports no play history' };
+      // No history at all is not evidence of a narrow token.
+      return {
+        ok: false,
+        status: 'unknown',
+        message: 'Reached Plex, but it reports no play history',
+      };
     }
     if (accounts <= 1) {
       return {
         ok: false,
+        status: 'limited',
         message:
           `Only 1 account visible in ${total} rows - this is not the server ` +
           `owner's token, so other users' history cannot be read`,
@@ -596,10 +602,14 @@ export async function plexHistoryScope(
     }
     return {
       ok: true,
+      status: 'all',
       message: `Owner token OK - ${accounts}+ accounts across ${total} history rows`,
     };
   } catch (e) {
-    return { ok: false, message: String(e) };
+    // Unreachable/unauthorised says nothing about SCOPE. Reporting this as
+    // "limited" would tell an admin their token is too narrow whenever Plex is
+    // merely down, which is a different problem with a different fix.
+    return { ok: false, status: 'unknown', message: String(e) };
   }
 }
 

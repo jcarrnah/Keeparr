@@ -42,6 +42,7 @@ export async function GET() {
     return NextResponse.json({
       applicable: true,
       configured: true,
+      status: r.status, // all | limited | unknown
       allUsers: r.ok,
       message: r.message,
       usingOwnerToken: !!ownerToken,

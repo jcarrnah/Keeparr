@@ -304,6 +304,7 @@ export default function ConnectionsPanel() {
   const [signingIn, setSigningIn] = useState(false);
   const [signedInAs, setSignedInAs] = useState<string | null>(null);
   const [scope, setScope] = useState<{
+    status?: 'all' | 'limited' | 'unknown';
     allUsers?: boolean;
     message?: string;
     usingOwnerToken?: boolean;
@@ -535,7 +536,8 @@ export default function ConnectionsPanel() {
   const checkScope = useCallback(async () => {
     try {
       const r = await fetch('/api/admin/plex-scope').then((x) => x.json());
-      setScope(r.applicable && r.configured ? r : null);
+      // 'unknown' (Plex unreachable) must not be rendered as a scope verdict.
+      setScope(r.applicable && r.configured && r.status !== 'unknown' ? r : null);
     } catch {
       setScope(null); // never block the page on a diagnostic
     }
