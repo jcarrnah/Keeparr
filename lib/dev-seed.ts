@@ -267,9 +267,11 @@ export function seedDevData(opts: { reset?: boolean } = {}): SeedResult {
   } else {
     setMediaServerType('plex');
   }
-  // Fake Tautulli so the watch surfaces (Browse "Watched" filter, the watched
-  // badge, Big Picture "never watched") are visible in the demo. No real calls
-  // are made — the seeded watch_history rows below stand in for synced history.
+  // Fake Tautulli so the Connections card has something to show. The watch
+  // surfaces no longer depend on it - they gate on a source being configured
+  // plus the seeded watch_history rows below. No real calls are made; running
+  // the watch job in the demo will report both sources failing against
+  // localhost.
   writeSetting('tautulli_url', 'http://localhost:8181');
   writeSetting('tautulli_api_key', 'dev-tautulli-key');
   // Fake Seerr so the "OK to delete" surfaces (the requester sign-off control,

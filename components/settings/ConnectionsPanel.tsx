@@ -688,10 +688,13 @@ export default function ConnectionsPanel() {
         </div>
       </Card>
 
-      {/* Tautulli is the Plex watch-history source. Jellyfin/Emby have native
-          watch data, so the card is hidden for them. */}
+      {/* Tautulli is an ADDITIONAL Plex watch source - Plex's own play history
+          is read directly, and the watch job merges the two. Tautulli is still
+          worth connecting: it logs partial plays (Plex only records a scrobble)
+          and remembers media Plex has pruned. Hidden for Jellyfin/Emby, which
+          have native watch data and no Tautulli integration. */}
       {serverType === 'plex' && (
-        <Card title="Tautulli (watch history)">
+        <Card title="Tautulli (extra watch history)">
           <ServiceFields parts={taut} setParts={setTaut} showBase />
           <label className="block text-sm text-slate-400 mt-3 mb-1">
             API key {tautConfigured && '(saved — leave blank to keep)'}

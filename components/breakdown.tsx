@@ -318,8 +318,9 @@ export interface Overview {
   mediaUsedBytes: number;
   libraries: LibraryBreakdown[];
   totals: OverviewTotals;
-  /** Tautulli connected → watch data (never-watched metric) is meaningful. */
-  tautulli?: boolean;
+  /** A watch source is connected AND has synced rows -> the never-watched
+   *  metric is meaningful. False also covers "synced nothing yet". */
+  watchAvailable?: boolean;
   /** Sonarr/Radarr connected → the "Reclaim by quality" breakdown is present. */
   arr?: boolean;
   qualityBreakdown?: {

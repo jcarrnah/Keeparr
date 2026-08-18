@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { mapItem } from './plex';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mapItem, plexBackend } from './plex';
 import type { PlexMetadata } from '../plex';
+import * as plexApi from '../plex';
+import { __setTestDbToMemory, __closeDb } from '../db';
+import { writeSetting } from '../settings';
 
 const node = (over: Partial<PlexMetadata> = {}): PlexMetadata => ({
   ratingKey: '1',
@@ -79,5 +82,25 @@ describe('plex backend mapItem (on-disk name capture)', () => {
     // No Media data → null; shows never carry a count.
     expect(mapItem(node(), 'movie', 1).fileCount).toBeNull();
     expect(mapItem(node({ Location: [{ path: '/tv/X' }] }), 'show', 0).fileCount).toBeNull();
+  });
+});
+
+describe('plex backend getWatchData', () => {
+  beforeEach(() => {
+    __setTestDbToMemory();
+    writeSetting('plex_base_url', 'http://plex:32400');
+    writeSetting('plex_server_token', 'tok');
+    writeSetting('plex_owner_id', '22839572');
+  });
+  afterEach(() => vi.restoreAllMocks());
+  afterAll(() => __closeDb());
+
+  it('passes the configured creds and the owner id through', async () => {
+    const spy = vi.spyOn(plexApi, 'plexWatchHistory').mockResolvedValue([]);
+    await plexBackend.getWatchData();
+    // The owner id is what remaps PMS's local account 1 back onto a real user.
+    expect(spy).toHaveBeenCalledWith('http://plex:32400', 'tok', {
+      ownerId: '22839572',
+    });
   });
 });

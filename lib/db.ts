@@ -84,7 +84,8 @@ export function applySchema(database: Database.Database): void {
       last_login   INTEGER
     );
 
-    -- Per-user watch data cached from Tautulli (for "your top watched").
+    -- Per-user watch data: the media server's own play history merged with
+    -- Tautulli's (when connected). See lib/sync.ts syncWatchHistory.
     CREATE TABLE IF NOT EXISTS watch_history (
       plex_user_id TEXT NOT NULL,
       rating_key   TEXT NOT NULL,              -- grandparent (series) or movie rating_key

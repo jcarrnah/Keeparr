@@ -38,8 +38,8 @@ export interface JobDef {
 }
 
 /** The schedulable refresh jobs, in display order. Labels are backend-neutral —
- *  the sync engine serves Plex/Jellyfin/Emby alike (watch = Tautulli on Plex,
- *  native data on Jellyfin/Emby). */
+ *  the sync engine serves Plex/Jellyfin/Emby alike (watch merges the server's
+ *  own play history with Tautulli's, whichever are configured). */
 export const JOBS: JobDef[] = [
   { id: 'recentlyAdded', label: 'Recently added scan', run: syncRecentlyAdded },
   { id: 'library', label: 'Full library scan', run: syncLibrary },

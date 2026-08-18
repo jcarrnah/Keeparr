@@ -7,7 +7,7 @@ import {
   isServerConfigured,
   isWatchAvailable,
 } from '@/lib/settings';
-import { sectionSizeSummary } from '@/lib/queries';
+import { sectionSizeSummary, watchHistoryExists } from '@/lib/queries';
 import AppShell from '@/components/AppShell';
 import LibraryBrowser from '@/components/LibraryBrowser';
 import type { LibrarySection } from '@/lib/types';
@@ -37,7 +37,7 @@ export default async function LibraryPage() {
       ) : (
         <LibraryBrowser
           sections={sections}
-          tautulli={isWatchAvailable()}
+          watchAvailable={isWatchAvailable() && watchHistoryExists()}
           arr={isArrConfigured()}
           seerr={isSeerrConfigured()}
         />

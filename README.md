@@ -65,7 +65,7 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   anyone)**) are OR'd together, so you can view several states at once; it defaults
   to **Undecided** (hiding what you've already decided on) and checking nothing
   shows everything — and — when
-  **watch data is available** (Tautulli for Plex; native for Jellyfin/Emby) — a
+  **watch data has been synced** - a
   **Watched** filter: watched / not watched **by
   you**, **not watched by anyone** (server-wide), watched in the last 30·60·90 days,
   or not watched in 90+ days (great paired with size sort to surface the biggest
@@ -88,7 +88,7 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   / I don't care / undecided, with free as the empty remainder), your review
   progress, a "where your space goes" donut, and per-library breakdown cards with
   bars sized proportional to each library. The charts are interactive (hover to
-  highlight a segment + see its size/share). When **Tautulli is connected** it also
+  highlight a segment + see its size/share). Once **watch history has synced** it also
   surfaces **"never watched by anyone"** — a headline stat, brackets above the disk
   bar and each library card marking the never-watched slice *within* each keep
   segment (so you can spot *kept* titles nobody has watched), and a dedicated
@@ -173,10 +173,22 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   anything in *arr. Titles match on stable tvdb/tmdb ids; unmatched titles are fine
   to leave. All of this stays hidden until you connect an instance.
 - **Watch history** — powers the Browse **Watched** filter, a small "watched" badge on
-  cards, and the Big Picture **never watched by anyone** reclaim metric. On **Plex** this
-  needs **Tautulli** (optional connector); on **Jellyfin/Emby** it comes natively from the
-  server's own play data — no extra setup. All watch surfaces stay hidden when no watch
-  source is available, so there's no dead UI.
+  cards, and the Big Picture **never watched by anyone** reclaim metric. It comes from
+  your media server's own play history - **Plex**, **Jellyfin** and **Emby** all report
+  it natively, with no extra setup - and Keeparr reads **all users'** history, not just
+  yours, so "never watched by anyone" means what it says.
+
+  **Tautulli is still worth connecting on Plex**, because the two sources see different
+  things and Keeparr merges them. Plex only records a play once it scrobbles (~90%
+  watched), so partial plays leave no trace; Tautulli logs the session either way, and
+  remembers titles Plex has since pruned from its history. On one real server Plex's own
+  history reached back 4.4 years against Tautulli's 13 months and moved **1,717 titles**
+  out of "never watched", while Tautulli exclusively held 294 in-library titles somebody
+  had started and never finished. Neither source alone is complete.
+
+  All watch surfaces stay hidden until history has actually synced - an empty table
+  can't tell "nobody watched this" from "we haven't looked yet", and guessing wrong
+  would mark your whole library as reclaimable.
 - **Seerr/Overseerr** (optional) — badges titles you requested, and unlocks **"OK to
   delete"** so the original requester can release a title they're done with (see
   above). Cached locally and refreshed by the *Requests* job (so badges/requests
@@ -218,8 +230,8 @@ First run: a setup step asks which media server you use — **Plex, Jellyfin, or
 Plex → sign in with Plex, then **Settings → Connections** → Discover & connect your
 server (or host/port/SSL manually). Jellyfin/Emby → enter your server URL, then sign in
 with a server account (the first user becomes the Owner/admin). Then optionally add
-Seerr and any number of Sonarr/Radarr instances (and Tautulli, for Plex watch history —
-Jellyfin/Emby report watch data natively) → on the **Connections** page pick which
+Seerr and any number of Sonarr/Radarr instances (and, on Plex, Tautulli - watch history
+works without it, but it adds partial plays Plex never records) -> on the **Connections** page pick which
 libraries to track and map each to its on-disk path (for the free-space header) → in
 **Settings → Jobs & Cache** hit **Run all now** (or run individual jobs).
 

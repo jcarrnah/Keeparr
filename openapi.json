@@ -330,7 +330,7 @@
       "get": {
         "tags": ["insights"],
         "summary": "Per-library keep breakdown + storage (Keep totals + Big Picture)",
-        "responses": { "200": { "description": "`{libraries[], storage, totals, tautulli, arr?, qualityBreakdown?, seerr?, markedForDelete?}`" } }
+        "responses": { "200": { "description": "`{libraries[], storage, totals, watchAvailable, arr?, qualityBreakdown?, seerr?, markedForDelete?}`" } }
       }
     },
     "/api/storage": {

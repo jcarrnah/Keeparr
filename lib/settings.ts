@@ -123,12 +123,18 @@ export const isTautulliConfigured = () =>
   !!getTautulliUrl() && !!getTautulliKey();
 
 /**
- * Whether watch data is available for the configured backend (drives the Watched
- * filter, the watched badge, and the Big Picture never-watched metric): Plex needs
- * Tautulli; Jellyfin/Emby have native watch data once connected.
+ * Whether a watch SOURCE is configured. Every backend now has native history of
+ * its own (Plex reads its play history over the API, Jellyfin/Emby their
+ * UserData), and Tautulli is an additional source rather than the only one for
+ * Plex.
+ *
+ * This is a configuration question, not a data one - `lib/health.ts` uses it to
+ * decide whether watch-job failures are worth surfacing, which must stay true
+ * before the job's first run. Surfaces that would MISREAD an empty table (the
+ * never-watched metric reads "nobody watched anything") pair this with
+ * `watchHistoryExists()` instead.
  */
-export const isWatchAvailable = () =>
-  getMediaServerType() === 'plex' ? isTautulliConfigured() : isServerConfigured();
+export const isWatchAvailable = () => isServerConfigured() || isTautulliConfigured();
 
 // --- Seerr ---
 export const getSeerrUrl = () => readSetting('seerr_url');

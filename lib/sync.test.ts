@@ -30,8 +30,10 @@ import {
 } from './settings';
 import type { BackendItem, BackendSection, MediaBackend } from './mediaserver';
 import { fetchSonarr, fetchRadarr, type ArrRecord } from './arr';
+import { aggregatedWatchHistory } from './tautulli';
 import { requestedRatingKeysForUser } from './seerr';
 import {
+  mergeWatchRows,
   syncArr,
   syncLibrary,
   syncRecentlyAdded,
@@ -48,6 +50,7 @@ vi.mock('./mediaserver', () => ({ getBackend: () => fakeBackend }));
 // Network clients are mocked (never storage); everything below them is real.
 vi.mock('./arr', () => ({ fetchSonarr: vi.fn(), fetchRadarr: vi.fn() }));
 vi.mock('./seerr', () => ({ requestedRatingKeysForUser: vi.fn() }));
+vi.mock('./tautulli', () => ({ aggregatedWatchHistory: vi.fn() }));
 
 const GB = 1024 ** 3;
 
@@ -537,6 +540,113 @@ describe('syncWatchHistory', () => {
     const res = await syncWatchHistory();
     expect(res.result).toBe(0);
     expect(res.message).toContain('No watch source');
+  });
+
+  it('merges native + Tautulli, keeping the higher play count and later watch', async () => {
+    writeSetting('tautulli_url', 'http://taut');
+    writeSetting('tautulli_api_key', 'k');
+    fakeBackend = {
+      ...backendWith([], {}),
+      getWatchData: async () => [
+        { plexUserId: 'u1', ratingKey: 'shared', plays: 9, lastWatched: 100 },
+        { plexUserId: 'u1', ratingKey: 'nativeOnly', plays: 1, lastWatched: 50 },
+      ],
+    };
+    vi.mocked(aggregatedWatchHistory).mockResolvedValue([
+      { plexUserId: 'u1', ratingKey: 'shared', plays: 2, lastWatched: 900 },
+      { plexUserId: 'u1', ratingKey: 'tautOnly', plays: 4, lastWatched: 70 },
+    ]);
+    const res = await syncWatchHistory();
+    expect(res.result).toBe(3);
+    expect(res.message).toContain('native');
+    expect(res.message).toContain('tautulli');
+    // The partial-play signal only Tautulli sees must survive the merge.
+    expect(watchedRatingKeys('u1').has('tautOnly')).toBe(true);
+    expect(watchedRatingKeys('u1').has('nativeOnly')).toBe(true);
+  });
+
+  it('keeps native rows when Tautulli fails, and says so', async () => {
+    writeSetting('tautulli_url', 'http://taut');
+    writeSetting('tautulli_api_key', 'k');
+    fakeBackend = {
+      ...backendWith([], {}),
+      getWatchData: async () => [
+        { plexUserId: 'u1', ratingKey: 'n1', plays: 1, lastWatched: 10 },
+      ],
+    };
+    vi.mocked(aggregatedWatchHistory).mockRejectedValue(new Error('tautulli down'));
+    const res = await syncWatchHistory();
+    expect(res.result).toBe(1);
+    expect(watchedRatingKeys('u1').has('n1')).toBe(true);
+    expect(res.message).toMatch(/tautulli failed/i);
+  });
+
+  it('keeps Tautulli rows when the native source fails', async () => {
+    writeSetting('tautulli_url', 'http://taut');
+    writeSetting('tautulli_api_key', 'k');
+    fakeBackend = {
+      ...backendWith([], {}),
+      getWatchData: async () => {
+        throw new Error('plex down');
+      },
+    };
+    vi.mocked(aggregatedWatchHistory).mockResolvedValue([
+      { plexUserId: 'u1', ratingKey: 't1', plays: 1, lastWatched: 10 },
+    ]);
+    const res = await syncWatchHistory();
+    expect(res.result).toBe(1);
+    expect(watchedRatingKeys('u1').has('t1')).toBe(true);
+    expect(res.message).toMatch(/native failed/i);
+  });
+
+  it('throws when every configured source fails, so the job goes red', async () => {
+    // Returning ok with 0 rows would leave health.ts green while the
+    // never-watched metric silently froze at the last good run.
+    writeSetting('tautulli_url', 'http://taut');
+    writeSetting('tautulli_api_key', 'k');
+    fakeBackend = {
+      ...backendWith([], {}),
+      getWatchData: async () => {
+        throw new Error('plex down');
+      },
+    };
+    vi.mocked(aggregatedWatchHistory).mockRejectedValue(new Error('tautulli down'));
+    await expect(syncWatchHistory()).rejects.toThrow(/no watch source could be read/i);
+  });
+});
+
+describe('mergeWatchRows', () => {
+  it('takes the higher play count and the later timestamp per user+key', () => {
+    expect(
+      mergeWatchRows([
+        { plexUserId: 'u1', ratingKey: 'a', plays: 9, lastWatched: 100 },
+        { plexUserId: 'u1', ratingKey: 'a', plays: 2, lastWatched: 900 },
+      ])
+    ).toEqual([{ plexUserId: 'u1', ratingKey: 'a', plays: 9, lastWatched: 900 }]);
+  });
+
+  it('keeps a real timestamp over a null and never coerces null to 0', () => {
+    expect(
+      mergeWatchRows([
+        { plexUserId: 'u1', ratingKey: 'a', plays: 1, lastWatched: null },
+        { plexUserId: 'u1', ratingKey: 'a', plays: 1, lastWatched: 500 },
+      ])[0].lastWatched
+    ).toBe(500);
+    // A row nobody has a timestamp for stays null rather than becoming the epoch.
+    expect(
+      mergeWatchRows([{ plexUserId: 'u1', ratingKey: 'b', plays: 1, lastWatched: null }])[0]
+        .lastWatched
+    ).toBeNull();
+  });
+
+  it('does not merge across different users or different keys', () => {
+    expect(
+      mergeWatchRows([
+        { plexUserId: 'u1', ratingKey: 'a', plays: 1, lastWatched: 1 },
+        { plexUserId: 'u2', ratingKey: 'a', plays: 1, lastWatched: 1 },
+        { plexUserId: 'u1', ratingKey: 'b', plays: 1, lastWatched: 1 },
+      ])
+    ).toHaveLength(3);
   });
 });
 

@@ -66,7 +66,8 @@ lib/
   plex.ts            plex.tv OAuth + PMS read API + size summation helpers
   jellyfin.ts        Jellyfin/Emby client (MediaBrowser API): auth + server info +
                      users (+ library/item/watch reads added in later phases)
-  tautulli.ts        watch-history client
+  tautulli.ts        watch-history client (an EXTRA source; the server's own
+                     play history is read by the backend adapters)
   seerr.ts           requests client
   arr.ts             Sonarr/Radarr v3 client (shared) + pure normalize fns (fetchSonarr/fetchRadarr/testArr)
   quality.ts         pure resolutionBucket()/RES_ORDER (shared by Browse + Big Picture quality grouping)
@@ -198,13 +199,28 @@ inside it with no page scroll.
   invalidate that user's outstanding tokens — "sign out all devices" and admin-disable
   both bump it; session tokens carry the epoch at mint time and `getSessionUser` rejects
   a mismatch). Migrated via guarded `ALTER TABLE`.
-- `watch_history` — `(plex_user_id, rating_key)` `plays` + `last_watched`, from
-  **Tautulli (Plex)** or **native `UserData` (Jellyfin/Emby)** — `syncWatchHistory` uses
-  `getBackend().getWatchData()` (native) and falls back to Tautulli when the backend has
-  none. Powers the Browse **Watched** filter + the per-card watched badge (by you) and the
-  Big Picture **never watched by anyone** metric. Indexed by user (`idx_watch_user`) and by
-  item (`idx_watch_item`, for the by-anyone lookup). UI watch surfaces gate on
-  `isWatchAvailable()` (Tautulli for Plex, native otherwise).
+- `watch_history` - `(plex_user_id, rating_key)` `plays` + `last_watched`. Written by
+  `syncWatchHistory`, which **MERGES every configured source** rather than picking one:
+  the backend's own history (`getBackend().getWatchData()` - Plex's play history via
+  `plexWatchHistory`, Jellyfin/Emby's `UserData`) **plus** Tautulli when connected. They
+  see different things and BOTH matter: the server's history reaches back to when the
+  server was built but only records a play once it scrobbles (~90% watched), while
+  Tautulli's window starts at install but logs partial plays and remembers media the
+  server has pruned. Measured on the live server: Plex's own history went back 4.4 years
+  vs Tautulli's 13 months and flipped **1,717 titles** out of "never watched"; Tautulli
+  exclusively held 294 in-library partial plays. Merge rule (`mergeWatchRows` in
+  `lib/sync.ts`): one row per (user, item), `plays` = **max** (the sources count the same
+  viewing differently, so summing double-counts), `last_watched` = later, `null`
+  preserved rather than coerced to 0. One source failing keeps the other's rows; ALL
+  configured sources failing throws, so the job goes red instead of reporting a green
+  "0 rows". Powers the Browse **Watched** filter + the per-card watched badge (by you) and
+  the Big Picture **never watched by anyone** metric. Indexed by user (`idx_watch_user`)
+  and by item (`idx_watch_item`, for the by-anyone lookup). Never pruned - it is the union
+  of every source that has ever run, which is why `clearWatchHistory()` is lossy while a
+  source is down. UI watch surfaces gate on `isWatchAvailable()` (any source configured)
+  **and** `watchHistoryExists()` - an empty table can't distinguish "nobody watched
+  anything" from "not synced yet", and without the second check a freshly connected
+  server reports its whole library as never-watched.
 - `seerr_requests` — `(plex_user_id, rating_key)`; cached Seerr requests (refreshed
   by the `requests` job; badges/filters read this, not live Seerr). Also warmed
   for a single user on their **first login** via `syncSeerrRequestsForUser`, so
@@ -338,8 +354,8 @@ when it has no tvdb/tmdb **and** no imdb.
   drives `state`.) Also a **Grid/List** view toggle (remembered in
   `localStorage`; List adds
   click-to-sort column headers — all columns, sort persisted — and a poster column),
-  — **only when watch data is available** (`isWatchAvailable()`: Tautulli for
-  Plex, native for Jellyfin/Emby) — a **Watched** filter (`watch=`):
+  - **only when watch data is available** (`isWatchAvailable() &&
+  watchHistoryExists()`) - a **Watched** filter (`watch=`):
   watched/not-watched **by you**, **not watched by anyone** (`unwatchedAny`,
   server-wide), recency windows, `stale90`; — **only when Sonarr/Radarr is
   connected** — **multi-select** `source`/`instance`/`tag`/`quality`/`status`/
@@ -369,7 +385,8 @@ when it has no tvdb/tmdb **and** no imdb.
   `unwatchedUndecidedBytes` (the never-watched bytes split by keep bucket, so the
   metric can be drawn as a subset of the composition bar — surfacing e.g. kept
   titles nobody has watched), `storage` totals, `mediaUsedBytes`, summed `totals`,
-  `tautulli` (bool — whether watch surfaces should render), and — when Sonarr/Radarr
+  `watchAvailable` (bool - whether watch surfaces should render; a source is
+  configured AND has synced rows), and - when Sonarr/Radarr
   is connected — `arr: true` + `qualityBreakdown` (`{byQuality[], notInArr}` → the
   Big Picture "By quality" table; its `reclaimableBytes` field shows in the UI as
   "Not kept"); and — when Seerr is connected — `seerr: true` + `markedForDelete:
@@ -594,6 +611,19 @@ backend-aware UI are clickable offline (default = Plex). All inert/absent in pro
   `DateCreated`; poster = `GET /Items/{id}/Images/Primary?fillWidth=&fillHeight=&api_key=`.
   Emby is the same API (only the auth-header version string differs). Unverified against a
   live server — built to the documented API + Seerr's client.
+- **Plex play history** (the deep watch source, `metadata_item_views` over HTTP):
+  `GET /status/sessions/history/all` with the ADMIN token returns every account's
+  history - on the live server 99,011 rows across 87 accounts back to 2022-03-26,
+  a full pull in ~6s. Three traps, all verified against a live PMS:
+  (1) **paging needs BOTH `X-Plex-Container-Start` and `X-Plex-Container-Size`** -
+  Size alone is silently ignored and the whole history comes back in one response;
+  (2) **there is no `grandparentRatingKey`** - an episode's series id must be parsed
+  out of `grandparentKey` (`/library/metadata/24186`), and rows for deleted media
+  lose `ratingKey`/`grandparentKey` entirely (~4% - skip them);
+  (3) **the owner is `accountID: 1`**, PMS's local account id, while shared users
+  appear under their plex.tv id - so the owner must be remapped onto `getOwnerId()`
+  or their rows key to a `plex_user_id` no Keeparr user has. `viewedAt>=<ts>`
+  filtering works (`viewedAt>` is a 400) but is unused: a full pull is cheap.
 - **Tautulli**: `GET {url}/api/v2?apikey=&cmd=&out_type=json`; envelope
   `response.{result,message,data}`. `get_history` rows are at
   `response.data.data[]` (object); aggregate by `grandparent_rating_key`
@@ -662,7 +692,7 @@ A fuller source-verified reference is in the planning doc
 - Refresh work is split into scheduled jobs (`lib/jobs.ts`): `recentlyAdded` (cheap,
   newest items only), `library` (full inventory + movie sizes + new-show sizing),
   `sizes` (expensive per-series `getAllLeaves` recompute; also backfills show
-  `dir_path` derived from episode paths), `watch` (Tautulli),
+  `dir_path` derived from episode paths), `watch` (server history + Tautulli, merged),
   `requests` (Seerr cache), `arr` (Sonarr/Radarr quality+tags cache), `diskScan`
   (disk-orphan scan over the mapped library paths, `lib/diskscan.ts` — gated in
   `lib/health.ts jobRelevant` on storage mappings existing), `backup`

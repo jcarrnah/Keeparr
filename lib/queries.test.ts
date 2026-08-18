@@ -65,6 +65,7 @@ import {
   seerrRequestKeys,
   upsertWatchBatch,
   clearWatchHistory,
+  watchHistoryExists,
   existingShowSizes,
   showRatingKeys,
   updateItemSize,
@@ -1845,5 +1846,19 @@ describe('Problems page queries', () => {
       upsertMediaBatch([media('1', { dirName: null, fileName: null, dirPath: null })]);
       expect(sectionDiskNameStats('1').names.sort()).toEqual(['New Name', 'new.mkv']);
     });
+  });
+});
+
+describe('watchHistoryExists (empty table vs no data yet)', () => {
+  it('is false before anything is synced and true once rows land', () => {
+    // The never-watched surfaces gate on this: an empty table means "we have
+    // not looked yet", not "nobody watched anything".
+    expect(watchHistoryExists()).toBe(false);
+    upsertWatchBatch([
+      { plexUserId: 'u1', ratingKey: '1', plays: 1, lastWatched: 100 },
+    ]);
+    expect(watchHistoryExists()).toBe(true);
+    clearWatchHistory();
+    expect(watchHistoryExists()).toBe(false);
   });
 });

@@ -511,3 +511,120 @@ export async function getAllLeaves(
   }>(baseUrl, `/library/metadata/${showRatingKey}/allLeaves`, token);
   return d.MediaContainer.Metadata ?? [];
 }
+
+/**
+ * One row of `/status/sessions/history/all` - Plex's own play history
+ * (`metadata_item_views`), which reaches back to the server's creation rather
+ * than to whenever Tautulli was installed. Loosely typed; we read only what we
+ * need. NOTE there is no `grandparentRatingKey` here: an episode's series id
+ * has to be parsed out of `grandparentKey`.
+ */
+export interface PlexHistoryRow {
+  /** PMS-LOCAL account id, NOT always the plex.tv id - see `ownerId` below. */
+  accountID?: number;
+  /** The viewed item: the movie itself, or the individual episode. */
+  ratingKey?: string;
+  /** "/library/metadata/24186" - the SERIES; episodes only. */
+  grandparentKey?: string;
+  type?: string;
+  viewedAt?: number;
+}
+
+/** PMS numbers the server owner 1 in its local accounts table. */
+const PMS_OWNER_ACCOUNT_ID = '1';
+
+/**
+ * Every user's play history, rolled up the way `watch_history` stores it
+ * (movies by their own key, episodes by their series). This is the deep source:
+ * on a live server it spans 4+ years and ~99k rows, where Tautulli only covers
+ * however long it has been installed.
+ *
+ * `ownerId` is the owner's plex.tv id (`getOwnerId()`). Shared users appear in
+ * history under their plex.tv id, but **the owner appears as `1`** - PMS's local
+ * account id. Without the remap the owner's rows would key to a `plex_user_id`
+ * no Keeparr user has, so their own watched badges and filters would silently
+ * miss every native row. Verified on a live server: history `accountID` 1 =
+ * the same account Tautulli reports as user_id 22839572.
+ *
+ * Rows whose media has since been deleted lose their `ratingKey`/`grandparentKey`
+ * (Plex keeps the view, drops the pointer) and are skipped - about 4% of rows.
+ *
+ * Throws rather than returning a short list if paging can't complete: a silently
+ * truncated history would mark watched titles as never-watched, which is the
+ * expensive direction to be wrong in.
+ */
+export async function plexWatchHistory(
+  baseUrl: string,
+  token: string,
+  opts: { ownerId?: string | null; pageSize?: number; maxPages?: number } = {}
+): Promise<
+  { plexUserId: string; ratingKey: string; plays: number; lastWatched: number | null }[]
+> {
+  const { ownerId = null, pageSize = 5000, maxPages = 500 } = opts;
+  const acc = new Map<
+    string,
+    { plexUserId: string; ratingKey: string; plays: number; lastWatched: number | null }
+  >();
+  let start = 0;
+  let done = false;
+  for (let pageNo = 0; pageNo < maxPages && !done; pageNo++) {
+    // BOTH container params are required - Plex ignores Size on its own and
+    // returns the whole history in one response. The explicit sort keeps paging
+    // stable while the table is being written to underneath us.
+    const path = `/status/sessions/history/all?sort=viewedAt:asc&X-Plex-Container-Start=${start}&X-Plex-Container-Size=${pageSize}`;
+    const d = await pmsGet<{
+      MediaContainer: { totalSize?: number; size?: number; Metadata?: PlexHistoryRow[] };
+    }>(baseUrl, path, token);
+    const batch = d.MediaContainer.Metadata ?? [];
+    if (batch.length > pageSize) {
+      // The server ignored our paging (a stripped param, a proxy). Bail before
+      // aggregating rather than quietly holding the entire history in memory.
+      throw new Error(
+        `Plex ignored history paging: asked for ${pageSize} rows, got ${batch.length}`
+      );
+    }
+    // Aggregate per page so each batch of full Metadata nodes can be collected;
+    // only the (much smaller) Map survives the loop.
+    for (const r of batch) {
+      const key =
+        r.type === 'episode'
+          ? r.grandparentKey?.split('/').pop()
+          : r.type === 'movie'
+            ? r.ratingKey
+            : undefined;
+      if (!key || r.accountID == null) continue;
+      const raw = String(r.accountID);
+      const userId = raw === PMS_OWNER_ACCOUNT_ID && ownerId ? ownerId : raw;
+      const mapKey = `${userId}|${key}`;
+      const viewedAt = r.viewedAt ?? null;
+      const prev = acc.get(mapKey);
+      if (prev) {
+        prev.plays += 1;
+        if (viewedAt != null && (prev.lastWatched == null || viewedAt > prev.lastWatched)) {
+          prev.lastWatched = viewedAt;
+        }
+      } else {
+        acc.set(mapKey, {
+          plexUserId: userId,
+          ratingKey: String(key),
+          plays: 1,
+          lastWatched: viewedAt,
+        });
+      }
+    }
+    const total = d.MediaContainer.totalSize;
+    start += batch.length;
+    // Trust totalSize when the server sends it; otherwise a short page is the
+    // only end-of-list signal. Defaulting total to batch.length (as the section
+    // reader does) would stop after one page whenever totalSize is absent.
+    if (batch.length === 0 || (total != null ? start >= total : batch.length < pageSize)) {
+      done = true;
+    }
+  }
+  if (!done) {
+    throw new Error(
+      `Plex history exceeded ${maxPages} pages of ${pageSize}; refusing to write a truncated history`
+    );
+  }
+  return [...acc.values()];
+}

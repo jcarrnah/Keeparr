@@ -1391,7 +1391,7 @@ export function usedBytesBySection(): Map<string, number> {
 }
 
 // ---------------------------------------------------------------------------
-// Watch history (Tautulli sync writes these)
+// Watch history (the watch job writes these, merged across every source)
 // ---------------------------------------------------------------------------
 
 export function upsertWatchBatch(
@@ -1415,6 +1415,20 @@ export function upsertWatchBatch(
   });
   run(rows);
   return rows.length;
+}
+
+/**
+ * Has ANY watch data been synced yet? The never-watched surfaces cannot tell
+ * "nobody watched this" from "we have not looked yet" - both are an empty
+ * `watch_history` - so they gate on this as well as on a source being
+ * configured. Without it a freshly connected server reports its entire library
+ * as never watched until the first watch job lands.
+ */
+export function watchHistoryExists(): boolean {
+  const row = getDb()
+    .prepare('SELECT EXISTS (SELECT 1 FROM watch_history) AS present')
+    .get() as { present: number };
+  return row.present === 1;
 }
 
 /** Rating keys the given user has watched (for the "you watched" badge). */
@@ -1621,7 +1635,12 @@ export function clearSeerrRequests(): number {
   return getDb().prepare('DELETE FROM seerr_requests').run().changes;
 }
 
-/** Clear cached watch history (rebuilt by the Tautulli job). */
+/**
+ * Clear cached watch history. The watch job rebuilds it from whatever sources
+ * are reachable AT THAT MOMENT - so clearing while one is down permanently
+ * loses history only that source had (Tautulli remembers plays the server has
+ * since pruned, and vice versa).
+ */
 export function clearWatchHistory(): number {
   return getDb().prepare('DELETE FROM watch_history').run().changes;
 }

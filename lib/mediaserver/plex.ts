@@ -4,11 +4,12 @@ import {
   getRecentlyAdded,
   getSectionItems,
   getSections,
+  plexWatchHistory,
   sumLeafSizes,
   sumPartSizes,
   type PlexMetadata,
 } from '../plex';
-import { getPlexBaseUrl, getPlexSections, getServerToken } from '../settings';
+import { getOwnerId, getPlexBaseUrl, getPlexSections, getServerToken } from '../settings';
 import { deriveShowDirPaths, lastSegment, parentPath, parentSegment } from '../paths';
 import type { LibraryKind } from '../types';
 import type { BackendItem, BackendSection, MediaBackend } from './types';
@@ -109,8 +110,11 @@ export const plexBackend: MediaBackend = {
       dirNames: dirs.map((d) => lastSegment(d)).filter((n): n is string => !!n),
     };
   },
-  // Plex watch history comes from Tautulli (separate connector), not Plex itself.
+  // Plex's own play history - deeper than Tautulli's (it starts when the server
+  // was built, not when Tautulli was installed). `lib/sync.ts` merges the two.
+  // ownerId remaps PMS's local account 1 back to the owner's plex.tv id.
   async getWatchData() {
-    return null;
+    const { baseUrl, token } = creds();
+    return plexWatchHistory(baseUrl, token, { ownerId: getOwnerId() });
   },
 };

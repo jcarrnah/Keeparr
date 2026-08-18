@@ -7,8 +7,12 @@ import {
   markedForDeleteSummary,
   unmatchedMediaSummary,
   usedBytesBySection,
+  watchHistoryExists,
 } from '@/lib/queries';
 import { buildStorageReport } from '@/lib/storage';
+// Type-only (erased at build): makes the payload below checked against what the
+// client actually reads, so renaming a field can't silently blank a surface.
+import type { Overview } from '@/components/breakdown';
 import {
   getDevStorageTotal,
   getManagedSections,
@@ -106,22 +110,24 @@ export async function GET() {
 
     // Tracked media that lives on disk (= sum of library bytes); the disk bar
     // shows "other" = usedBytes - mediaUsedBytes for everything Keeparr can't see.
-    return NextResponse.json({
+    const payload: Overview = {
       storage,
       mediaUsedBytes: totals.bytes,
       libraries,
       totals,
-      // Watch data (badges, never-watched metric) only makes sense when a watch
-      // source is available (Tautulli for Plex, native for Jellyfin/Emby) — the UI
-      // hides those surfaces otherwise. (Field name kept as `tautulli` for the client.)
-      tautulli: isWatchAvailable(),
+      // The never-watched surfaces read an empty table as "nobody watched
+      // anything", so they need a source configured AND data actually synced -
+      // otherwise a freshly connected server claims its whole library is
+      // never-watched until the first watch job lands.
+      watchAvailable: isWatchAvailable() && watchHistoryExists(),
       // Sonarr/Radarr-derived "reclaim by quality" breakdown (when connected).
       arr,
       qualityBreakdown,
       // Seerr "OK to delete" surface (KPI + drill-down), when connected.
       seerr,
       markedForDelete,
-    });
+    };
+    return NextResponse.json(payload);
   } catch (e) {
     return errorResponse(e);
   }
