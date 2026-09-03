@@ -120,11 +120,19 @@ export async function syncLibrary(): Promise<JobResult> {
     } else {
       const batch: UpsertMediaInput[] = [];
       for (const show of items) {
-        let size = knownSizes.get(show.ratingKey);
+        // FORK: a cached 0 means "never successfully measured", not "empty" —
+        // re-measure it, the way syncRecentlyAdded already does. Treating 0 as
+        // a known size made this sweep write the stale 0 straight back, so a
+        // zero-size show could only ever be rescued by the separate `sizes`
+        // job — and a Library scan run to check whether a Problems-page fix
+        // worked would re-affirm the 0 instead.
+        const cached = knownSizes.get(show.ratingKey);
+        let size = cached === 0 ? undefined : cached;
         let derivedDir: string | null = null;
         let derivedNames: string[] = [];
         if (size == null) {
-          // New show — compute its size now so it never shows as 0 GB.
+          // New (or still-unmeasured) show — compute its size now so it never
+          // shows as 0 GB.
           try {
             const disk = await backend.showSize(show.ratingKey);
             size = disk.sizeBytes;

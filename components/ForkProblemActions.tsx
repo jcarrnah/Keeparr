@@ -28,7 +28,7 @@ import type { ProblemType } from '@/lib/types';
 import { formatSize } from '@/lib/format';
 import { useToast } from './Toaster';
 
-type Action = 'relink' | 'rescan' | 'diskscan';
+type Action = 'relink' | 'rescan' | 'diskscan' | 'recheck';
 
 interface ActionSpec {
   action: Action;
@@ -478,26 +478,29 @@ export default function ForkProblemActions({
   const hasSourceFixes = sourceFixes.length > 0 && sourceCandidates.length > 0;
   if (!spec && candidates.length === 0 && !hasSourceFixes) return null;
 
-  const run = async () => {
-    if (!spec) return;
+  const fire = async (action: Action) => {
     setBusy(true);
     try {
       const res = await fetch('/api/admin/problem-actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: spec.action }),
+        body: JSON.stringify({ action }),
       });
       if (!res.ok) throw new Error(String(res.status));
       const d = (await res.json()) as { message?: string; changed?: number };
       toast(d.message ?? 'Done.', d.changed ? 'success' : 'info');
       // A rescan is asynchronous server-side, so an immediate refetch would
       // still show the old rows — only refetch when something really changed.
-      if (d.changed && spec.action !== 'rescan') onDone();
+      if (d.changed && action !== 'rescan') onDone();
     } catch {
       toast("Couldn't run that fix — see Settings → Logs.", 'error');
     } finally {
       setBusy(false);
     }
+  };
+
+  const run = () => {
+    if (spec) void fire(spec.action);
   };
 
   return (
@@ -535,6 +538,21 @@ export default function ForkProblemActions({
             className="rounded-md border border-rose-900/70 px-3 py-1.5 text-sm text-rose-300 hover:border-rose-700"
           >
             {picking ? 'Close' : 'Schedule deletion…'}
+          </button>
+        )}
+        {/* Every source fix is asynchronous in the OTHER app, and this page
+            reads Keeparr's cache — so a title you just fixed keeps showing as a
+            problem until Keeparr re-reads the server AND re-matches *arr. That
+            is two nightly jobs apart, which is why firing a fix and seeing
+            nothing change is the normal experience. This runs both, in order. */}
+        {hasSourceFixes && (
+          <button
+            onClick={() => void fire('recheck')}
+            disabled={busy}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500 disabled:opacity-60"
+            title="Re-read the media server, then re-match Sonarr/Radarr. Rows that are genuinely fixed drop off when it finishes."
+          >
+            {busy ? 'Re-checking…' : 'Re-check now'}
           </button>
         )}
         {spec && <p className="text-xs text-slate-400 flex-1 min-w-[16rem]">{spec.hint}</p>}
