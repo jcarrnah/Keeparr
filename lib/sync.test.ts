@@ -768,3 +768,67 @@ describe('FORK: syncLibrary honors library exclusion patterns', () => {
     for (const id of ['1', '2', 'r1', 'r2']) expect(getMediaItem(id)?.removed).toBe(0);
   });
 });
+
+describe('FORK: syncLibrary re-measures shows stuck at zero bytes', () => {
+  /** A show listing always reports sizeBytes 0 — the real size comes from
+   *  showSize(). The bug was treating a CACHED 0 as a known size. */
+  const showSection: BackendSection = { id: '1', title: 'TV', kind: 'show', paths: [] };
+  const showItem = backendItem('s1', { sizeBytes: 0 });
+
+  function backendSizing(sizeBytes: number) {
+    let calls = 0;
+    const b: MediaBackend = {
+      listSections: async () => [showSection],
+      listSectionItems: async () => [showItem],
+      recentItems: async () => [],
+      showSize: async () => {
+        calls++;
+        return { sizeBytes, dirPath: '/tv/Show s1', dirNames: ['Show s1'] };
+      },
+      getWatchData: async () => null,
+    };
+    return { backend: b, calls: () => calls };
+  }
+
+  it('re-measures a show already recorded at 0 instead of writing the 0 back', async () => {
+    // The exact row the Problems page lists under "zero size".
+    upsertMediaBatch(
+      [media('s1', { libraryKind: 'show', sizeBytes: 0 })],
+      1000
+    );
+    const { backend, calls } = backendSizing(5 * GB);
+    fakeBackend = backend;
+
+    await syncLibrary();
+
+    // Before the fix: showSize() was never called and the row stayed at 0, so a
+    // Library scan run to check whether a Problems fix worked re-affirmed the 0.
+    expect(calls()).toBe(1);
+    expect(getMediaItem('s1')?.size_bytes).toBe(5 * GB);
+  });
+
+  it('still skips the expensive call for a show with a known non-zero size', async () => {
+    upsertMediaBatch([media('s1', { libraryKind: 'show', sizeBytes: 3 * GB })], 1000);
+    const { backend, calls } = backendSizing(5 * GB);
+    fakeBackend = backend;
+
+    await syncLibrary();
+
+    expect(calls()).toBe(0); // the cache is the whole point of this job being cheap
+    expect(getMediaItem('s1')?.size_bytes).toBe(3 * GB);
+  });
+
+  it('leaves a genuinely empty show at 0 without erroring', async () => {
+    // A series Sonarr monitors with nothing grabbed yet measures 0 every run.
+    // It costs one showSize() call per sweep, which is the price of not
+    // stranding real shows at 0 — the sizes job already pays it for every show.
+    upsertMediaBatch([media('s1', { libraryKind: 'show', sizeBytes: 0 })], 1000);
+    const { backend, calls } = backendSizing(0);
+    fakeBackend = backend;
+
+    await syncLibrary();
+
+    expect(calls()).toBe(1);
+    expect(getMediaItem('s1')?.size_bytes).toBe(0);
+  });
+});

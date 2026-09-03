@@ -816,8 +816,16 @@ when it has no tvdb/tmdb **and** no imdb.
   `{links}` — where each selected row can be opened in Sonarr/Radarr (by
   `title_slug`) or on the media server — resolved server-side because those URLs
   are admin-only settings.
-  **Keeparr-side:** `relink` runs `relinkReplacedItems()` on demand (the
-  "don't wait for the 03:00 library sweep" button, offered on `removedButKept`);
+  **Keeparr-side:** `recheck` closes the loop after a source fix — every source
+  action is async in the OTHER app and this page reads Keeparr's cache, so a
+  fixed title keeps showing until Keeparr re-reads the server AND re-matches
+  *arr, which is two nightly jobs apart (`library` 03:00 then `arr` 07:00).
+  It chains `runJob('library')` **then** `runJob('arr')` — the order is the
+  point, since `arr` matches on the guids `library` just refreshed —
+  fire-and-forget, `changed: 0`. Offered on every category that has source
+  fixes (the "Re-check now" button). `relink` runs `relinkReplacedItems()` on
+  demand (the "don't wait for the 03:00 library sweep" button, offered on
+  `removedButKept`);
   `rescan` calls `triggerServerRefresh()` so the server drops entries whose
   files are gone (offered on `zeroSize`/`missingFromPlex`); `diskscan` fires the
   weekly `diskScan` job on demand (offered on `sizeMismatch` — the measured size
@@ -1110,6 +1118,14 @@ A fuller source-verified reference is in the planning doc
   sequence counter: capture `++seq` at fetch start; once superseded, drop the
   response (including its toast and `setLoading(false)`). See LibraryBrowser /
   SearchResults / StatsView / KeepView / SearchBox — new fetchers follow suit.
+- **FORK:** in `syncLibrary`, a cached show size of **0 means "never
+  successfully measured", not "empty"** — the sweep re-measures it (matching
+  what `syncRecentlyAdded` already did). Treating 0 as known made the nightly
+  sweep write the stale 0 straight back, so a zero-size show could only ever be
+  rescued by the separate `sizes` job, and a Library scan run to check whether
+  a Problems-page fix worked re-affirmed the 0. Cost: a genuinely empty series
+  (monitored in Sonarr, nothing grabbed) costs one `showSize()` call per sweep —
+  the `sizes` job already pays that for every show.
 - Refresh work is split into scheduled jobs (`lib/jobs.ts`): `recentlyAdded` (cheap,
   newest items only), `library` (full inventory + movie sizes + new-show sizing),
   `sizes` (expensive per-series `getAllLeaves` recompute; also backfills show

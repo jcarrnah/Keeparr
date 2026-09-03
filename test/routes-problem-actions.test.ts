@@ -21,6 +21,20 @@ vi.mock('@/lib/post-delete-cleanup', async (importOriginal) => {
   return { ...mod, triggerServerRefresh: vi.fn() };
 });
 
+// …nor actually run a sweep. The ORDER these are called in is the thing under
+// test, so record it rather than just counting.
+const { jobCalls } = vi.hoisted(() => ({ jobCalls: [] as string[] }));
+vi.mock('@/lib/jobs', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@/lib/jobs')>();
+  return {
+    ...mod,
+    runJob: vi.fn(async (id: string) => {
+      jobCalls.push(id);
+      return true;
+    }),
+  };
+});
+
 import { __setTestDbToMemory, __closeDb, getDb } from '@/lib/db';
 import {
   addKeep,
@@ -40,6 +54,7 @@ beforeEach(() => {
   cookieJar.clear();
   __setTestDbToMemory();
   vi.clearAllMocks();
+  jobCalls.length = 0;
   mockRefresh.mockResolvedValue(true);
 });
 afterAll(() => __closeDb());
@@ -124,5 +139,37 @@ describe('FORK: POST /api/admin/problem-actions', () => {
     const body = await (await actionsPost(post('rescan'))).json();
     expect(body.changed).toBe(0);
     expect(body.message).toMatch(/No rescan available/);
+  });
+
+  // The loop-closer: a source fix lands in ANOTHER app, and this page reads
+  // Keeparr's cache, so a fixed title keeps showing until Keeparr re-reads the
+  // server and re-matches *arr — two nightly jobs apart.
+  describe('recheck', () => {
+    it('runs the library sync THEN the arr re-match', async () => {
+      await loginAs('admin', true);
+      const body = await (await actionsPost(post('recheck'))).json();
+      expect(body.ok).toBe(true);
+      // Fire-and-forget: let the chained runJob settle before asserting.
+      await new Promise((r) => setImmediate(r));
+      // Order is the point — `arr` matches on the ids `library` just
+      // refreshed, so the reverse re-matches against stale guids.
+      expect(jobCalls).toEqual(['library', 'arr']);
+    });
+
+    it('reports 0 changed so the page does not refetch mid-sweep', async () => {
+      await loginAs('admin', true);
+      const body = await (await actionsPost(post('recheck'))).json();
+      // Refetching while the sweep runs shows identical rows, which reads as
+      // "the button did nothing" — the exact complaint this action answers.
+      expect(body.changed).toBe(0);
+      expect(body.message).toMatch(/Re-checking/);
+    });
+
+    it('requires an admin', async () => {
+      await loginAs('regular', false);
+      expect((await actionsPost(post('recheck'))).status).toBe(403);
+      await new Promise((r) => setImmediate(r));
+      expect(jobCalls).toEqual([]);
+    });
   });
 });

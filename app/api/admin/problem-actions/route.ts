@@ -5,7 +5,8 @@
  * the fork's actions never collide with upstream's read endpoints (see
  * FORK_SYNC.md).
  *
- * Two families. The Keeparr-side fixes (`relink`, `rescan`, `diskscan`) act on
+ * Two families. The Keeparr-side fixes (`relink`, `rescan`, `diskscan`,
+ * `recheck`) act on
  * our own bookkeeping or kick off one of our jobs. The **source** actions
  * (`arr-rescan`, `arr-refresh`, `server-rescan`, `server-reidentify`,
  * `arr-remove-stale`) reach into Sonarr/Radarr or the media server, because
@@ -126,6 +127,40 @@ export async function POST(req: Request) {
           ? 'Library rescan started — empty entries clear once the server finishes.'
           : 'No rescan available for this media server (Jellyfin/Emby only).',
         changed: refreshed ? 1 : 0,
+      });
+    }
+
+    if (action === 'recheck') {
+      // Close the loop after a source fix.
+      //
+      // Every source action is asynchronous in the OTHER app, and this page
+      // reads Keeparr's cache — so a fixed title keeps showing as a problem
+      // until Keeparr re-reads the server AND re-matches against Sonarr/Radarr.
+      // Those are two separate nightly jobs (library 03:00, arr 07:00), which
+      // is why "I ran the fix and nothing changed" is the normal experience.
+      //
+      // Order is the whole point: `arr` matches on the ids `library` just
+      // refreshed, so running them the other way round re-matches against the
+      // stale guids and reports no change. Hence the sequential chain rather
+      // than two parallel triggers. Fire-and-forget for the same reason as
+      // diskscan (a full sweep far outlives a request), and single-flight in
+      // runWithState means a double-click can't stack sweeps.
+      void runJob('library')
+        .then(() => runJob('arr'))
+        .catch(() => {});
+      logEvent(
+        'info',
+        'problems',
+        'Re-check triggered from the Problems page (library sync, then arr re-match).'
+      );
+      return NextResponse.json({
+        ok: true,
+        message:
+          'Re-checking — reading the server, then re-matching Sonarr/Radarr. ' +
+          'Rows that are genuinely fixed drop off once it finishes ' +
+          '(Settings → Jobs for progress).',
+        // The sweep is still running; refetching now would show identical rows.
+        changed: 0,
       });
     }
 

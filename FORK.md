@@ -375,3 +375,35 @@ Notes on the design:
 - The matcher is a pure module (`lib/section-filter.ts`) and upstream's
   `ConnectionsPanel.tsx` carries two added lines — an import and one render —
   per the FORK_SYNC.md rule.
+
+### Why a Problems fix used to look like it did nothing
+
+Two separate causes, both fixed:
+
+**The feedback loop didn't exist.** Every "fix at the source" action is
+asynchronous *in the other app* — Sonarr queues a rescan, Jellyfin queues a
+refresh — while the Problems page reads Keeparr's own cache. So a title you
+genuinely fixed keeps showing as a problem until Keeparr re-reads the media
+server **and** re-matches Sonarr/Radarr. Those are two different nightly jobs
+(`library` 03:00, then `arr` 07:00), so the honest wait was "tomorrow morning",
+and reloading the page in the meantime showed identical rows.
+
+The **Re-check now** button runs both, in order. The order is the whole point:
+`arr` matches on the external ids `library` just refreshed, so running them the
+other way round re-matches against the stale guids and reports no change.
+
+**Zero-size shows were re-affirmed, not re-measured.** `syncLibrary` skips the
+expensive per-series size call when it already has a cached size — but it
+treated a cached **0** as a known size. A show stuck at 0 therefore had the 0
+written straight back on every sweep, and could only be rescued by the separate
+`sizes` job at 06:00. Running a Library scan to check whether a Problems fix had
+worked actively re-confirmed the problem. A cached 0 now means "never
+successfully measured" and is re-measured, which is what `syncRecentlyAdded`
+had been doing all along.
+
+**What still can't be fixed by a button, honestly:** `server-reidentify` asks
+the media server to re-query its metadata providers. If the server re-derives
+the *same* wrong id (usually an ambiguous folder name), the identity mismatch
+comes back. The fix there is Jellyfin's own **Identify** dialog with the correct
+id, or renaming the folder — Re-check now will tell you which case you're in
+within a minute instead of a day.
