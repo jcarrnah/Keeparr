@@ -44,7 +44,9 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   from Plex** to pre-enable people before their first login. The Owner can't be
   demoted or disabled, so you can't get locked out.
 - **Choose which libraries** Keeparr tracks — untick any Plex library in Settings
-  to exclude it (default: all).
+  to exclude it (default: all), or **exclude by name pattern** so libraries a
+  media-server plugin keeps creating (e.g. a per-user recommendations library)
+  are never picked up, however many it adds later.
 - **Custom title** — rename the app (nav bar + browser tab) in Settings.
 - **API key** — generate a key in Settings and send it as `X-Api-Key` to read the
   stats/reclaimable report or trigger refresh jobs from scripts (no login needed).

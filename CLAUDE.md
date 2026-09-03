@@ -24,6 +24,11 @@ per-user. See README.md for the feature overview.
   sidebar are driven by `getPlexSections()` (section ids). `library_kind`
   (movie/show) is Plex's own section type and may be used internally (e.g. to seed
   some movies into the mixed feed), but it is not a user-facing taxonomy.
+- **FORK:** libraries the admin excluded by title pattern are filtered out
+  inside `getPlexSections()`, so every reader (feed, Browse, storage, sync)
+  inherits it for free. Read sections through `getPlexSections()` /
+  `getManagedSections()`; `getAllDiscoveredSections()` is the raw list and is
+  only for the Settings picker, which has to name what it hid.
 - All SQL lives in `lib/queries.ts`. Don't write SQL elsewhere.
 - All external HTTP lives in `lib/plex.ts`, `lib/jellyfin.ts`, `lib/tautulli.ts`,
   `lib/seerr.ts`, `lib/arr.ts` (all built on `lib/http.ts` `fetchJson`). One
@@ -71,6 +76,18 @@ lib/
   seerr.ts           requests client
   arr.ts             Sonarr/Radarr v3 client (shared) + pure normalize fns (fetchSonarr/fetchRadarr/testArr)
   quality.ts         pure resolutionBucket()/RES_ORDER (shared by Browse + Big Picture quality grouping)
+  section-filter.ts  **FORK:** pure title-glob matcher for library exclusions.
+                     A Jellyfin/Emby recommendation plugin creates a library PER
+                     USER, each reporting a movies/tvshows CollectionType — so
+                     they arrive looking like real libraries and Keeparr adopts
+                     them (empty `managed_section_ids` = all). Unticking them
+                     doesn't hold: the next user gets another one. So the
+                     exclusion is a RULE (`excluded_section_patterns`), not a
+                     list of ids, re-evaluated on every read. Discovery still
+                     records every library, so clearing a pattern un-hides it
+                     with no re-scan. `syncLibrary` ABORTS if a pattern hides
+                     every library — that path would otherwise tombstone the
+                     whole DB.
   purge-verify.ts    **FORK:** post-delete disk check — did the bytes actually
                      leave? Reuses upstream's exported sizeOfDir/normalizeName
                      rather than editing lib/diskscan.ts (see FORK_SYNC.md).
@@ -663,7 +680,11 @@ when it has no tvdb/tmdb **and** no imdb.
   connect (which writes all three). Unreachable targets still save, since fixing
   the URL of a server that is down is legitimate,
   `jobSchedules`, `plexServer`, `tautulli`, `seerr`, `sonarrInstances`,
-  `radarrInstances`, `backupRetention` — GET returns instances as `[{id,name,url,hasKey}]`, never their
+  `radarrInstances`, `backupRetention`, **FORK:** `excludedSectionPatterns` — GET's
+  `sections` OMITS excluded libraries (so the picker and the storage mapper never
+  offer them) and reports them separately as `excludedSections` +
+  `excludedSectionPatterns`, so an over-broad pattern is visible rather than
+  silently eating a library; GET returns instances as `[{id,name,url,hasKey}]`, never their
   apiKeys; the automation `apiKey` IS returned so the UI can show a masked
   copy-able field, Servarr-style),
   `GET /api/admin/plex-servers`,
@@ -862,6 +883,12 @@ measurement), `managed_section_ids` (json; which libraries Keeparr tracks, empty
 all), `open_signin` (`'true'`/`'false'`), `api_key`* (automation), `app_title`,
 `app_url` (Plex sign-in forwardUrl; overrides the `APP_URL` env var),
 `backup_retention` (how many backup files to keep; default 14),
+**FORK:** `excluded_section_patterns` (json string[]; title globs for libraries
+Keeparr must never track — `*` = any run, `?` = one char, case-insensitive, a
+pattern with no wildcard is an exact title match; default `[]` = nothing hidden.
+Applied at the READ, in `getPlexSections()`, so every consumer inherits it and a
+plugin-created library is hidden the moment it appears; `getAllDiscoveredSections()`
+is the unfiltered list, which only the Settings picker reads),
 **FORK:** `deletion_enabled` (default `'false'` — master switch for the purge
 job), `deletion_grace_days` (default 30), `deletion_dry_run` (default `'true'`
 — purge only logs), `leaving_soon_enabled` (default `'true'` — mirror pending

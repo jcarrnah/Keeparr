@@ -10,11 +10,13 @@ import {
   getSeerrKey,
   getManagedSectionIds,
   getManagedSections,
+  getExcludedSectionPatterns, // FORK
   setPlexSections,
   getSonarrInstances,
   getRadarrInstances,
   isArrConfigured,
 } from './settings';
+import { filterExcludedSections } from './section-filter'; // FORK
 import { aggregatedWatchHistory } from './tautulli';
 import { requestedRatingKeysForUser } from './seerr';
 import { fetchSonarr, fetchRadarr, type ArrRecord } from './arr';
@@ -79,10 +81,24 @@ export async function syncLibrary(): Promise<JobResult> {
     sections.map((s) => ({ id: s.id, title: s.title, type: s.kind, paths: s.paths }))
   );
 
+  // FORK: libraries the admin excluded by pattern (per-user recommendation
+  // libraries a media-server plugin creates) drop out here. The discovery write
+  // above deliberately kept them, so clearing the pattern un-hides them with no
+  // re-scan. Their existing rows tombstone via tombstoneStale below, exactly
+  // like an unticked library's.
+  const tracked = filterExcludedSections(sections, getExcludedSectionPatterns());
+  if (tracked.length === 0) {
+    throw new Error(
+      'Every discovered library is hidden by an exclusion pattern; aborting sync ' +
+        'rather than tombstoning the entire library. Check Settings → Connections → ' +
+        'Excluded libraries.'
+    );
+  }
+
   // …but only scan the managed ones (empty = all). Unmanaged sections aren't
   // touched, so their rows tombstone via tombstoneStale below and drop out.
   const managed = new Set(getManagedSectionIds());
-  const scanned = managed.size === 0 ? sections : sections.filter((s) => managed.has(s.id));
+  const scanned = managed.size === 0 ? tracked : tracked.filter((s) => managed.has(s.id));
 
   const knownSizes = existingShowSizes();
   let itemsSynced = 0;

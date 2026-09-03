@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatSize } from '@/lib/format';
 import { Card, CardColumns, StatusPill, btnCls, btnGhost, inputCls } from './ui';
+import LibraryExclusions from './LibraryExclusions'; // FORK
 import { noAutofill, noAutofillSecret } from '../noAutofill';
 import MatchHealthCard from './MatchHealthCard';
 
@@ -907,6 +908,7 @@ export default function ConnectionsPanel() {
               </div>
             </>
           )}
+          <LibraryExclusions onSaved={load} />{/* FORK */}
         </div>
 
         <div className="mt-4 border-t border-slate-800 pt-3">

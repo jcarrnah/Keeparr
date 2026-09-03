@@ -519,13 +519,13 @@
     "/api/admin/settings": {
       "get": {
         "tags": ["admin"],
-        "summary": "Current settings (service secrets reported as booleans; the automation apiKey is returned)",
+        "summary": "Current settings (service secrets reported as booleans; the automation apiKey is returned). FORK: `sections` omits libraries hidden by `excludedSectionPatterns`; those are listed in `excludedSections`.",
         "responses": { "200": { "description": "Settings snapshot" } }
       },
       "put": {
         "tags": ["admin"],
         "summary": "Update settings (only provided fields change)",
-        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "description": "Any of: plexServer, plexBaseUrl, tautulli, seerr, sonarrInstances, radarrInstances, jobSchedules, storageMappings, managedSectionIds, appTitle, appUrl, apiKey, backupRetention" } } } },
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "description": "Any of: plexServer, plexBaseUrl, tautulli, seerr, sonarrInstances, radarrInstances, jobSchedules, storageMappings, managedSectionIds, excludedSectionPatterns (FORK: title globs for libraries Keeparr never tracks), appTitle, appUrl, apiKey, backupRetention" } } } },
         "responses": { "200": { "description": "`{ok:true}`" } }
       }
     },

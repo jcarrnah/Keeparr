@@ -21,6 +21,8 @@ import {
 } from './queries';
 import {
   getPlexSections,
+  getAllDiscoveredSections, // FORK
+  setExcludedSectionPatterns, // FORK
   setManagedSectionIds,
   setPlexSections,
   setRadarrInstances,
@@ -672,5 +674,97 @@ describe('syncSeerrRequests', () => {
     expect(res.result).toBe(1); // only u1 cached
     expect(seerrRequestKeys('u1')).toEqual(['42']);
     expect(seerrRequestKeys('u2')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FORK: excluded libraries — see lib/section-filter.ts.
+// ---------------------------------------------------------------------------
+
+describe('FORK: syncLibrary honors library exclusion patterns', () => {
+  /** Two real libraries plus the per-user libraries a recommendation plugin
+   *  keeps creating. Titles matter here (the patterns match on title). */
+  const named = (id: string, title: string): BackendSection => ({
+    id,
+    title,
+    kind: 'movie',
+    paths: [`/media/${id}`],
+  });
+  const DISCOVERED = [
+    named('1', 'Movies'),
+    named('2', 'TV Shows'),
+    named('r1', 'Recommended for John'),
+    named('r2', 'Recommended for Sam'),
+  ];
+  const ITEMS = {
+    '1': [backendItem('1')],
+    '2': [backendItem('2')],
+    r1: [backendItem('r1')],
+    r2: [backendItem('r2')],
+  };
+
+  it('never scans an excluded library, so its items never enter the DB', async () => {
+    setExcludedSectionPatterns(['*Recommend*']);
+    fakeBackend = backendWith(DISCOVERED, ITEMS);
+
+    await syncLibrary();
+
+    expect(getMediaItem('1')?.removed).toBe(0);
+    expect(getMediaItem('2')?.removed).toBe(0);
+    expect(getMediaItem('r1')).toBeNull();
+    expect(getMediaItem('r2')).toBeNull();
+  });
+
+  it('tombstones items an already-tracked library had before it was excluded', async () => {
+    // The plugin libraries were adopted before the admin wrote a pattern.
+    upsertMediaBatch([media('r1', { sectionId: 'r1' })], 1000);
+    setExcludedSectionPatterns(['*Recommend*']);
+    fakeBackend = backendWith(DISCOVERED, ITEMS);
+
+    await syncLibrary();
+
+    // Same mechanism as an unticked library: not scanned, so tombstoned.
+    expect(getMediaItem('r1')?.removed).toBe(1);
+  });
+
+  it('still records every discovered library, so clearing the pattern un-hides it', async () => {
+    setExcludedSectionPatterns(['*Recommend*']);
+    fakeBackend = backendWith(DISCOVERED, ITEMS);
+    await syncLibrary();
+
+    // Discovery is deliberately unfiltered…
+    expect(getAllDiscoveredSections().map((s) => s.id)).toEqual(['1', '2', 'r1', 'r2']);
+    // …while every consumer reads the filtered view.
+    expect(getPlexSections().map((s) => s.title)).toEqual(['Movies', 'TV Shows']);
+
+    setExcludedSectionPatterns([]);
+    expect(getPlexSections()).toHaveLength(4); // no re-scan needed
+  });
+
+  it('combines with the managed set rather than overriding it', async () => {
+    setExcludedSectionPatterns(['*Recommend*']);
+    setManagedSectionIds(['1', 'r1']); // r1 is managed but excluded — exclusion wins
+    fakeBackend = backendWith(DISCOVERED, ITEMS);
+
+    await syncLibrary();
+
+    expect(getMediaItem('1')?.removed).toBe(0);
+    expect(getMediaItem('2')).toBeNull(); // discovered, not managed
+    expect(getMediaItem('r1')).toBeNull(); // managed, but excluded
+  });
+
+  it('aborts rather than tombstoning everything when a pattern hides every library', async () => {
+    upsertMediaBatch([media('1')], 1000);
+    setExcludedSectionPatterns(['*']); // the footgun
+    fakeBackend = backendWith(DISCOVERED, ITEMS);
+
+    await expect(syncLibrary()).rejects.toThrow(/hidden by an exclusion pattern/);
+    expect(getMediaItem('1')?.removed).toBe(0);
+  });
+
+  it('is inert with no patterns set (the default install)', async () => {
+    fakeBackend = backendWith(DISCOVERED, ITEMS);
+    await syncLibrary();
+    for (const id of ['1', '2', 'r1', 'r2']) expect(getMediaItem(id)?.removed).toBe(0);
   });
 });
