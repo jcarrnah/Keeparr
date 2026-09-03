@@ -10,6 +10,14 @@ import {
   isServerConfigured,
   isWatchAvailable,
   writeSetting,
+  // FORK: library exclusions.
+  getAllDiscoveredSections,
+  getExcludedSectionPatterns,
+  getManagedSections,
+  getPlexSections,
+  setExcludedSectionPatterns,
+  setManagedSectionIds,
+  setPlexSections,
 } from './settings';
 
 beforeEach(() => {
@@ -85,5 +93,57 @@ describe('isWatchAvailable (any watch source, not just Tautulli)', () => {
     writeSetting('tautulli_url', 'http://taut');
     writeSetting('tautulli_api_key', 'k');
     expect(isWatchAvailable()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FORK: excluded libraries — see lib/section-filter.ts.
+// ---------------------------------------------------------------------------
+
+describe('FORK: excluded library patterns', () => {
+  const DISCOVERED = [
+    { id: '1', title: 'Movies', type: 'movie', paths: ['/media/Movies'] },
+    { id: '2', title: 'TV Shows', type: 'show', paths: ['/media/TV'] },
+    { id: 'r1', title: 'Recommended for John', type: 'movie', paths: [] },
+    { id: 'r2', title: 'Recommended for Sam', type: 'movie', paths: [] },
+  ];
+
+  beforeEach(() => setPlexSections(DISCOVERED));
+
+  it('defaults to none, so an existing install is unchanged', () => {
+    expect(getExcludedSectionPatterns()).toEqual([]);
+    expect(getPlexSections()).toHaveLength(4);
+    expect(getManagedSections()).toHaveLength(4);
+  });
+
+  it('hides matching libraries from every reader but not from discovery', () => {
+    setExcludedSectionPatterns(['*Recommend*']);
+    expect(getPlexSections().map((s) => s.id)).toEqual(['1', '2']);
+    expect(getManagedSections().map((s) => s.id)).toEqual(['1', '2']);
+    // The raw list is what makes the exclusion reversible without a re-scan.
+    expect(getAllDiscoveredSections()).toHaveLength(4);
+  });
+
+  it('wins over an explicit managed selection', () => {
+    setExcludedSectionPatterns(['*Recommend*']);
+    setManagedSectionIds(['1', 'r1']);
+    expect(getManagedSections().map((s) => s.id)).toEqual(['1']);
+  });
+
+  it('round-trips normalized (trimmed, de-duped, blanks dropped)', () => {
+    setExcludedSectionPatterns([' *Recommend* ', '*RECOMMEND*', '', 'Anime']);
+    expect(getExcludedSectionPatterns()).toEqual(['*Recommend*', 'Anime']);
+  });
+
+  it('clears back to tracking everything', () => {
+    setExcludedSectionPatterns(['*Recommend*']);
+    setExcludedSectionPatterns([]);
+    expect(getPlexSections()).toHaveLength(4);
+  });
+
+  it('survives a malformed stored value rather than hiding the library', () => {
+    writeSetting('excluded_section_patterns', 'not json');
+    expect(getExcludedSectionPatterns()).toEqual([]);
+    expect(getPlexSections()).toHaveLength(4);
   });
 });

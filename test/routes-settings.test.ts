@@ -25,6 +25,10 @@ import {
   getBackupRetention,
   writeSetting,
   getPlexBaseUrl,
+  // FORK: library exclusions.
+  getExcludedSectionPatterns,
+  setExcludedSectionPatterns,
+  setPlexSections,
 } from '@/lib/settings';
 import { GET as settingsGet, PUT as settingsPut } from '@/app/api/admin/settings/route';
 
@@ -133,5 +137,68 @@ describe('PUT /api/admin/settings - manual Plex URL cannot silently switch serve
     const res = await put({ plexBaseUrl: 'http://old:32400' });
     expect(res.status).toBe(200);
     expect(getServerIdentity).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FORK: excluded libraries — see lib/section-filter.ts.
+// ---------------------------------------------------------------------------
+
+describe('FORK: /api/admin/settings library exclusions', () => {
+  const DISCOVERED = [
+    { id: '1', title: 'Movies', type: 'movie', paths: ['/media/Movies'] },
+    { id: 'r1', title: 'Recommended for John', type: 'movie', paths: [] },
+    { id: 'r2', title: 'Recommended for Sam', type: 'movie', paths: [] },
+  ];
+
+  it('GET hides excluded libraries from `sections` but names them separately', async () => {
+    await loginAs('admin', true);
+    setPlexSections(DISCOVERED);
+    setExcludedSectionPatterns(['*Recommend*']);
+
+    const body = await settingsGet().then((r) => r.json());
+
+    // Hidden from the picker AND the storage mapper, which both read `sections`.
+    expect(body.sections.map((s: { id: string }) => s.id)).toEqual(['1']);
+    // …but reported, so an over-broad pattern is visible rather than silent.
+    expect(body.excludedSectionPatterns).toEqual(['*Recommend*']);
+    expect(body.excludedSections.map((s: { title: string }) => s.title)).toEqual([
+      'Recommended for John',
+      'Recommended for Sam',
+    ]);
+  });
+
+  it('GET on a default install reports no exclusions and every library', async () => {
+    await loginAs('admin', true);
+    setPlexSections(DISCOVERED);
+    const body = await settingsGet().then((r) => r.json());
+    expect(body.sections).toHaveLength(3);
+    expect(body.excludedSectionPatterns).toEqual([]);
+    expect(body.excludedSections).toEqual([]);
+  });
+
+  it('PUT stores normalized patterns and an empty array clears them', async () => {
+    await loginAs('admin', true);
+    setPlexSections(DISCOVERED);
+
+    expect((await settingsPut(putReq({ excludedSectionPatterns: [' *Recommend* ', ''] }))).status)
+      .toBe(200);
+    expect(getExcludedSectionPatterns()).toEqual(['*Recommend*']);
+
+    expect((await settingsPut(putReq({ excludedSectionPatterns: [] }))).status).toBe(200);
+    expect(getExcludedSectionPatterns()).toEqual([]);
+  });
+
+  it('PUT leaves stored patterns alone when the field is absent', async () => {
+    await loginAs('admin', true);
+    setExcludedSectionPatterns(['*Recommend*']);
+    await settingsPut(putReq({ appTitle: 'Keeparr' }));
+    expect(getExcludedSectionPatterns()).toEqual(['*Recommend*']);
+  });
+
+  it('PUT requires an admin', async () => {
+    await loginAs('user', false);
+    expect((await settingsPut(putReq({ excludedSectionPatterns: ['*'] }))).status).toBe(403);
+    expect(getExcludedSectionPatterns()).toEqual([]);
   });
 });

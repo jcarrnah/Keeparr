@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { errorResponse } from '@/lib/route-helpers';
+// FORK: library-exclusion patterns.
+import { excludedSections, normalizeExclusionPatterns } from '@/lib/section-filter';
 import { getServerIdentity } from '@/lib/plex';
 import {
   getPlexBaseUrl,
@@ -26,6 +28,9 @@ import {
   setStorageMappings,
   setJobSchedules,
   setManagedSectionIds,
+  getAllDiscoveredSections, // FORK
+  getExcludedSectionPatterns, // FORK
+  setExcludedSectionPatterns, // FORK
   setApiKey,
   setAppTitle,
   setAppUrl,
@@ -99,6 +104,7 @@ function mergeInstances(
 export async function GET() {
   try {
     await requireAdmin();
+    const excludedPatterns = getExcludedSectionPatterns(); // FORK
     return NextResponse.json({
       mediaServerType: getMediaServerType(),
       mediaServer: {
@@ -128,6 +134,13 @@ export async function GET() {
       jobSchedules: getJobSchedules(),
       sections: getPlexSections(),
       managedSectionIds: getManagedSectionIds(),
+      // FORK: excluded libraries are hidden from `sections` above (so the
+      // picker and the storage mapper never offer them), but named here so an
+      // over-broad pattern is visible instead of silently eating a library.
+      excludedSectionPatterns: excludedPatterns,
+      excludedSections: excludedSections(getAllDiscoveredSections(), excludedPatterns).map(
+        (s) => ({ id: s.id, title: s.title, type: s.type })
+      ),
       storageMappings: getStorageMappings(),
       appTitle: getAppTitle(),
       appUrl: getAppUrl(),
@@ -187,6 +200,9 @@ interface PutBody {
   };
   /** FORK: OMDb key. '' clears; absent keeps the stored one (secret). */
   omdbApiKey?: string;
+  /** FORK: title glob patterns for libraries Keeparr should never track (e.g.
+   *  the per-user libraries a recommendation plugin creates). [] clears them. */
+  excludedSectionPatterns?: string[];
 }
 
 /** Update settings. Only provided fields are changed. */
@@ -242,6 +258,11 @@ export async function PUT(req: Request) {
 
     if (Array.isArray(body.managedSectionIds)) {
       setManagedSectionIds(body.managedSectionIds.map(String));
+    }
+
+    // FORK: title glob patterns for libraries Keeparr should never track.
+    if (Array.isArray(body.excludedSectionPatterns)) {
+      setExcludedSectionPatterns(normalizeExclusionPatterns(body.excludedSectionPatterns));
     }
 
     if (typeof body.plexOwnerToken === 'string') {

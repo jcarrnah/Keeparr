@@ -6,6 +6,8 @@ import {
   DEFAULT_JOB_SCHEDULES,
   type JobSchedule,
 } from './config';
+// FORK: library-exclusion patterns (pure matcher, no settings dependency).
+import { filterExcludedSections, normalizeExclusionPatterns } from './section-filter';
 
 /**
  * Typed accessors over the settings key/value table. Token fields are encrypted
@@ -262,7 +264,10 @@ export interface StoredSection {
   paths?: string[];
 }
 
-export function getPlexSections(): StoredSection[] {
+/** Every library discovery has ever recorded, exclusions included. Only the
+ *  Settings picker wants this — it has to name what a pattern is hiding.
+ *  Everything else reads `getPlexSections()`. */
+export function getAllDiscoveredSections(): StoredSection[] {
   const raw = readSetting('plex_sections');
   if (!raw) return [];
   try {
@@ -273,6 +278,33 @@ export function getPlexSections(): StoredSection[] {
   } catch {
     return [];
   }
+}
+
+export function getPlexSections(): StoredSection[] {
+  // FORK: drop libraries the admin excluded by title pattern. Applied at the
+  // read, not at discovery, so a plugin-created library is hidden the moment it
+  // appears and un-hidden the moment the pattern goes away — see
+  // lib/section-filter.ts.
+  return filterExcludedSections(getAllDiscoveredSections(), getExcludedSectionPatterns());
+}
+
+// --- FORK: excluded libraries (title glob patterns; see lib/section-filter.ts) ---
+export function getExcludedSectionPatterns(): string[] {
+  const raw = readSetting('excluded_section_patterns');
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? normalizeExclusionPatterns(arr) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setExcludedSectionPatterns(patterns: string[]): void {
+  writeSetting(
+    'excluded_section_patterns',
+    JSON.stringify(normalizeExclusionPatterns(patterns))
+  );
 }
 
 // --- Storage mappings (section id -> container path to measure free space) ---

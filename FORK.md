@@ -344,3 +344,34 @@ Live tags can be cancelled from here; the row stays as a record.
 ### Manual tagging in Browse
 Admins (with Deletion enabled) get a **Schedule deletion / Cancel deletion**
 button on Browse cards, using the configured grace period.
+
+### Excluded libraries (name patterns)
+Settings → Connections → **Excluded libraries** hides libraries by title, using
+`*` (any run of characters) and `?` (one), case-insensitively. A pattern with no
+`*` has to match the whole title, so `Movies` never swallows `4K Movies`.
+
+This exists because a Jellyfin/Emby **recommendation plugin creates a library per
+user**, and each one reports a `movies`/`tvshows` CollectionType — so they arrive
+looking exactly like real libraries, and Keeparr adopts them all (an empty
+`managed_section_ids` means "all"). Unticking them in the picker doesn't hold:
+the plugin makes another one the next time a user is added, and it's managed
+again on the following scan. `*Recommend*` holds forever.
+
+Notes on the design:
+
+- The filter runs **at the read**, inside `getPlexSections()`, so every consumer
+  (feed, Browse, Big Picture, storage, the sync engine) inherits it — including
+  ones added later — rather than each remembering to apply it.
+- Discovery still records **every** library, so clearing a pattern un-hides its
+  libraries immediately with no re-scan. `getAllDiscoveredSections()` is that raw
+  list, and only the Settings picker reads it.
+- Excluded libraries are hidden from the picker and the storage mapper entirely;
+  the Excluded libraries card names them, so an over-broad pattern is visible
+  rather than silently eating a library.
+- Items an excluded library already contributed **tombstone** on the next full
+  Library sweep — the same path an unticked library's rows take.
+- `syncLibrary` **aborts** if a pattern hides every library, rather than
+  tombstoning the entire database. `*` is a footgun and is treated as one.
+- The matcher is a pure module (`lib/section-filter.ts`) and upstream's
+  `ConnectionsPanel.tsx` carries two added lines — an import and one render —
+  per the FORK_SYNC.md rule.
