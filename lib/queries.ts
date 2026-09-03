@@ -104,6 +104,32 @@ export function upsertUser(input: UpsertUserInput): void {
     });
 }
 
+/**
+ * Resolve a Plex login (username OR email) to a Keeparr user id, or null.
+ *
+ * Used to identify the PLEX SERVER OWNER, who appears in play history as the
+ * bare local account id `1`. Their real id can NOT be assumed to be
+ * `plex_owner_id` - that setting names whoever first set Keeparr up, which is
+ * often a shared user rather than the person who owns the Plex server. Matching
+ * on email as well as username matters: PMS `/myplex/account` reports the
+ * owner's email in its `username` field.
+ *
+ * Returns null rather than a best guess - mis-attributing one person's viewing
+ * to another is worse than leaving it unattributed.
+ */
+export function findUserIdByLogin(login: string | null | undefined): string | null {
+  const needle = (login ?? '').trim().toLowerCase();
+  if (!needle) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT plex_user_id FROM users
+        WHERE LOWER(username) = @needle OR LOWER(email) = @needle
+        LIMIT 1`
+    )
+    .get({ needle }) as { plex_user_id: string } | undefined;
+  return row?.plex_user_id ?? null;
+}
+
 export function getUser(plexUserId: string): SessionUser | null {
   const row = getDb()
     .prepare(
@@ -1536,7 +1562,7 @@ export function usedBytesBySection(): Map<string, number> {
 }
 
 // ---------------------------------------------------------------------------
-// Watch history (Tautulli sync writes these)
+// Watch history (the watch job writes these, merged across every source)
 // ---------------------------------------------------------------------------
 
 export function upsertWatchBatch(
@@ -1560,6 +1586,20 @@ export function upsertWatchBatch(
   });
   run(rows);
   return rows.length;
+}
+
+/**
+ * Has ANY watch data been synced yet? The never-watched surfaces cannot tell
+ * "nobody watched this" from "we have not looked yet" - both are an empty
+ * `watch_history` - so they gate on this as well as on a source being
+ * configured. Without it a freshly connected server reports its entire library
+ * as never watched until the first watch job lands.
+ */
+export function watchHistoryExists(): boolean {
+  const row = getDb()
+    .prepare('SELECT EXISTS (SELECT 1 FROM watch_history) AS present')
+    .get() as { present: number };
+  return row.present === 1;
 }
 
 /** Rating keys the given user has watched (for the "you watched" badge). */
@@ -1766,7 +1806,12 @@ export function clearSeerrRequests(): number {
   return getDb().prepare('DELETE FROM seerr_requests').run().changes;
 }
 
-/** Clear cached watch history (rebuilt by the Tautulli job). */
+/**
+ * Clear cached watch history. The watch job rebuilds it from whatever sources
+ * are reachable AT THAT MOMENT - so clearing while one is down permanently
+ * loses history only that source had (Tautulli remembers plays the server has
+ * since pruned, and vice versa).
+ */
 export function clearWatchHistory(): number {
   return getDb().prepare('DELETE FROM watch_history').run().changes;
 }

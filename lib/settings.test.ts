@@ -8,6 +8,7 @@ import {
   getServerName,
   getOwnerId,
   isServerConfigured,
+  isWatchAvailable,
   writeSetting,
 } from './settings';
 
@@ -61,5 +62,28 @@ describe('media server type + backend-aware settings', () => {
     expect(isServerConfigured()).toBe(true);
     expect(getServerToken()).toBe('tok-plex');
     expect(getOwnerId()).toBe('111');
+  });
+});
+
+describe('isWatchAvailable (any watch source, not just Tautulli)', () => {
+  const connectPlex = () => {
+    writeSetting('plex_machine_id', 'm1');
+    writeSetting('plex_base_url', 'http://plex:32400');
+    writeSetting('plex_server_token', 'tok');
+  };
+
+  it('is false with nothing connected', () => {
+    expect(isWatchAvailable()).toBe(false);
+  });
+
+  it('is true for a Plex server with no Tautulli - Plex has its own history', () => {
+    connectPlex();
+    expect(isWatchAvailable()).toBe(true);
+  });
+
+  it('is true for Tautulli alone, before a server is connected', () => {
+    writeSetting('tautulli_url', 'http://taut');
+    writeSetting('tautulli_api_key', 'k');
+    expect(isWatchAvailable()).toBe(true);
   });
 });

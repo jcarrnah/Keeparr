@@ -66,7 +66,8 @@ lib/
   plex.ts            plex.tv OAuth + PMS read API + size summation helpers
   jellyfin.ts        Jellyfin/Emby client (MediaBrowser API): auth + server info +
                      users (+ library/item/watch reads added in later phases)
-  tautulli.ts        watch-history client
+  tautulli.ts        watch-history client (an EXTRA source; the server's own
+                     play history is read by the backend adapters)
   seerr.ts           requests client
   arr.ts             Sonarr/Radarr v3 client (shared) + pure normalize fns (fetchSonarr/fetchRadarr/testArr)
   quality.ts         pure resolutionBucket()/RES_ORDER (shared by Browse + Big Picture quality grouping)
@@ -240,13 +241,28 @@ touching that layout.
   invalidate that user's outstanding tokens — "sign out all devices" and admin-disable
   both bump it; session tokens carry the epoch at mint time and `getSessionUser` rejects
   a mismatch). Migrated via guarded `ALTER TABLE`.
-- `watch_history` — `(plex_user_id, rating_key)` `plays` + `last_watched`, from
-  **Tautulli (Plex)** or **native `UserData` (Jellyfin/Emby)** — `syncWatchHistory` uses
-  `getBackend().getWatchData()` (native) and falls back to Tautulli when the backend has
-  none. Powers the Browse **Watched** filter + the per-card watched badge (by you) and the
-  Big Picture **never watched by anyone** metric. Indexed by user (`idx_watch_user`) and by
-  item (`idx_watch_item`, for the by-anyone lookup). UI watch surfaces gate on
-  `isWatchAvailable()` (Tautulli for Plex, native otherwise).
+- `watch_history` - `(plex_user_id, rating_key)` `plays` + `last_watched`. Written by
+  `syncWatchHistory`, which **MERGES every configured source** rather than picking one:
+  the backend's own history (`getBackend().getWatchData()` - Plex's play history via
+  `plexWatchHistory`, Jellyfin/Emby's `UserData`) **plus** Tautulli when connected. They
+  see different things and BOTH matter: the server's history reaches back to when the
+  server was built but only records a play once it scrobbles (~90% watched), while
+  Tautulli's window starts at install but logs partial plays and remembers media the
+  server has pruned. Measured on the live server: Plex's own history went back 4.4 years
+  vs Tautulli's 13 months and flipped **1,717 titles** out of "never watched"; Tautulli
+  exclusively held 294 in-library partial plays. Merge rule (`mergeWatchRows` in
+  `lib/sync.ts`): one row per (user, item), `plays` = **max** (the sources count the same
+  viewing differently, so summing double-counts), `last_watched` = later, `null`
+  preserved rather than coerced to 0. One source failing keeps the other's rows; ALL
+  configured sources failing throws, so the job goes red instead of reporting a green
+  "0 rows". Powers the Browse **Watched** filter + the per-card watched badge (by you) and
+  the Big Picture **never watched by anyone** metric. Indexed by user (`idx_watch_user`)
+  and by item (`idx_watch_item`, for the by-anyone lookup). Never pruned - it is the union
+  of every source that has ever run, which is why `clearWatchHistory()` is lossy while a
+  source is down. UI watch surfaces gate on `isWatchAvailable()` (any source configured)
+  **and** `watchHistoryExists()` - an empty table can't distinguish "nobody watched
+  anything" from "not synced yet", and without the second check a freshly connected
+  server reports its whole library as never-watched.
 - `seerr_requests` — `(plex_user_id, rating_key)`; cached Seerr requests (refreshed
   by the `requests` job; badges/filters read this, not live Seerr). Also warmed
   for a single user on their **first login** via `syncSeerrRequestsForUser`, so
@@ -581,8 +597,8 @@ when it has no tvdb/tmdb **and** no imdb.
   drives `state`.) Also a **Grid/List** view toggle (remembered in
   `localStorage`; List adds
   click-to-sort column headers — all columns, sort persisted — and a poster column),
-  — **only when watch data is available** (`isWatchAvailable()`: Tautulli for
-  Plex, native for Jellyfin/Emby) — a **Watched** filter (`watch=`):
+  - **only when watch data is available** (`isWatchAvailable() &&
+  watchHistoryExists()`) - a **Watched** filter (`watch=`):
   watched/not-watched **by you**, **not watched by anyone** (`unwatchedAny`,
   server-wide), recency windows, `stale90`; — **only when Sonarr/Radarr is
   connected** — **multi-select** `source`/`instance`/`tag`/`quality`/`status`/
@@ -612,7 +628,8 @@ when it has no tvdb/tmdb **and** no imdb.
   `unwatchedUndecidedBytes` (the never-watched bytes split by keep bucket, so the
   metric can be drawn as a subset of the composition bar — surfacing e.g. kept
   titles nobody has watched), `storage` totals, `mediaUsedBytes`, summed `totals`,
-  `tautulli` (bool — whether watch surfaces should render), and — when Sonarr/Radarr
+  `watchAvailable` (bool - whether watch surfaces should render; a source is
+  configured AND has synced rows), and - when Sonarr/Radarr
   is connected — `arr: true` + `qualityBreakdown` (`{byQuality[], notInArr}` → the
   Big Picture "By quality" table; its `reclaimableBytes` field shows in the UI as
   "Not kept"); and — when Seerr is connected — `seerr: true` + `markedForDelete:
@@ -638,12 +655,27 @@ when it has no tvdb/tmdb **and** no imdb.
 - `GET /api/health` — public liveness probe (used by the Docker healthcheck).
 - Admin (require `is_admin`): `GET/PUT /api/admin/settings` (PUT accepts
   `storageMappings`, `managedSectionIds`, `appTitle`, `appUrl`, `apiKey`, `plexBaseUrl`,
+  `plexOwnerToken` (blank clears it; GET returns only `plex.ownerTokenSet`, never the value),
+  and a changed `plexBaseUrl` is REFUSED with 400 `different_server` when probing
+  `/identity` proves it is a different machine than `plex_machine_id` - the manual
+  path only writes the URL, so the per-server `plex_server_token`/`plex_machine_id`
+  would be left behind and wrong; switching servers must go through Discover &
+  connect (which writes all three). Unreachable targets still save, since fixing
+  the URL of a server that is down is legitimate,
   `jobSchedules`, `plexServer`, `tautulli`, `seerr`, `sonarrInstances`,
   `radarrInstances`, `backupRetention` — GET returns instances as `[{id,name,url,hasKey}]`, never their
   apiKeys; the automation `apiKey` IS returned so the UI can show a masked
   copy-able field, Servarr-style),
-  `GET /api/admin/plex-servers`, `POST /api/admin/test-connection` (services
-  `plex`/`jellyfin`/`emby`/`tautulli`/`seerr`/`sonarr`/`radarr`),
+  `GET /api/admin/plex-servers`,
+  `POST /api/admin/plex-auth` (start a PIN) + `GET /api/admin/plex-auth?id=` (poll;
+  on success replaces `plex_admin_token` and returns the account's `username`) -
+  re-authenticate the STORED Plex token from Settings WITHOUT touching the session.
+  The admin token is otherwise captured once at first run from whoever installed
+  Keeparr; if that person doesn't own the Plex server, Discover lists nothing they
+  own and only the owner can read all users' watch history, with no in-app fix. `POST /api/admin/test-connection` (services
+  `plex`/`plexOwner`/`jellyfin`/`emby`/`tautulli`/`seerr`/`sonarr`/`radarr` -
+  `plexOwner` runs `plexHistoryScope()`, which reports how many ACCOUNTS the
+  token can see rather than mere reachability),
   `POST /api/admin/sync-libraries` (discover sections only, fast — backend-agnostic
   via `getBackend().listSections()`),
   `GET /api/admin/storage-check?path=`, `GET /api/admin/jobs` (status + recent runs)
@@ -815,7 +847,8 @@ existing installs are unchanged — chosen once at first-run setup), `media_devi
 resolve through type-aware accessors (`getServerBaseUrl/Token/Name/Id`, `getOwnerId`,
 `getAdminToken`, `isServerConfigured`): Plex keeps its historical names —
 `plex_client_id`, `plex_owner_id`, `plex_admin_token`*, `plex_machine_id`,
-`plex_base_url`, `plex_server_token`*, `plex_server_name`; Jellyfin/Emby use a uniform
+`plex_base_url`, `plex_server_token`*, `plex_server_name`, `plex_owner_token`*
+(OPTIONAL server-owner token; see below); Jellyfin/Emby use a uniform
 scheme — `<type>_url`, `<type>_token`*, `<type>_admin_token`*, `<type>_server_id`,
 `<type>_server_name`, `<type>_owner_id` (`<type>` = `jellyfin`|`emby`). `plex_sections` (json;
 includes each section's `paths[]`; reused for all backends), `tautulli_url`, `tautulli_api_key`*,
@@ -840,9 +873,30 @@ Settings → General "Deletion" card; test via `test-connection` service
 `dev_storage_total` (demo-only synthetic capacity, set by the seed). `*` = encrypted
 at rest.
 
-**Local demo mode**: `npm run seed` (`lib/dev-seed.ts` + `scripts/seed.mts`) fills
-`./data` with fake libraries; `KEEPARR_DEV_LOGIN=1` makes `middleware.ts` auto-mint a
-dev session (no Plex/login). `KEEPARR_DEV_SERVER=jellyfin|emby npm run seed` configures
+**Three local modes.** Pick by what you need to exercise; the first two are fake and
+the third is real, and mixing them up is why connection bugs used to reach production.
+
+1. **Fake demo** - `npm run seed` (`lib/dev-seed.ts` + `scripts/seed.mts`) fills
+   `./data` with fake libraries; `KEEPARR_DEV_LOGIN=1` makes `middleware.ts` auto-mint
+   a dev session (no Plex/login). Best for UI work. NOTHING that talks to a server
+   works here: the seeded token is fake, so the Plex "Test" button fails with an
+   HTML-not-JSON error and Discover finds nothing. That is expected, not a bug.
+2. **Seeded demo wired to a REAL Plex** - keeps the fake media so pages are populated,
+   but points the connection at your server so Discover, the Test buttons, the owner
+   token and the watch job all do real work:
+   ```
+   DATA_DIR=./data-realseed    KEEPARR_DEV_PLEX_URL=http://<ip>:32400    KEEPARR_DEV_PLEX_TOKEN=<X-Plex-Token> npm run seed
+   DATA_DIR=./data-realseed KEEPARR_DEV_LOGIN=1 npx next dev -p 3112
+   ```
+   Writes the token to `plex_server_token`, `plex_admin_token` (so Discover works -
+   it is a plex.tv call) and `plex_owner_token`. Use the SERVER OWNER's token or
+   watch history silently covers one account. A real library scan replaces the fake
+   media.
+3. **True first-run** - `npm run dev:real` (`scripts/dev-real.mts`). Separate
+   `DATA_DIR` (default `./data-real`), no seed, and deliberately NO
+   `KEEPARR_DEV_LOGIN`, so `/` redirects to `/login` and you get the genuine
+   setup -> Plex PIN OAuth -> Discover & connect -> run jobs path. This is the only
+   way to test **login** without deploying. `KEEPARR_DEV_SERVER=jellyfin|emby npm run seed` configures
 the demo as that backend (fake connection) instead of Plex, so the setup/login branch +
 backend-aware UI are clickable offline (default = Plex). All inert/absent in production.
 
@@ -936,6 +990,34 @@ backend-aware UI are clickable offline (default = Plex). All inert/absent in pro
   `DateCreated`; poster = `GET /Items/{id}/Images/Primary?fillWidth=&fillHeight=&api_key=`.
   Emby is the same API (only the auth-header version string differs). Unverified against a
   live server — built to the documented API + Seerr's client.
+- **Plex play history** (the deep watch source, `metadata_item_views` over HTTP):
+  `GET /status/sessions/history/all` with the ADMIN token returns every account's
+  history - on the live server 99,011 rows across 87 accounts back to 2022-03-26,
+  a full pull in ~6s. Three traps, all verified against a live PMS:
+  (1) **paging needs BOTH `X-Plex-Container-Start` and `X-Plex-Container-Size`** -
+  Size alone is silently ignored and the whole history comes back in one response;
+  (2) **there is no `grandparentRatingKey`** - an episode's series id must be parsed
+  out of `grandparentKey` (`/library/metadata/24186`), and rows for deleted media
+  lose `ratingKey`/`grandparentKey` entirely (~4% - skip them);
+  (3) **the owner is `accountID: 1`**, PMS's local account id, while shared users
+  appear under their plex.tv id. Resolve that person with `plexOwnerLogin()`
+  (`/myplex/account`, returns their EMAIL) + `findUserIdByLogin()` - do NOT use
+  `getOwnerId()`, which names whoever set Keeparr up and is often a DIFFERENT
+  person; using it files the server owner's viewing under the wrong user.
+  Unresolvable => don't remap (under-attribution beats mis-attribution).
+  `viewedAt>=<ts>` filtering works (`viewedAt>` is a 400) but is unused: a full
+  pull is cheap.
+  **THE BIG ONE - history is scoped to the token holder.** Plex returns every
+  account's history ONLY to the server owner's token; for anyone else it returns
+  just their own rows, **silently** - HTTP 200, and an `accountID=` filter for
+  another user is IGNORED rather than refused (`/accounts` 403s though). A
+  shared-user token therefore yields a plausible-looking but tiny result. Measured
+  on a live server: owner token = 99,018 rows / 86 accounts, shared-user token =
+  15,714 rows / 1 account. Hence the optional `plex_owner_token` setting, which
+  `plexBackend.getWatchData()` prefers over `plex_server_token` for history only
+  (ordinary PMS reads still use the server token, so a bad/absent owner token
+  cannot regress anything). `plexHistoryScope()` is the Settings "Test" for it -
+  it counts distinct accounts, because reachability alone cannot detect this.
 - **Tautulli**: `GET {url}/api/v2?apikey=&cmd=&out_type=json`; envelope
   `response.{result,message,data}`. `get_history` rows are at
   `response.data.data[]` (object); aggregate by `grandparent_rating_key`
@@ -1004,7 +1086,7 @@ A fuller source-verified reference is in the planning doc
 - Refresh work is split into scheduled jobs (`lib/jobs.ts`): `recentlyAdded` (cheap,
   newest items only), `library` (full inventory + movie sizes + new-show sizing),
   `sizes` (expensive per-series `getAllLeaves` recompute; also backfills show
-  `dir_path` derived from episode paths), `watch` (Tautulli),
+  `dir_path` derived from episode paths), `watch` (server history + Tautulli, merged),
   `requests` (Seerr cache), `arr` (Sonarr/Radarr quality+tags cache), `diskScan`
   (disk-orphan scan over the mapped library paths, `lib/diskscan.ts` — gated in
   `lib/health.ts jobRelevant` on storage mappings existing), `backup`

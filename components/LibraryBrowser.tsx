@@ -124,15 +124,15 @@ function SortTh({
 
 export default function LibraryBrowser({
   sections,
-  tautulli = false,
+  watchAvailable = false,
   arr = false,
   seerr = false,
   deletion = false,
   canTagDeletion = false,
 }: {
   sections: LibrarySection[];
-  /** Tautulli connected → show the Watched filter (otherwise hidden). */
-  tautulli?: boolean;
+  /** A watch source is connected and has data -> show the Watched filter. */
+  watchAvailable?: boolean;
   /** Sonarr/Radarr connected → show the quality/tag/monitored filters. */
   arr?: boolean;
   /** Seerr connected → show the "OK to delete" status options. */
@@ -282,7 +282,7 @@ export default function LibraryBrowser({
       params.set('dir', dir);
       // Combinable Status buckets (OR'd server-side); empty = All.
       if (states.length) params.set('state', states.join(','));
-      if (tautulli && watch !== 'all') params.set('watch', watch);
+      if (watchAvailable && watch !== 'all') params.set('watch', watch);
       // FORK (3.2): the household-score threshold.
       if (minScore) params.set('minScore', minScore);
       if (requestedByMe) params.set('requestedByMe', '1');
@@ -313,7 +313,7 @@ export default function LibraryBrowser({
         if (seq === fetchSeq.current) setLoading(false);
       }
     },
-    [selectedKey, debouncedQ, sort, dir, states, watch, tautulli, minScore, requestedByMe,
+    [selectedKey, debouncedQ, sort, dir, states, watch, watchAvailable, minScore, requestedByMe,
      arr, sources, instanceIds, tags, qualities, statuses, monitoredSel, match, sizeMismatch, offset, toast]
   );
 
@@ -398,7 +398,7 @@ export default function LibraryBrowser({
             },
           ]}
         />
-        {tautulli && (
+        {watchAvailable && (
           <select
             className={inputCls}
             value={watch}

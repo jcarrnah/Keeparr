@@ -72,7 +72,7 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   anyone)**) are OR'd together, so you can view several states at once; it defaults
   to **Undecided** (hiding what you've already decided on) and checking nothing
   shows everything — and — when
-  **watch data is available** (Tautulli for Plex; native for Jellyfin/Emby) — a
+  **watch data has been synced** - a
   **Watched** filter: watched / not watched **by
   you**, **not watched by anyone** (server-wide), watched in the last 30·60·90 days,
   or not watched in 90+ days (great paired with size sort to surface the biggest
@@ -95,7 +95,7 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   / I don't care / undecided, with free as the empty remainder), your review
   progress, a "where your space goes" donut, and per-library breakdown cards with
   bars sized proportional to each library. The charts are interactive (hover to
-  highlight a segment + see its size/share). When **Tautulli is connected** it also
+  highlight a segment + see its size/share). Once **watch history has synced** it also
   surfaces **"never watched by anyone"** — a headline stat, brackets above the disk
   bar and each library card marking the never-watched slice *within* each keep
   segment (so you can spot *kept* titles nobody has watched), and a dedicated
@@ -190,10 +190,31 @@ manually in Plex / Jellyfin / Emby / Sonarr / Radarr.
   anything in *arr. Titles match on stable tvdb/tmdb ids; unmatched titles are fine
   to leave. All of this stays hidden until you connect an instance.
 - **Watch history** — powers the Browse **Watched** filter, a small "watched" badge on
-  cards, and the Big Picture **never watched by anyone** reclaim metric. On **Plex** this
-  needs **Tautulli** (optional connector); on **Jellyfin/Emby** it comes natively from the
-  server's own play data — no extra setup. All watch surfaces stay hidden when no watch
-  source is available, so there's no dead UI.
+  cards, and the Big Picture **never watched by anyone** reclaim metric. It comes from
+  your media server's own play history - **Plex**, **Jellyfin** and **Emby** all report
+  it natively, with no extra setup - and Keeparr reads **all users'** history, not just
+  yours, so "never watched by anyone" means what it says.
+
+  **Tautulli is still worth connecting on Plex**, because the two sources see different
+  things and Keeparr merges them. Plex only records a play once it scrobbles (~90%
+  watched), so partial plays leave no trace; Tautulli logs the session either way, and
+  remembers titles Plex has since pruned from its history. On one real server Plex's own
+  history reached back 4.4 years against Tautulli's 13 months and moved **1,717 titles**
+  out of "never watched", while Tautulli exclusively held 294 in-library titles somebody
+  had started and never finished. Neither source alone is complete.
+
+  **On Plex, check Settings -> Connections -> Server owner token.** Plex hands over
+  *everyone's* play history only to the account that owns the server. If Keeparr was
+  connected by a shared user (whoever set Keeparr up need not own the Plex server),
+  the watch job silently sees just that one person - no error, only a smaller number.
+  Paste the owner's `X-Plex-Token` into that field and hit **Test**: it reports how
+  many accounts the token can actually reach, so a wrongly-scoped token is caught
+  immediately. Nobody has to sign in as the owner, and the field is optional -
+  without it you still get the connected user's full history plus Tautulli's.
+
+  All watch surfaces stay hidden until history has actually synced - an empty table
+  can't tell "nobody watched this" from "we haven't looked yet", and guessing wrong
+  would mark your whole library as reclaimable.
 - **Seerr/Overseerr** (optional) — badges titles you requested, and unlocks **"OK to
   delete"** so the original requester can release a title they're done with (see
   above). Cached locally and refreshed by the *Requests* job (so badges/requests
@@ -235,8 +256,8 @@ First run: a setup step asks which media server you use — **Plex, Jellyfin, or
 Plex → sign in with Plex, then **Settings → Connections** → Discover & connect your
 server (or host/port/SSL manually). Jellyfin/Emby → enter your server URL, then sign in
 with a server account (the first user becomes the Owner/admin). Then optionally add
-Seerr and any number of Sonarr/Radarr instances (and Tautulli, for Plex watch history —
-Jellyfin/Emby report watch data natively) → on the **Connections** page pick which
+Seerr and any number of Sonarr/Radarr instances (and, on Plex, Tautulli - watch history
+works without it, but it adds partial plays Plex never records) -> on the **Connections** page pick which
 libraries to track and map each to its on-disk path (for the free-space header) → in
 **Settings → Jobs & Cache** hit **Run all now** (or run individual jobs).
 
@@ -258,8 +279,31 @@ KEEPARR_DEV_LOGIN=1 npm run dev
   care", search, browse, sizes, library filters, the storage header (~75% full).
 - Data lives only in `./data` (gitignored) and **persists** across restarts, so your
   toggles survive. `npm run seed -- --reset` wipes and reloads; or delete `./data`.
-- **`KEEPARR_DEV_LOGIN` must never be set in production** — it bypasses login. Unset,
+- **`KEEPARR_DEV_LOGIN` must never be set in production** - it bypasses login. Unset,
   it has no effect and the normal Plex login gate applies.
+
+### Testing against your REAL server, locally
+
+The demo above is entirely fake, so anything that actually talks to Plex fails in
+it: the "Test" button reports HTML-not-JSON, and Discover finds nothing. That is
+the seeded dummy token being refused, not a bug - but it does mean the demo can't
+verify connection changes. Two ways to do that without deploying:
+
+```bash
+# 1. Fake media, REAL connection - Discover, the Test buttons, the owner token
+#    and the watch job all hit your actual server.
+DATA_DIR=./data-realseed KEEPARR_DEV_PLEX_URL=http://192.168.1.2:32400 KEEPARR_DEV_PLEX_TOKEN=<X-Plex-Token> npm run seed
+DATA_DIR=./data-realseed KEEPARR_DEV_LOGIN=1 npx next dev -p 3112
+
+# 2. A genuine first-run install - no seed, no auto-login, isolated data dir.
+#    The only way to exercise the SETUP and PLEX LOGIN screens locally.
+npm run dev:real
+```
+
+Use the **server owner's** token: Plex reveals every account's watch history only
+to the owner, and silently returns just the token holder's rows to anyone else.
+Both write to `./data-realseed` / `./data-real`, so your demo data in `./data`
+is untouched. Both directories are gitignored.
 
 ## Tests & build
 

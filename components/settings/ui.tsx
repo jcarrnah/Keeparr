@@ -11,16 +11,51 @@ export const btnCls =
 export const btnGhost =
   'rounded-md border border-slate-700 hover:border-slate-500 px-4 py-2 text-sm disabled:opacity-60';
 
+/**
+ * At-a-glance connection state, so a page of cards doesn't require clicking
+ * "Test" on each one to learn which are actually set up.
+ *
+ * `ok` means CONFIGURED (credentials stored), not "reachable right now" -
+ * proving reachability would mean firing a request per service on every page
+ * load. Test is still the thing that proves it works; this only answers "have I
+ * filled this in".
+ */
+export function StatusPill({
+  state,
+  label,
+}: {
+  state: 'ok' | 'off' | 'warn';
+  label: string;
+}) {
+  const tone =
+    state === 'ok'
+      ? 'border-emerald-700 bg-emerald-950 text-emerald-300'
+      : state === 'warn'
+        ? 'border-amber-700 bg-amber-950 text-amber-300'
+        : 'border-slate-700 bg-slate-900 text-slate-400';
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${tone}`}>
+      {label}
+    </span>
+  );
+}
+
 export function Card({
   title,
+  status,
   children,
 }: {
   title: string;
+  /** Optional right-aligned badge, e.g. <StatusPill/>. */
+  status?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="mb-5 break-inside-avoid rounded-xl border border-slate-800 bg-panel p-5">
-      <h2 className="font-semibold text-lg mb-3">{title}</h2>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-lg">{title}</h2>
+        {status}
+      </div>
       {children}
     </section>
   );

@@ -77,8 +77,10 @@ export interface MediaBackend {
   /** On-disk size + derived folder for one series (episode sum, each file once). */
   showSize(ratingKey: string): Promise<ShowDisk>;
   /**
-   * Native watch history, or `null` if the backend has none of its own (Plex —
-   * watch comes from Tautulli instead). Jellyfin/Emby return their own UserData.
+   * The backend's own watch history, or `null` if it has none (no backend
+   * returns null today: Plex reads its play history, Jellyfin/Emby their
+   * UserData). `null` and `[]` differ - `[]` means "asked, found nothing", and
+   * `lib/sync.ts` counts it as a live source; `null` means "no such source".
    */
   getWatchData(): Promise<WatchRow[] | null>;
 }

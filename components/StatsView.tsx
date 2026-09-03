@@ -98,7 +98,7 @@ export default function StatsView() {
   const views: View[] = [
     'largest',
     'reclaimable',
-    ...(overview?.tautulli ? (['unwatched'] as View[]) : []),
+    ...(overview?.watchAvailable ? (['unwatched'] as View[]) : []),
     ...(overview?.seerr ? (['markedForDelete'] as View[]) : []),
   ];
 
@@ -300,7 +300,7 @@ function StorageHero({ overview }: { overview: Overview }) {
           dot="undecided"
           sub={`${totals.undecidedItems} titles you’ve yet to review`}
         />
-        {overview.tautulli && (
+        {overview.watchAvailable && (
           <BigStat
             value={formatSize(totals.unwatchedBytes)}
             label="Never watched"
@@ -322,7 +322,7 @@ function StorageHero({ overview }: { overview: Overview }) {
         <StackedBar height="h-6" segments={segments} max={configured ? storage.totalBytes : undefined} />
         {/* Brackets below the bar mark the never-watched-by-anyone slice WITHIN
             each keep segment — one per segment, aligned to it. */}
-        {overview.tautulli && totals.unwatchedBytes > 0 && (
+        {overview.watchAvailable && totals.unwatchedBytes > 0 && (
           <>
             <div className="mt-1">
               <UnwatchedBrackets segments={keptVsUnwatchedSegments(totals)} max={denom} />
@@ -532,7 +532,7 @@ function LibraryGrid({ overview }: { overview: Overview }) {
                     style={{ width: `${(l.bytes / maxLib) * 100}%` }}
                   >
                     <StackedBar height="h-3" segments={compositionSegmentsSplit(l)} />
-                    {overview.tautulli && l.unwatchedBytes > 0 && (
+                    {overview.watchAvailable && l.unwatchedBytes > 0 && (
                       <div className="mt-0.5">
                         <UnwatchedBrackets
                           segments={keptVsUnwatchedSegments(l)}
@@ -544,7 +544,7 @@ function LibraryGrid({ overview }: { overview: Overview }) {
                   </div>
                 </div>
 
-                {overview.tautulli && (
+                {overview.watchAvailable && (
                   <div className="mt-1.5 text-[11px] text-slate-500">
                     {l.unwatchedItems} never watched by anyone ·{' '}
                     {formatSize(l.unwatchedBytes)} · {pct(l.unwatchedBytes, l.bytes)}%
@@ -603,7 +603,7 @@ function QualityReclaim({ overview }: { overview: Overview }) {
     unwatchedBytes: number;
   }[] = RES_ORDER.filter((b) => buckets.has(b)).map((b) => ({ label: b, ...buckets.get(b)! }));
   if (qb.notInArr.titles > 0) rows.push({ label: 'Not in *arr', ...qb.notInArr });
-  const showWatched = !!overview.tautulli;
+  const showWatched = !!overview.watchAvailable;
 
   return (
     <section>

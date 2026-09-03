@@ -11,10 +11,21 @@ vi.mock('next/headers', () => ({
   }),
 }));
 
+vi.mock('@/lib/plex', () => ({
+  getServerIdentity: vi.fn(async () => ({ machineIdentifier: 'SAME', friendlyName: 'CarlFlix' })),
+}));
+
 import { __setTestDbToMemory, __closeDb } from '@/lib/db';
+import { getServerIdentity } from '@/lib/plex';
 import { upsertUser } from '@/lib/queries';
 import { setSessionCookie } from '@/lib/auth';
-import { setApiKey, setSonarrInstances, getBackupRetention } from '@/lib/settings';
+import {
+  setApiKey,
+  setSonarrInstances,
+  getBackupRetention,
+  writeSetting,
+  getPlexBaseUrl,
+} from '@/lib/settings';
 import { GET as settingsGet, PUT as settingsPut } from '@/app/api/admin/settings/route';
 
 beforeEach(() => {
@@ -68,5 +79,59 @@ describe('/api/admin/settings', () => {
     const body = await settingsGet().then((r) => r.json());
     expect(body.apiKey).toBe('fresh-key');
     expect(getBackupRetention()).toBe(30);
+  });
+});
+
+describe('PUT /api/admin/settings - manual Plex URL cannot silently switch servers', () => {
+  const put = (body: unknown) =>
+    settingsPut(
+      new Request('http://localhost/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    );
+
+  beforeEach(async () => {
+    await loginAs('admin1', true);
+    writeSetting('plex_machine_id', 'SAME');
+    writeSetting('plex_base_url', 'http://old:32400');
+    writeSetting('plex_server_token', 'tok');
+  });
+
+  it('allows a new address for the SAME server (it just moved)', async () => {
+    vi.mocked(getServerIdentity).mockResolvedValueOnce({
+      machineIdentifier: 'SAME',
+      friendlyName: 'CarlFlix',
+    });
+    const res = await put({ plexBaseUrl: 'http://new:32400' });
+    expect(res.status).toBe(200);
+    expect(getPlexBaseUrl()).toBe('http://new:32400');
+  });
+
+  it('refuses a DIFFERENT server, because the stored token would not work there', async () => {
+    vi.mocked(getServerIdentity).mockResolvedValueOnce({
+      machineIdentifier: 'OTHER',
+      friendlyName: 'SomeoneElse',
+    });
+    const res = await put({ plexBaseUrl: 'http://other:32400' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('different_server');
+    // The half-configured state this exists to prevent: url moved, token didn't.
+    expect(getPlexBaseUrl()).toBe('http://old:32400');
+  });
+
+  it('still saves when the target is unreachable (fixing a down server URL)', async () => {
+    vi.mocked(getServerIdentity).mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    const res = await put({ plexBaseUrl: 'http://moved:32400' });
+    expect(res.status).toBe(200);
+    expect(getPlexBaseUrl()).toBe('http://moved:32400');
+  });
+
+  it('does not probe at all when the URL is unchanged', async () => {
+    vi.mocked(getServerIdentity).mockClear();
+    const res = await put({ plexBaseUrl: 'http://old:32400' });
+    expect(res.status).toBe(200);
+    expect(getServerIdentity).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,9 @@ import {
   plexConnectUrl,
   sumLeafSizes,
   sumPartSizes,
+  plexHistoryScope,
+  plexOwnerLogin,
+  plexWatchHistory,
   usefulServerConnections,
   type PlexMetadata,
   type ServerConnection,
@@ -292,5 +295,267 @@ describe('parseSharedUsers', () => {
     expect(neo.email).toBe('neo@x.com');
     expect(neo.thumb).toBe('https://plex.tv/n.png');
     expect(users.find((u) => u.id === '10')?.username).toBe('Trinity');
+  });
+});
+
+describe('plexWatchHistory', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** One /status/sessions/history/all page. */
+  const page = (rows: unknown[], totalSize?: number) =>
+    fakeRes({
+      contentType: 'application/json',
+      body: { MediaContainer: { totalSize: totalSize ?? rows.length, Metadata: rows } },
+    });
+
+  const ep = (account: number, series: string, viewedAt: number) => ({
+    type: 'episode',
+    accountID: account,
+    ratingKey: String(viewedAt), // the EPISODE's key - must not be used
+    grandparentKey: `/library/metadata/${series}`,
+    viewedAt,
+  });
+  const movie = (account: number, key: string, viewedAt: number) => ({
+    type: 'movie',
+    accountID: account,
+    ratingKey: key,
+    viewedAt,
+  });
+
+  it('rolls episodes up to the series key and keeps movies on their own key', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      page([ep(7, '24186', 100), ep(7, '24186', 200), movie(7, '555', 300)])
+    );
+    const rows = await plexWatchHistory('http://plex:32400', 'tok');
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        // Two episode views of one series collapse into a single series row.
+        { plexUserId: '7', ratingKey: '24186', plays: 2, lastWatched: 200 },
+        { plexUserId: '7', ratingKey: '555', plays: 1, lastWatched: 300 },
+      ])
+    );
+    expect(rows).toHaveLength(2);
+  });
+
+  it('counts plays per user separately and takes the latest viewedAt', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      page([ep(1, '9', 500), ep(2, '9', 100), ep(1, '9', 900), ep(1, '9', 300)])
+    );
+    const rows = await plexWatchHistory('http://plex:32400', 'tok');
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { plexUserId: '1', ratingKey: '9', plays: 3, lastWatched: 900 },
+        { plexUserId: '2', ratingKey: '9', plays: 1, lastWatched: 100 },
+      ])
+    );
+    expect(rows).toHaveLength(2);
+  });
+
+  it('drops rows for deleted media and unexpected types rather than counting them', async () => {
+    // Plex keeps the view record but drops key/ratingKey once the media is gone
+    // (~4.2k of 99k rows on the live server). Those must not become watch rows.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      page([
+        { type: 'episode', accountID: 1, viewedAt: 10 }, // no grandparentKey
+        { type: 'movie', accountID: 1, viewedAt: 20 }, // no ratingKey
+        { type: 'track', accountID: 1, ratingKey: '3', viewedAt: 30 }, // not media we track
+        { type: 'movie', ratingKey: '4', viewedAt: 40 }, // no accountID
+        movie(1, '5', 50), // the only usable row
+      ])
+    );
+    const rows = await plexWatchHistory('http://plex:32400', 'tok');
+    expect(rows).toEqual([{ plexUserId: '1', ratingKey: '5', plays: 1, lastWatched: 50 }]);
+  });
+
+  it('pages until totalSize is exhausted, advancing by rows received', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      // A short first page: the loop must advance by batch.length, not pageSize,
+      // or it would skip the rows in between.
+      .mockResolvedValueOnce(page([movie(1, 'a', 1), movie(1, 'b', 2)], 3))
+      .mockResolvedValueOnce(page([movie(1, 'c', 3)], 3));
+    const rows = await plexWatchHistory('http://plex:32400', 'tok', { pageSize: 2 });
+    expect(rows).toHaveLength(3);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(String(spy.mock.calls[1][0])).toContain('X-Plex-Container-Start=2');
+  });
+
+  it('sends BOTH container params on every request', async () => {
+    // Plex silently ignores X-Plex-Container-Size unless X-Plex-Container-Start
+    // is also present, and then returns the entire history (99k rows) in one
+    // response. That still produces correct output, so only this assertion
+    // catches it.
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(page([movie(1, 'a', 1)], 2))
+      .mockResolvedValueOnce(page([movie(1, 'b', 2)], 2));
+    await plexWatchHistory('http://plex:32400', 'tok');
+    for (const call of spy.mock.calls) {
+      expect(String(call[0])).toContain('X-Plex-Container-Start=');
+      expect(String(call[0])).toContain('X-Plex-Container-Size=');
+    }
+  });
+
+  it('stops immediately on an empty page', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(page([], 999));
+    const rows = await plexWatchHistory('http://plex:32400', 'tok');
+    expect(rows).toEqual([]);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('remaps the owner (PMS account 1) onto their plex.tv id', async () => {
+    // Shared users appear under their plex.tv id, but PMS numbers the OWNER 1
+    // in its local accounts table. Verified live: history accountID 1 is the
+    // same person Tautulli calls user_id 22839572.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      page([movie(1, 'm1', 10), movie(3629986, 'm1', 20)])
+    );
+    const rows = await plexWatchHistory('http://plex:32400', 'tok', {
+      ownerId: '22839572',
+    });
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { plexUserId: '22839572', ratingKey: 'm1', plays: 1, lastWatched: 10 },
+        { plexUserId: '3629986', ratingKey: 'm1', plays: 1, lastWatched: 20 },
+      ])
+    );
+  });
+
+  it('leaves account 1 alone when no ownerId is supplied', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(page([movie(1, 'm1', 10)]));
+    const rows = await plexWatchHistory('http://plex:32400', 'tok');
+    expect(rows[0].plexUserId).toBe('1');
+  });
+
+  it('keeps paging on a short page when the server omits totalSize', async () => {
+    // Defaulting total to batch.length would stop after page one and silently
+    // return a fraction of the history.
+    const noTotal = (rows: unknown[]) =>
+      fakeRes({
+        contentType: 'application/json',
+        body: { MediaContainer: { Metadata: rows } },
+      });
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(noTotal([movie(1, 'a', 1), movie(1, 'b', 2)]))
+      .mockResolvedValueOnce(noTotal([movie(1, 'c', 3)]));
+    const rows = await plexWatchHistory('http://plex:32400', 'tok', { pageSize: 2 });
+    expect(rows).toHaveLength(3);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws rather than truncating when maxPages is exhausted', async () => {
+    // A silently short history marks watched titles as never-watched - the
+    // expensive direction. Fail the job instead.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(page([movie(1, 'a', 1)], 10_000));
+    await expect(
+      plexWatchHistory('http://plex:32400', 'tok', { pageSize: 1, maxPages: 3 })
+    ).rejects.toThrow(/truncated/);
+  });
+
+  it('throws when the server ignores paging and returns everything', async () => {
+    // Dropping X-Plex-Container-Start makes Plex return all 99k rows at once.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      page([movie(1, 'a', 1), movie(1, 'b', 2), movie(1, 'c', 3)], 3)
+    );
+    await expect(
+      plexWatchHistory('http://plex:32400', 'tok', { pageSize: 2 })
+    ).rejects.toThrow(/ignored history paging/);
+  });
+});
+
+describe('plexOwnerLogin', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('reads the server owner from /myplex/account (an email, not a username)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({
+        contentType: 'application/json',
+        body: { MyPlex: { username: 'junco3@gmail.com', signInState: 'ok' } },
+      })
+    );
+    expect(await plexOwnerLogin('http://plex:32400', 'tok')).toBe('junco3@gmail.com');
+  });
+
+  it('returns null instead of throwing when PMS will not say', async () => {
+    // The caller only uses this to attribute history; failing to resolve must
+    // degrade to "do not remap", never break the watch sync.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({ ok: false, status: 401, contentType: 'application/json', body: {} })
+    );
+    expect(await plexOwnerLogin('http://plex:32400', 'tok')).toBeNull();
+  });
+
+  it('returns null when the payload has no username', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({ contentType: 'application/json', body: { MyPlex: {} } })
+    );
+    expect(await plexOwnerLogin('http://plex:32400', 'tok')).toBeNull();
+  });
+});
+
+describe('plexHistoryScope (catching a non-owner token at paste time)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const hist = (rows: unknown[], totalSize: number) =>
+    fakeRes({
+      contentType: 'application/json',
+      body: { MediaContainer: { totalSize, Metadata: rows } },
+    });
+
+  it('accepts a token that sees several accounts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      hist(
+        [
+          { type: 'movie', accountID: 1, ratingKey: 'a', viewedAt: 1 },
+          { type: 'movie', accountID: 3629986, ratingKey: 'b', viewedAt: 2 },
+        ],
+        99016
+      )
+    );
+    const r = await plexHistoryScope('http://plex:32400', 'tok');
+    expect(r.ok).toBe(true);
+    expect(r.status).toBe('all');
+    expect(r.message).toContain('99016');
+  });
+
+  it('rejects a shared-user token that can only see itself', async () => {
+    // The dangerous case: HTTP 200, plausible data, silently one account.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      hist(
+        [
+          { type: 'movie', accountID: 3629986, ratingKey: 'a', viewedAt: 1 },
+          { type: 'episode', accountID: 3629986, grandparentKey: '/library/metadata/9', viewedAt: 2 },
+        ],
+        15714
+      )
+    );
+    const r = await plexHistoryScope('http://plex:32400', 'tok');
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe('limited');
+    expect(r.message).toMatch(/not the server owner/i);
+  });
+
+  it('reports an empty history rather than calling it a pass', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(hist([], 0));
+    expect((await plexHistoryScope('http://plex:32400', 'tok')).ok).toBe(false);
+  });
+
+  it('reports UNKNOWN rather than "limited" when Plex is unreachable', async () => {
+    // Unreachable says nothing about scope. Calling it limited would tell an
+    // admin their token is too narrow every time their server is down.
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('fetch failed'));
+    const r = await plexHistoryScope('http://plex:32400', 'tok');
+    expect(r.status).toBe('unknown');
+    expect(r.ok).toBe(false);
+  });
+
+  it('never throws on a bad token, and does not call that limited either', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      fakeRes({ ok: false, status: 401, contentType: 'application/json', body: {} })
+    );
+    const r = await plexHistoryScope('http://plex:32400', 'bad');
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe('unknown');
   });
 });

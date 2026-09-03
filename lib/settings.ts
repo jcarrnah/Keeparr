@@ -16,6 +16,7 @@ import {
 const SECRET_KEYS = new Set([
   'plex_admin_token',
   'plex_server_token',
+  'plex_owner_token',
   // Jellyfin / Emby access tokens (mirror the Plex token keys per backend).
   'jellyfin_token',
   'jellyfin_admin_token',
@@ -105,6 +106,22 @@ export const getServerToken = () => readSetting(skey('token'));
 export const getServerId = () => readSetting(skey('id'));
 export const getServerName = () => readSetting(skey('name'));
 export const getOwnerId = () => readSetting(skey('ownerId'));
+
+/**
+ * OPTIONAL Plex server-owner token, for reads Plex only grants to the owner.
+ *
+ * Right now that is play history: Plex silently returns just the token
+ * holder's own rows to anyone else, so if Keeparr was connected by a shared
+ * user (common - whoever set Keeparr up need not own the Plex server) the
+ * watch job can only ever see one person. Pasting the owner's token here fixes
+ * that WITHOUT anyone having to sign in as them.
+ *
+ * Deliberately NOT used for ordinary PMS reads - those keep using
+ * `plex_server_token`, so nothing existing can regress if this is wrong or
+ * absent. Empty => fall back to the server token (self-scoped history).
+ */
+export const getPlexOwnerToken = () => readSetting('plex_owner_token');
+export const isPlexOwnerTokenSet = () => !!getPlexOwnerToken();
 export const getAdminToken = () => readSetting(skey('adminToken'));
 
 // Plex-specific aliases kept for the Plex-only code paths (discovery, identity).
@@ -127,12 +144,18 @@ export const isTautulliConfigured = () =>
   !!getTautulliUrl() && !!getTautulliKey();
 
 /**
- * Whether watch data is available for the configured backend (drives the Watched
- * filter, the watched badge, and the Big Picture never-watched metric): Plex needs
- * Tautulli; Jellyfin/Emby have native watch data once connected.
+ * Whether a watch SOURCE is configured. Every backend now has native history of
+ * its own (Plex reads its play history over the API, Jellyfin/Emby their
+ * UserData), and Tautulli is an additional source rather than the only one for
+ * Plex.
+ *
+ * This is a configuration question, not a data one - `lib/health.ts` uses it to
+ * decide whether watch-job failures are worth surfacing, which must stay true
+ * before the job's first run. Surfaces that would MISREAD an empty table (the
+ * never-watched metric reads "nobody watched anything") pair this with
+ * `watchHistoryExists()` instead.
  */
-export const isWatchAvailable = () =>
-  getMediaServerType() === 'plex' ? isTautulliConfigured() : isServerConfigured();
+export const isWatchAvailable = () => isServerConfigured() || isTautulliConfigured();
 
 // --- Seerr ---
 export const getSeerrUrl = () => readSetting('seerr_url');

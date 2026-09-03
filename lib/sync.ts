@@ -1,4 +1,5 @@
 import { getBackend, type BackendItem } from './mediaserver';
+import type { WatchRow } from './mediaserver/types';
 import {
   isServerConfigured,
   isTautulliConfigured,
@@ -255,24 +256,92 @@ export async function syncSizes(): Promise<JobResult> {
 }
 
 /**
- * Watch-history refresh. Jellyfin/Emby expose their own watch data (native), so
- * we use that; Plex has none of its own, so it falls back to Tautulli. No-op
- * (clear message) when neither source is available.
+ * Merge watch rows from several sources into one row per (user, item).
+ *
+ * `plays` takes the max rather than the sum because the sources count the same
+ * viewing differently - Plex writes one history row per scrobble, Tautulli sums
+ * `group_count` over grouped sessions - so adding them would double-count every
+ * title both sources saw. `lastWatched` takes the later timestamp and keeps
+ * `null` rather than coercing it to 0 (the epoch would read as "watched in
+ * 1970" and land in the stale-90-days bucket).
  */
-export async function syncWatchHistory(): Promise<JobResult> {
-  if (isServerConfigured()) {
-    const native = await getBackend().getWatchData();
-    if (native) {
-      const n = upsertWatchBatch(native);
-      return { result: n, message: `Refreshed ${n} watch-history rows (native).` };
+export function mergeWatchRows(rows: WatchRow[]): WatchRow[] {
+  const acc = new Map<string, WatchRow>();
+  for (const r of rows) {
+    const key = `${r.plexUserId}|${r.ratingKey}`;
+    const prev = acc.get(key);
+    if (!prev) {
+      acc.set(key, { ...r });
+      continue;
+    }
+    prev.plays = Math.max(prev.plays, r.plays);
+    if (r.lastWatched != null && (prev.lastWatched == null || r.lastWatched > prev.lastWatched)) {
+      prev.lastWatched = r.lastWatched;
     }
   }
-  if (!isTautulliConfigured()) {
+  return [...acc.values()];
+}
+
+/**
+ * Watch-history refresh. Reads EVERY configured source and merges them, because
+ * they see different things: the media server's own history goes back years but
+ * only records a play once it scrobbles (~90% watched), while Tautulli's window
+ * starts when it was installed but logs partial plays and remembers media the
+ * server has since forgotten. Dropping either would push watched titles back
+ * into "never watched" - the expensive direction for a delete-safety tool.
+ *
+ * One source failing no longer loses the other's rows, but if EVERY configured
+ * source fails we throw, so the job goes red and the health check notices rather
+ * than reporting a green "0 rows" while the metric silently freezes.
+ */
+export async function syncWatchHistory(): Promise<JobResult> {
+  const rows: WatchRow[] = [];
+  const got: string[] = [];
+  const failed: string[] = [];
+  let sources = 0;
+
+  if (isServerConfigured()) {
+    sources++;
+    try {
+      // null = this backend has no native history of its own; [] = it has one
+      // and it is empty. Only the former should fall through silently.
+      const native = await getBackend().getWatchData();
+      if (native) {
+        rows.push(...native);
+        got.push(`${native.length} native`);
+      } else {
+        sources--;
+      }
+    } catch (e) {
+      failed.push(`native failed: ${(e as Error).message}`);
+    }
+  }
+
+  if (isTautulliConfigured()) {
+    sources++;
+    try {
+      const taut = await aggregatedWatchHistory(getTautulliUrl()!, getTautulliKey()!);
+      rows.push(...taut);
+      got.push(`${taut.length} tautulli`);
+    } catch (e) {
+      failed.push(`tautulli failed: ${(e as Error).message}`);
+    }
+  }
+
+  if (sources === 0) {
     return { result: 0, message: 'No watch source configured.' };
   }
-  const rows = await aggregatedWatchHistory(getTautulliUrl()!, getTautulliKey()!);
-  const n = upsertWatchBatch(rows);
-  return { result: n, message: `Refreshed ${n} watch-history rows.` };
+  if (got.length === 0) {
+    throw new Error(`No watch source could be read (${failed.join('; ')})`);
+  }
+
+  const merged = mergeWatchRows(rows);
+  const n = upsertWatchBatch(merged);
+  const note = failed.length ? `; ${failed.join('; ')}` : '';
+  return {
+    result: n,
+    message: `Refreshed ${n} watch-history rows (${got.join(' + ')}${note}).`,
+  };
 }
 
 /**

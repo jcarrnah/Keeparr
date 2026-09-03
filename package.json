@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "vitest run && next build",
-    "seed": "tsx scripts/seed.mts"
+    "seed": "tsx scripts/seed.mts",
+    "dev:real": "tsx scripts/dev-real.mts"
   },
   "dependencies": {
     "@scalar/api-reference-react": "^0.9.53",
