@@ -114,9 +114,10 @@ straight to the deck from then on; **Swipe home** on the deck gets you back.
 **/swipe/deck** (also a PWA shortcut): a card stack over **movies and whole TV
 series** (a verdict always covers the entire show — never a season).
 Right = **Save for later** (unseen, keep to watch) · up = **Worth keeping**
-(seen, keep) · left = **Let it go / delete this shit** (never watching —
-releases your claim) · down = **Wouldn't be mad / OK to delete** (watched, done
-with it) · **Skip** = abstain. Buttons +
+(seen, keep) · left = **Wouldn't be mad / OK to delete** (watched, done with
+it) · down = **Let it go / delete this shit** (never watching — releases your
+claim) · **Skip** = abstain. Same layout as Tinder: sideways is the mild
+like/dislike, up and down are the "super" ones. Buttons +
 arrow keys on desktop, U to undo (last 5). Cards show the synopsis, genres,
 and runtime (pulled from your media server during the normal library sync).
 Verdicts are persistent and

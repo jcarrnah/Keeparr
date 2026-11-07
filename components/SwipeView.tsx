@@ -3,8 +3,10 @@
 /**
  * FORK: swipe mode ("Tinder for the library") — a card stack over the movie
  * library producing per-user verdicts. Gestures: right = want_to_watch,
- * up = loved_it, left = not_interested, down = done_with_it; the Skip button
- * (or S) = dont_care. Buttons + arrow keys cover desktop. Plain pointer
+ * up = loved_it, left = done_with_it, down = not_interested — the Tinder
+ * layout: sideways is the mild like/dislike (±1), vertical the "super" one
+ * (±2, see VERDICT_POINTS). The Skip button (or S) = dont_care. Buttons + arrow
+ * keys cover desktop. Plain pointer
  * events — upstream is dependency-light, so no animation library.
  */
 import Link from 'next/link';
@@ -33,8 +35,8 @@ interface VerdictDef extends VerdictMeta {
   dir: 'left' | 'right' | 'up' | 'down' | null;
 }
 const VERDICT_DEFS: VerdictDef[] = [
-  { ...VERDICT_META.not_interested, dir: 'left' },
-  { ...VERDICT_META.done_with_it, dir: 'down' },
+  { ...VERDICT_META.not_interested, dir: 'down' },
+  { ...VERDICT_META.done_with_it, dir: 'left' },
   { ...VERDICT_META.dont_care, dir: null },
   { ...VERDICT_META.want_to_watch, dir: 'right' },
   { ...VERDICT_META.loved_it, dir: 'up' },
@@ -427,7 +429,7 @@ export default function SwipeView({
         </button>
       </div>
       <p className="hidden pb-2 text-center text-[11px] text-slate-600 sm:block">
-        → save for later · ↑ worth keeping · ← let it go · ↓ OK to delete · S skip · U undo
+        → save for later · ↑ worth keeping · ← OK to delete · ↓ let it go · S skip · U undo
       </p>
     </div>
   );

@@ -36,7 +36,7 @@ export const VERDICT_META: Record<Verdict, VerdictMeta> = {
     label: "Wouldn't be mad / OK to delete",
     short: "Wouldn't be mad",
     color: 'text-amber-400 border-amber-500',
-    icon: '↓',
+    icon: '←',
   },
   dont_care: {
     verdict: 'dont_care',
