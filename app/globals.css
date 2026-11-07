@@ -64,7 +64,7 @@
   --c-rose-900: 136 19 55;
   --c-rose-950: 76 5 25;
 
-  /* FORK: sky carries the "worth keeping" verdict (swipe + the card control),
+  /* FORK: sky carries the "super save vote" verdict (swipe + the card control),
      so it needs the same themed ladder as the other meaning-bearing hues. */
   --c-sky-300: 125 211 252;
   --c-sky-400: 56 189 248;
@@ -165,7 +165,7 @@
   --c-emerald-500: 0 158 115; /* #009E73 */
 
   /* Okabe-Ito sky blue — stays clearly apart from the bluish-green emerald,
-     which is the pair that has to survive: "worth keeping" vs "save for later". */
+     which is the pair that has to survive: "super save vote" vs "save vote". */
   --c-sky-300: 130 200 240;
   --c-sky-400: 86 180 233; /* #56B4E9 */
   --c-sky-500: 60 150 200;

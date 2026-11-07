@@ -1189,7 +1189,7 @@ describe('queryLibrary combinable Status buckets (stateBuckets, OR)', () => {
 
   // FORK (3.6): the card control writes verdicts, and the delete-side ones
   // write no keep/skip/delete row — so without the verdict clause a title you
-  // just marked "let it go" would never leave the default Browse view.
+  // just gave a "super delete vote" would never leave the default Browse view.
   it('a delete-side verdict counts as decided, and rows carry it', () => {
     applyVerdict('me', '6', 'not_interested');
     expect(q(['undecided'])).toEqual(['5']);

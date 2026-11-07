@@ -1036,7 +1036,7 @@ export function queryLibrary(q: LibraryQuery): LibraryRow[] {
       okDeleteAny: deletedAnyExists,
       // FORK: a verdict counts as a decision too. The delete-side ones
       // (done_with_it / not_interested) write no keep, skip or "OK to delete"
-      // row, so without this a title you just cycled to "Let it go" would sit
+      // row, so without this a title you just cycled to "Super delete vote" would sit
       // in the default Browse view forever and never drain. Deliberately NOT
       // mirrored in librarySummary(): its three buckets have to partition the
       // library's bytes exactly, and a delete-side verdict belongs to none of
@@ -4289,10 +4289,10 @@ export function movieNightMatches(
 
 export interface ConsensusRow extends MediaItem {
   kept: number; // anyone keeps it (protected)
-  want_names: string | null; // want_to_watch (save for later)
-  keep_names: string | null; // loved_it (worth keeping)
-  done_names: string | null; // done_with_it (can go — watched)
-  never_names: string | null; // not_interested (let it go — unseen)
+  want_names: string | null; // want_to_watch (save vote)
+  keep_names: string | null; // loved_it (super save vote)
+  done_names: string | null; // done_with_it (delete vote)
+  never_names: string | null; // not_interested (super delete vote)
   skip_count: number; // dont_care abstentions
   delete_votes: number; // done_with_it + not_interested
   // --- FORK (3.3): the weighted projection ---
@@ -4300,7 +4300,7 @@ export interface ConsensusRow extends MediaItem {
   score: number;
   /** Distinct people with an opinion (explicit or implied). */
   voters: number;
-  /** Names whose "worth keeping" / "can go" / "skip" is IMPLIED by a keep,
+  /** Names whose "super save" / "delete" / "skip" is IMPLIED by a keep,
    *  an "OK to delete" or a "don't care" rather than an actual swipe. */
   keep_implicit_names: string | null;
   done_implicit_names: string | null;

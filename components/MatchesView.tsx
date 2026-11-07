@@ -89,11 +89,11 @@ function voteDetail(r: ConsensusItem): { name: string; verdict: Verdict; implied
 /** FORK (3.3): the five verdicts as the filter offers them, worst-first so the
  *  list reads the same direction as the score. */
 const VERDICT_FILTERS: [string, string][] = [
-  ['not_interested', 'Let it go'],
-  ['done_with_it', "Wouldn't be mad"],
+  ['not_interested', 'Super delete vote'],
+  ['done_with_it', 'Delete vote'],
   ['dont_care', 'Skip'],
-  ['want_to_watch', 'Save for later'],
-  ['loved_it', 'Worth keeping'],
+  ['want_to_watch', 'Save vote'],
+  ['loved_it', 'Super save vote'],
 ];
 
 /** "You and Sam", "You, Sam and Alex", "Sam and Alex" … */
@@ -436,7 +436,7 @@ export default function MatchesView({
               <option value="votes">Most delete votes</option>
               <option value="size">Largest</option>
             </select>
-            {/* FORK (3.3): "show me everything Alice marked 'let it go'".
+            {/* FORK (3.3): "show me everything Alice gave a super delete vote".
                 Identity is deliberately visible on this screen. */}
             <span className="text-slate-500">Filter:</span>
             <select
@@ -500,9 +500,9 @@ export default function MatchesView({
                         Size
                       </button>
                     </th>
-                    <th className="px-3 py-2">Save for later</th>
-                    <th className="px-3 py-2">Worth keeping</th>
-                    <th className="px-3 py-2">Can go / let go</th>
+                    <th className="px-3 py-2">Save votes</th>
+                    <th className="px-3 py-2">Super save votes</th>
+                    <th className="px-3 py-2">Delete / super delete</th>
                     <th className="px-3 py-2 text-center">
                       <button
                         onClick={() => setSort('votes')}
@@ -514,7 +514,7 @@ export default function MatchesView({
                     <th className="px-3 py-2 text-center">
                       <button
                         onClick={() => setSort('score')}
-                        title="Summed across everyone: let it go +2, wouldn't be mad +1, skip 0, save for later −1, worth keeping −2. Higher = the household wants it gone."
+                        title="Summed across everyone: super delete vote +2, delete vote +1, skip 0, save vote −1, super save vote −2. Higher = the household wants it gone."
                         className={sort === 'score' ? 'text-slate-200' : 'hover:text-slate-300'}
                       >
                         Score

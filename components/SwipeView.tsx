@@ -429,7 +429,7 @@ export default function SwipeView({
         </button>
       </div>
       <p className="hidden pb-2 text-center text-[11px] text-slate-600 sm:block">
-        → save for later · ↑ worth keeping · ← OK to delete · ↓ let it go · S skip · U undo
+        → save · ↑ super save · ← delete · ↓ super delete · S skip · U undo
       </p>
     </div>
   );

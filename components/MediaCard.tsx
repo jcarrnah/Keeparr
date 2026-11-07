@@ -228,7 +228,7 @@ export default function MediaCard({
   // image. A border frames the card, so it's always fully visible. With
   // box-border (Tailwind default) the card's width holds across the 1px<->2px
   // change; only the poster inside shrinks slightly.
-  // FORK: a delete-side verdict ("wouldn't be mad" / "let it go") is a decision
+  // FORK: a delete-side verdict ("delete vote" / "super delete vote") is a decision
   // too, so it gets the same framing as an explicit "OK to delete".
   const votedGone =
     verdictControl &&

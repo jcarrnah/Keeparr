@@ -436,7 +436,7 @@ and Search use 3 columns of compact cards, and Browse forces Grid view.
   through atomically (keep-implying verdicts also pause a pending scheduled
   deletion, like `applyKeep`); `removeVerdict` (undo) reverses the write-
   through. The deck (`getSwipeDeck`) covers movies AND whole series (rows are
-  series-level; UI up-swipe label is "Worth keeping" — stored value stays
+  series-level; UI up-swipe label is "Super save vote" — stored value stays
   `loved_it`), is feed-eligible, excludes this user's verdicts, honors the
   `watch=` list modes. UI:
   `app/swipe/deck/page.tsx` → `components/SwipeView.tsx` (pointer-event card

@@ -56,8 +56,8 @@ sizes:
 - **Household score** at least / at most N — the weighted total described under
   [Vote scoring](#vote-scoring). "Tag anything scoring +3 or more" is the
   headline rule.
-- **N people said** *let it go* (or any other verdict).
-- **A specific person said** *wouldn't be mad* — e.g. the person who originally
+- **N people gave** a *super delete vote* (or any other verdict).
+- **A specific person gave** a *delete vote* — e.g. the person who originally
   requested it is done with it.
 - **Nobody keeps it** — always enforced anyway; add it if you want the rule to
   say so out loud.
@@ -113,17 +113,15 @@ straight to the deck from then on; **Swipe home** on the deck gets you back.
 
 **/swipe/deck** (also a PWA shortcut): a card stack over **movies and whole TV
 series** (a verdict always covers the entire show — never a season).
-Right = **Save for later** (unseen, keep to watch) · up = **Worth keeping**
-(seen, keep) · left = **Wouldn't be mad / OK to delete** (watched, done with
-it) · down = **Let it go / delete this shit** (never watching — releases your
-claim) · **Skip** = abstain. Same layout as Tinder: sideways is the mild
+Right = **Save vote** · up = **Super save vote** · left = **Delete vote** ·
+down = **Super delete vote** · **Skip** = abstain. Same layout as Tinder: sideways is the mild
 like/dislike, up and down are the "super" ones. Buttons +
 arrow keys on desktop, U to undo (last 5). Cards show the synopsis, genres,
 and runtime (pulled from your media server during the normal library sync).
 Verdicts are persistent and
-per-user, and write through to the normal keep/skip machinery (*Save for
-later*/*Worth keeping* = a keep — which also pauses any pending deletion;
-*Let it go*/*Can go* stand as delete votes for rules and future consensus
+per-user, and write through to the normal keep/skip machinery (*Save
+vote*/*Super save vote* = a keep — which also pauses any pending deletion;
+*Delete vote*/*Super delete vote* release your keep and stand as delete votes for rules and future consensus
 views). Decks support the same watch-history lists as the feed.
 
 ### Ratings on swipe cards (OMDb)
@@ -260,8 +258,8 @@ git merge upstream/main
 - **Consensus**: a per-item rollup of who wants each title, who's keeping it,
   and who released it, sortable by delete votes, size or **score** — the human
   input for deciding what to tag for deletion. Filter it by **who voted what**
-  ("everything Sam let go"). **Click any row** to see who said what,
-  person by person, with inferred opinions labelled ("*Sam — Worth keeping —
+  ("everything Sam voted to delete"). **Click any row** to see who said what,
+  person by person, with inferred opinions labelled ("*Sam — Super save vote —
   kept it*") so they never read as swipes. Admins with deletion enabled get
   **Schedule deletion** right there: the screen you use to decide is the screen
   you decide on.
@@ -273,16 +271,16 @@ the safest reclaims on top:
 
 | Verdict | Points |
 |---|---|
-| Let it go / delete this shit | **+2** |
-| Wouldn't be mad / OK to delete | **+1** |
+| Super delete vote | **+2** |
+| Delete vote | **+1** |
 | Skip | **0** |
-| Save for later | **−1** |
-| Worth keeping | **−2** |
+| Save vote | **−1** |
+| Super save vote | **−2** |
 
-Two "let it go" votes (+4) therefore outrank one "worth keeping" (−2). Keeping
+Two super delete votes (+4) therefore outrank one super save vote (−2). Keeping
 something in **Browse, Search or the Keep page counts too** — a keep reads as
-"worth keeping", a "don't care" as a skip, an "OK to delete" as "wouldn't be
-mad" — so people who never open Swipe still have a say. Those inferred opinions
+a super save vote, a "don't care" as a skip, an "OK to delete" as a delete
+vote — so people who never open Swipe still have a say. Those inferred opinions
 are marked (*"Sam (kept)"*) so they're never mistaken for an actual swipe, and
 an actual swipe always overrides them.
 
@@ -307,7 +305,7 @@ control **cycles through all five verdicts** in score order, so triage anywhere
 produces the same votes swiping does:
 
 ```
-no vote → Worth keeping → Save for later → Skip → Wouldn't be mad → Let it go → …
+no vote → Super save vote → Save vote → Skip → Delete vote → Super delete vote → …
 ```
 
 Click to advance, **shift-click or right-click to step back** (six positions

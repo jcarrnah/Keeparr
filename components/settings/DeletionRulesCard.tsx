@@ -108,7 +108,7 @@ const FIELD_DEFS: Record<
       { value: 'lte', label: 'at most' },
     ],
     kind: 'score',
-    hint: 'Positive = they want it gone (+2 “let it go”, +1 “wouldn’t be mad”, −2 “worth keeping”). Keeps and “don’t care” made outside Swipe count too.',
+    hint: 'Positive = they want it gone (+2 “super delete vote”, +1 “delete vote”, −2 “super save vote”). Keeps and “don’t care” made outside Swipe count too.',
   },
   verdict_count: {
     label: 'People saying',

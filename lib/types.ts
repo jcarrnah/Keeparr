@@ -118,17 +118,17 @@ export const VERDICTS: Verdict[] = [
 /**
  * FORK (3.3): the signed weight of each verdict. Positive = the household wants
  * it gone, so an item's score is the sum across voters and the largest scores
- * are the safest to reclaim. Two "let it go" votes (+4) outrank one "worth
- * keeping" (−2) by design. Stored verdict values never change — this is purely
+ * are the safest to reclaim. Two "super delete" votes (+4) outrank one
+ * "super save" (−2) by design. Stored verdict values never change — this is purely
  * a projection. SQL builds its CASE from this map (`verdictPointsSql`) so the
  * scale can't drift between the query and the UI.
  */
 export const VERDICT_POINTS: Record<Verdict, number> = {
-  not_interested: 2, // "Let it go / delete this shit"
-  done_with_it: 1, // "Wouldn't be mad / OK to delete"
+  not_interested: 2, // "Super delete vote"
+  done_with_it: 1, // "Delete vote"
   dont_care: 0, // "Skip" — an abstention, deliberately weightless
-  want_to_watch: -1, // "Save for later"
-  loved_it: -2, // "Worth keeping"
+  want_to_watch: -1, // "Save vote"
+  loved_it: -2, // "Super save vote"
 };
 
 /**
