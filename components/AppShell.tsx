@@ -56,8 +56,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [health, setHealth] = useState<HealthIssue[]>(shellCache.health);
   const [browseOpen, setBrowseOpen] = useState(pathname.startsWith('/library'));
   const [menuOpen, setMenuOpen] = useState(false);
-  const [navOpen, setNavOpen] = useState(false); // mobile rail drawer
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Phone layout: the rail lives in a slide-over drawer instead.
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -96,6 +97,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       .catch(() => {});
   }, []);
 
+  // Any navigation (a rail link, a library checkbox) closes the drawer.
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [pathname, searchParams]);
+
   useEffect(() => {
     function onClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -106,13 +112,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
 
-  // Close the mobile rail drawer whenever the route (or library filter) changes,
-  // so tapping a nav item dismisses it.
-  const routeKey = pathname + '?' + searchParams.toString();
-  useEffect(() => {
-    setNavOpen(false);
-  }, [routeKey]);
-
   // Global shortcuts: `?` toggles the cheat sheet, `/` focuses search,
   // Escape closes the overlay. Ignored while typing in a field.
   useEffect(() => {
@@ -122,6 +121,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
       if (e.key === 'Escape') {
         setShortcutsOpen(false);
+        setDrawerOpen(false);
         return;
       }
       if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -139,12 +139,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' });
-    router.push('/login');
-    router.refresh();
-  }
-
-  async function logoutAllDevices() {
-    await fetch('/api/auth/logout-all', { method: 'POST' });
     router.push('/login');
     router.refresh();
   }
@@ -184,128 +178,133 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     </Link>
   );
 
+  // The rail's contents: the desktop sidebar and the phone drawer both render it.
+  const railBody = (
+    <>
+      <Link
+        href="/"
+        className="flex items-center gap-2 h-14 px-4 border-b border-slate-800 shrink-0"
+      >
+        <span className="grid h-7 w-7 place-items-center rounded-md bg-brand text-ink font-black">
+          K
+        </span>
+        <span className="text-lg font-bold text-brand truncate">{appTitle}</span>
+      </Link>
+
+      <nav className="flex-1 overflow-y-auto p-2 space-y-1">
+        {navItem('/', 'Keep', pathname === '/', '\u2726')}
+
+        {/* Browse (expandable libraries) */}
+        <div>
+          <div
+            className={`flex items-center rounded-md text-sm ${
+              onLibrary
+                ? 'bg-slate-800 text-white border-l-2 border-brand'
+                : 'text-slate-400 border-l-2 border-transparent'
+            }`}
+          >
+            <Link
+              href="/library"
+              className="flex items-center gap-3 px-3 py-2 flex-1 hover:text-white"
+            >
+              <span aria-hidden className="w-4 text-center">&#9638;</span>
+              Browse
+            </Link>
+            <button
+              onClick={() => setBrowseOpen((o) => !o)}
+              aria-label={browseOpen ? 'Collapse libraries' : 'Expand libraries'}
+              className="px-2 py-2 text-slate-500 hover:text-white"
+            >
+              {browseOpen ? '\u25be' : '\u25b8'}
+            </button>
+          </div>
+          {browseOpen && (
+            <div className="mt-1 ml-3 space-y-0.5 border-l border-slate-800 pl-2">
+              <button
+                onClick={() => browseTo([])}
+                className={`block w-full text-left rounded px-2 py-1 text-xs ${
+                  onLibrary && selected.size === 0
+                    ? 'text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                All libraries
+              </button>
+              {libraries.map((l) => {
+                const on = selected.size === 0 || selected.has(l.id);
+                return (
+                  <label
+                    key={l.id}
+                    className="flex items-center gap-2 rounded px-2 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => toggleLibrary(l.id)}
+                      className="h-3 w-3 accent-brand"
+                    />
+                    <span className="truncate">{l.title}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* FORK: swipe mode (movies-first verdicts). */}
+        {navItem('/swipe', 'Swipe', pathname.startsWith('/swipe'), '\u21c4')}
+        {navItem('/stats', 'Big Picture', pathname.startsWith('/stats'), '\u25f4')}
+        {user?.isAdmin &&
+          navItem('/problems', 'Problems', pathname.startsWith('/problems'), '\u26a0')}
+        {/* FORK: the deletion audit trail (3.1). */}
+        {user?.isAdmin &&
+          navItem('/deletions', 'Deletions', pathname.startsWith('/deletions'), '\u231b')}
+        {user?.isAdmin &&
+          navItem(
+            '/settings/general',
+            'Settings',
+            pathname.startsWith('/settings'),
+            '\u2699'
+          )}
+      </nav>
+    </>
+  );
+
   return (
     <ToastProvider>
-    {/* h-screen (100vh) is a fallback; 100dvh tracks the *visible* viewport so the
-        bottom of the app isn't hidden behind mobile browser chrome. */}
-    <div className="h-screen [height:100dvh] overflow-hidden bg-app text-slate-200 flex">
-      {/* Mobile backdrop (tap to close the rail drawer) */}
-      {navOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/60 md:hidden"
-          onClick={() => setNavOpen(false)}
-          aria-hidden
-        />
-      )}
-      {/* Left rail — docked on desktop, slide-in drawer on mobile */}
-      <aside
-        className={`fixed inset-y-0 left-0 z-50 w-60 shrink-0 transform bg-rail border-r border-slate-800 flex flex-col transition-transform duration-200 md:static md:z-auto md:translate-x-0 ${
-          navOpen ? 'translate-x-0' : '-translate-x-full'
-        }`}
-      >
-        <Link
-          href="/"
-          className="flex items-center gap-2 h-14 px-4 border-b border-slate-800 shrink-0"
-        >
-          <span className="grid h-7 w-7 place-items-center rounded-md bg-brand text-ink font-black">
-            K
-          </span>
-          <span className="text-lg font-bold text-brand truncate">{appTitle}</span>
-        </Link>
-
-        <nav className="flex-1 overflow-y-auto p-2 space-y-1">
-          {navItem('/', 'Keep', pathname === '/', '✦')}
-
-          {/* Browse (expandable libraries) */}
-          <div>
-            <div
-              className={`flex items-center rounded-md text-sm ${
-                onLibrary
-                  ? 'bg-slate-800 text-white border-l-2 border-brand'
-                  : 'text-slate-400 border-l-2 border-transparent'
-              }`}
-            >
-              <Link
-                href="/library"
-                className="flex items-center gap-3 px-3 py-2 flex-1 hover:text-white"
-              >
-                <span aria-hidden className="w-4 text-center">▦</span>
-                Browse
-              </Link>
-              <button
-                onClick={() => setBrowseOpen((o) => !o)}
-                aria-label={browseOpen ? 'Collapse libraries' : 'Expand libraries'}
-                className="px-2 py-2 text-slate-500 hover:text-white"
-              >
-                {browseOpen ? '▾' : '▸'}
-              </button>
-            </div>
-            {browseOpen && (
-              <div className="mt-1 ml-3 space-y-0.5 border-l border-slate-800 pl-2">
-                <button
-                  onClick={() => browseTo([])}
-                  className={`block w-full text-left rounded px-2 py-1 text-xs ${
-                    onLibrary && selected.size === 0
-                      ? 'text-white'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  All libraries
-                </button>
-                {libraries.map((l) => {
-                  const on = selected.size === 0 || selected.has(l.id);
-                  return (
-                    <label
-                      key={l.id}
-                      className="flex items-center gap-2 rounded px-2 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => toggleLibrary(l.id)}
-                        className="h-3 w-3 accent-brand"
-                      />
-                      <span className="truncate">{l.title}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* FORK: swipe mode (movies-first verdicts). */}
-          {navItem('/swipe', 'Swipe', pathname.startsWith('/swipe'), '⇄')}
-          {navItem('/stats', 'Big Picture', pathname.startsWith('/stats'), '◴')}
-          {user?.isAdmin &&
-            navItem('/problems', 'Problems', pathname.startsWith('/problems'), '⚠')}
-          {/* FORK: the deletion audit trail (3.1). */}
-          {user?.isAdmin &&
-            navItem('/deletions', 'Deletions', pathname.startsWith('/deletions'), '⌛')}
-          {user?.isAdmin &&
-            navItem(
-              '/settings/general',
-              'Settings',
-              pathname.startsWith('/settings'),
-              '⚙'
-            )}
-        </nav>
+    {/* dvh, not vh: a phone's address bar would otherwise push the bottom of
+        the page (the Keep page's Next bar) off-screen. */}
+    <div className="h-dvh overflow-hidden bg-app text-slate-200 flex">
+      {/* Left rail */}
+      <aside data-tour="nav-rail" className="w-60 shrink-0 bg-rail border-r border-slate-800 hidden md:flex flex-col">
+        {railBody}
       </aside>
+      {drawerOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <button
+            aria-label="Close menu"
+            onClick={() => setDrawerOpen(false)}
+            className="absolute inset-0 h-full w-full bg-black/60"
+          />
+          <aside className="absolute inset-y-0 left-0 flex w-64 max-w-[80%] flex-col border-r border-slate-800 bg-rail shadow-xl">
+            {railBody}
+          </aside>
+        </div>
+      )}
 
       {/* Main column */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 shrink-0 bg-rail border-b border-slate-800 flex items-center gap-3 px-3 sm:gap-4 sm:px-4">
+        <header className="h-12 md:h-14 shrink-0 bg-rail border-b border-slate-800 flex items-center gap-2 px-2 md:gap-4 md:px-4">
           <button
-            onClick={() => setNavOpen(true)}
+            onClick={() => setDrawerOpen(true)}
             aria-label="Open menu"
             className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-white md:hidden"
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <line x1="3" y1="12" x2="21" y2="12" />
-              <line x1="3" y1="18" x2="21" y2="18" />
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M4 7h16M4 12h16M4 17h16" />
             </svg>
           </button>
-          <div className="flex-1 min-w-0">
+          <div data-tour="global-search" className="flex-1 min-w-0">
             <SearchBox />
           </div>
           {user?.isAdmin && health.length > 0 && (
@@ -318,24 +317,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   : 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
               }`}
             >
-              <span aria-hidden>⚠</span>
-              {health.length} {health.length === 1 ? 'issue' : 'issues'}
+              <span aria-hidden>&#9888;</span>
+              {health.length}
+              <span className="hidden sm:inline">{health.length === 1 ? 'issue' : 'issues'}</span>
             </Link>
           )}
           <div className="relative shrink-0" ref={menuRef}>
             <button
+              data-tour="user-menu"
               onClick={() => setMenuOpen((o) => !o)}
               className="flex items-center gap-2 rounded-full hover:bg-slate-800 p-1 pr-2"
             >
               <span className="grid h-8 w-8 place-items-center rounded-full bg-slate-700 text-xs font-semibold">
-                {user ? initials(user) : '…'}
+                {user ? initials(user) : '...'}
               </span>
             </button>
             {menuOpen && user && (
               <div className="absolute right-0 mt-2 w-56 rounded-lg border border-slate-700 bg-panel shadow-xl p-3 text-sm z-30">
                 <div className="font-medium truncate">{user.username ?? 'User'}</div>
                 <div className="text-xs text-slate-500 truncate">
-                  {user.email ?? '—'}
+                  {user.email ?? '-'}
                 </div>
                 {user.isAdmin && (
                   <div className="mt-1 inline-block rounded bg-brand/20 text-brand text-[10px] px-1.5 py-0.5">
@@ -347,17 +348,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   Profile is managed by your {SERVER_LABEL[serverType] ?? 'media server'} account.
                 </p>
                 <button
-                  onClick={logout}
-                  className="mt-2 w-full rounded-md border border-slate-700 px-3 py-1.5 text-left hover:border-slate-500"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    router.push('/?tour=1');
+                  }}
+                  className="mt-2 hidden w-full rounded-md border border-slate-700 px-3 py-1.5 text-left hover:border-slate-500 md:block"
                 >
-                  Log out
+                  Show the tour
                 </button>
                 <button
-                  onClick={logoutAllDevices}
-                  title="Invalidate every session for your account (use if you think a session was stolen)."
-                  className="mt-1.5 w-full rounded-md px-3 py-1.5 text-left text-[11px] text-slate-500 hover:text-slate-300"
+                  onClick={logout}
+                  className="mt-2 w-full md:mt-1.5 rounded-md border border-slate-700 px-3 py-1.5 text-left hover:border-slate-500"
                 >
-                  Sign out all devices
+                  Log out
                 </button>
               </div>
             )}

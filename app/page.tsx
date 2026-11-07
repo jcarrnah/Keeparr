@@ -44,7 +44,12 @@ export default async function HomePage() {
           </div>
         </div>
       ) : (
-        <KeepView libraries={libraries} watchAvailable={isWatchAvailable()} />
+        <KeepView
+          libraries={libraries}
+          watchAvailable={isWatchAvailable()}
+          isAdmin={user.isAdmin}
+          tutorialDone={user.tutorialDone}
+        />
       )}
     </AppShell>
   );

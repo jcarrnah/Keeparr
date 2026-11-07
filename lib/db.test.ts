@@ -73,9 +73,9 @@ describe('migrate: legacy keeps → per-user keeps', () => {
 
   it('recovers from a crash that left an orphaned keeps_new behind', () => {
     d = legacyKeepsDb();
-    // Simulate the old non-transactional rebuild dying after its CREATE TABLE:
-    // a partial keeps_new exists while keeps is still legacy-shape. This used
-    // to throw "table keeps_new already exists" on every subsequent boot.
+    // Simulate a rebuild that died after its CREATE TABLE: a partial keeps_new
+    // exists while keeps is still legacy-shape. Without migrate()'s DROP of the
+    // orphan, CREATE TABLE keeps_new would throw on every boot.
     d.exec(`
       CREATE TABLE keeps_new (
         plex_user_id TEXT NOT NULL,
@@ -117,7 +117,7 @@ describe('migrate: arr_unmatched gained columns', () => {
     ).map((c) => c.name);
     expect(cols).toContain('size_bytes');
     expect(cols).toContain('instance_id');
-    // Old rows default to '' — never in a preserve list, so the next
+    // Old rows default to '' - never in a preserve list, so the next
     // successful arr run replaces them.
     const row = d
       .prepare('SELECT instance_id, size_bytes FROM arr_unmatched')
@@ -129,7 +129,7 @@ describe('migrate: arr_unmatched gained columns', () => {
       (d.prepare('SELECT folder_name FROM arr_unmatched').get() as { folder_name: string | null })
         .folder_name
     ).toBeNull();
-    // downloaded lands with default 1 — every pre-existing row WAS downloaded
+    // downloaded lands with default 1 - every pre-existing row WAS downloaded
     // (the old sync skipped fileless titles entirely).
     expect(cols).toContain('downloaded');
     expect(
@@ -196,5 +196,28 @@ describe('migrate: disk-name columns land on old-shape tables', () => {
       d.prepare('PRAGMA table_info(arr_items)').all() as { name: string }[]
     ).map((c) => c.name);
     expect(cols).toContain('folder_name');
+  });
+});
+
+describe('migrate: users gained tutorial_done_at', () => {
+  it('adds the column as NULL, so existing accounts see the tour once', () => {
+    d = new Database(':memory:');
+    d.exec(`
+      CREATE TABLE users (
+        plex_user_id TEXT PRIMARY KEY,
+        username     TEXT,
+        email        TEXT,
+        thumb        TEXT,
+        is_admin     INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        last_login   INTEGER
+      );
+      INSERT INTO users (plex_user_id, username, created_at) VALUES ('1', 'old', 1000);
+    `);
+    applySchema(d);
+    const row = d.prepare('SELECT tutorial_done_at FROM users').get() as {
+      tutorial_done_at: number | null;
+    };
+    expect(row).toEqual({ tutorial_done_at: null });
   });
 });

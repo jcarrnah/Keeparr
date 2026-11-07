@@ -1,9 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { FEED_WATCH_MODES, type FeedWatchMode, type MediaCardData } from '@/lib/types';
+import { arrangeForTour, buildTourSteps, showsDeleteButton, tourStart } from '@/lib/tour';
 import { formatSize } from '@/lib/format';
-import MediaCard, { CARD_MIN_W } from './MediaCard';
+import MediaCard from './MediaCard';
+import { DESKTOP_GRID, MOBILE_GRID, dimsFor } from '@/lib/keepgrid';
+import { isMobileNow, useIsMobile } from './useIsMobile';
 import {
   StackedBar,
   LegendRow,
@@ -15,6 +19,7 @@ import {
   type Overview,
 } from './breakdown';
 import { useToast } from './Toaster';
+import Tour from './Tour';
 
 interface Library {
   id: string;
@@ -35,65 +40,40 @@ const WATCH_LABELS: Record<WatchSelection, string> = {
 
 const STORAGE_KEY = 'keeparr.feedSelection';
 const WATCH_STORAGE_KEY = 'keeparr.feedWatchMode';
-const GAP = 12; // matches gap-3 on the grid
-const LABEL_H = 56; // title + size row + padding below the 2:3 poster
-// A card showing the "OK to delete" action button is ~this much taller. It's
-// budgeted into EVERY row so any row can be full of OK-to-delete cards without
-// overflowing the no-scroll grid.
-const ACTION_H = 34;
-// Cards match the shared Browse size (CARD_MIN_W) by default, but on a big/tall
-// screen we allow them to shrink down to this floor to fit another whole row
-// (e.g. 3 rows on a 4K panel). Never smaller — that gets hard to read.
-const CARD_FLOOR_W = 150;
 // Fetch a generous batch up front; the measured grid only controls how many of
 // these we *display*, so a first-load mis-measure never causes an under-fetch.
 const FETCH_LIMIT = 96;
 
-/**
- * cols×rows that fill a w×h area with no scroll. Each row is budgeted at the
- * TALLEST card (poster + label + OK-to-delete button) so any row can be full of
- * OK-to-delete cards without clipping. Cards default to the shared Browse size;
- * they only shrink (more columns, down to CARD_FLOOR_W) when that buys another
- * whole row — so 1080p keeps big cards / 2 rows while a 4K panel gets 3 rows
- * with slightly smaller cards.
- */
-function dimsFor(w: number, h: number): { cols: number; rows: number } {
-  const budgetedH = (cardW: number) => cardW * 1.5 + LABEL_H + ACTION_H;
-  const fit = (cols: number) => {
-    const cardW = (w - (cols - 1) * GAP) / cols;
-    return { cols, cardW, rows: Math.max(1, Math.floor((h + GAP) / (budgetedH(cardW) + GAP))) };
-  };
-  let best = fit(Math.max(1, Math.floor((w + GAP) / (CARD_MIN_W + GAP)))); // Browse size
-  const maxCols = Math.floor((w + GAP) / (CARD_FLOOR_W + GAP));
-  for (let c = best.cols + 1; c <= maxCols; c++) {
-    const cand = fit(c);
-    if (cand.cardW < CARD_FLOOR_W) break;
-    if (cand.rows > best.rows) best = cand; // only shrink if it gains a row
-  }
-  return { cols: best.cols, rows: best.rows };
-}
-
-/** Rough cols×rows from the window, before the grid is measured (no-SSR guard). */
+/** Rough cols x rows from the window, before the grid is measured (no-SSR guard). */
 function estimateDims(): { cols: number; rows: number } {
   if (typeof window === 'undefined') return { cols: 8, rows: 3 };
+  if (isMobileNow()) {
+    // side padding; top bar + filter chips + Next bar
+    return dimsFor(window.innerWidth - 24, window.innerHeight - 153, MOBILE_GRID);
+  }
   const w = window.innerWidth - 240 - 300 - 48; // rail + totals col + padding
   const h = window.innerHeight - 56 - 130 - 64; // top bar + header + bottom bar
-  return dimsFor(w, h);
+  return dimsFor(w, h, DESKTOP_GRID);
 }
 
 export default function KeepView({
   libraries,
   watchAvailable = false,
+  isAdmin,
+  tutorialDone,
 }: {
   libraries: Library[];
   watchAvailable?: boolean;
+  isAdmin: boolean;
+  /** False until this account finishes or skips the tour (auto-starts it once). */
+  tutorialDone: boolean;
 }) {
   const [selection, setSelection] = useState<Selection>('all');
   const [watchMode, setWatchMode] = useState<WatchSelection>('all');
   const [items, setItems] = useState<MediaCardData[]>([]);
   const [remaining, setRemaining] = useState<number | null>(null);
   const [kept, setKept] = useState<Set<string>>(new Set());
-  // Items the user released ("OK to delete") this batch — like `kept`, excluded
+  // Items the user released ("OK to delete") this batch - like `kept`, excluded
   // from the skip-the-rest batch so we don't also mark them "don't care".
   const [deleted, setDeleted] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -102,6 +82,18 @@ export default function KeepView({
   const [overview, setOverview] = useState<Overview | null>(null);
 
   const gridWrap = useRef<HTMLDivElement | null>(null);
+  const mobile = useIsMobile();
+
+  // Guided tour: auto-runs once per account, or on demand via `/?tour=1` (the
+  // user menu's "Show the tour"). Waits for the feed so the poster steps have
+  // cards to point at.
+  const router = useRouter();
+  const replay = useSearchParams().get('tour') === '1';
+  // 'arranging' = the batch was just reordered for the tour and must reach the
+  // screen before the Tour opens (it picks its steps from what is rendered).
+  const [tourPhase, setTourPhase] = useState<'closed' | 'arranging' | 'open'>('closed');
+  const [tourDone, setTourDone] = useState(tutorialDone);
+  const tourSteps = useMemo(() => buildTourSteps({ isAdmin }), [isAdmin]);
 
   // Restore last filter.
   useEffect(() => {
@@ -142,12 +134,13 @@ export default function KeepView({
     }
   }
 
-  // Measure the grid area → exact cols×rows that fit (no scroll).
+  // Measure the grid area -> exact cols x rows that fit (no scroll).
   useLayoutEffect(() => {
     const el = gridWrap.current;
     if (!el) return;
+    const profile = mobile ? MOBILE_GRID : DESKTOP_GRID;
     const measure = () => {
-      const { cols, rows } = dimsFor(el.clientWidth, el.clientHeight);
+      const { cols, rows } = dimsFor(el.clientWidth, el.clientHeight, profile);
       setDims((d) => (d.cols === cols && d.rows === rows ? d : { cols, rows }));
     };
     measure();
@@ -160,7 +153,7 @@ export default function KeepView({
       cancelAnimationFrame(raf);
       ro.disconnect();
     };
-  }, []);
+  }, [mobile]);
 
   // Per-library breakdown + disk capacity for the right column. Refetched after
   // each "Next" so the numbers track the user's keeps/skips.
@@ -174,13 +167,13 @@ export default function KeepView({
     loadOverview();
   }, [loadOverview]);
 
-  // How many cards actually fit (display only — independent of how many we fetch).
+  // How many cards actually fit (display only - independent of how many we fetch).
   const visible = dims.cols * dims.rows;
   const shown = items.slice(0, visible);
 
   // Guards against out-of-order responses: only the latest request may commit
-  // state (a slow old response must not clobber a newer one — worse here than
-  // elsewhere, since a stale batch would be silently mass-skipped by "Next →").
+  // state (a slow old response must not clobber a newer one - worse here than
+  // elsewhere, since a stale batch would be silently mass-skipped by "Next").
   const feedSeq = useRef(0);
 
   const loadFeed = useCallback(async () => {
@@ -195,14 +188,14 @@ export default function KeepView({
     }
     try {
       const data = await fetch(`/api/feed/random?${params}`).then((r) => r.json());
-      if (seq !== feedSeq.current) return; // superseded — drop it
+      if (seq !== feedSeq.current) return; // superseded - drop it
       setItems(data.items ?? []);
       setRemaining(data.remaining ?? null);
       setKept(new Set());
       setDeleted(new Set());
     } catch {
-      if (seq !== feedSeq.current) return; // superseded — don't toast for it
-      toast("Couldn't load the feed — is the server reachable?", 'error');
+      if (seq !== feedSeq.current) return; // superseded - don't toast for it
+      toast("Couldn't load the feed - is the server reachable?", 'error');
     } finally {
       if (seq === feedSeq.current) setLoading(false);
     }
@@ -211,6 +204,51 @@ export default function KeepView({
   useEffect(() => {
     loadFeed();
   }, [loadFeed]);
+
+  // One open per `?tour=1` arrival: closing strips the param, but the effect
+  // re-runs before the URL updates and would otherwise reopen the tour.
+  const replayHandled = useRef(false);
+  useEffect(() => {
+    if (!replay) replayHandled.current = false;
+  }, [replay]);
+  useEffect(() => {
+    if (tourPhase !== 'closed' || loading) return;
+    // Read the media query now: the hook is still false on the first render.
+    const onPhone = isMobileNow();
+    if (onPhone && replay) {
+      router.replace('/');
+      return;
+    }
+    const start = tourStart({
+      replay,
+      replayHandled: replayHandled.current,
+      tourDone,
+      mobile: onPhone,
+    });
+    if (!start) return;
+    if (start === 'replay') replayHandled.current = true;
+    setItems((prev) => arrangeForTour(prev));
+    setTourPhase('arranging');
+  }, [replay, tourDone, loading, tourPhase, router]);
+  useEffect(() => {
+    if (tourPhase === 'arranging') setTourPhase('open');
+  }, [tourPhase]);
+  // Shrunk to phone width mid-tour: close it, but it doesn't count as seen.
+  useEffect(() => {
+    if (mobile && tourPhase !== 'closed') {
+      setTourPhase('closed');
+      if (replay) router.replace('/');
+    }
+  }, [mobile, tourPhase, replay, router]);
+
+  function closeTour() {
+    setTourPhase('closed');
+    if (!tourDone) {
+      setTourDone(true);
+      fetch('/api/tutorial', { method: 'POST' }).catch(() => {});
+    }
+    if (replay) router.replace('/');
+  }
 
   const onKeptChange = (ratingKey: string, isKept: boolean) => {
     setKept((prev) => {
@@ -245,8 +283,8 @@ export default function KeepView({
       });
       if (!res.ok) throw new Error('failed');
     } catch {
-      // Stay on the current batch — advancing would silently drop the marks.
-      toast("Couldn't save this batch — nothing was marked.", 'error');
+      // Stay on the current batch - advancing would silently drop the marks.
+      toast("Couldn't save this batch - nothing was marked.", 'error');
       setLoading(false);
       return;
     }
@@ -255,6 +293,10 @@ export default function KeepView({
   }
 
   const triage = remaining != null; // 'largest' is a fixed ranking, not triage
+  // The tour points "OK to delete" at the second card (arrangeForTour puts one
+  // there), else the first card that shows the button.
+  const tourDeleteIndex =
+    shown[1] && showsDeleteButton(shown[1]) ? 1 : shown.findIndex(showsDeleteButton);
   const keptSize = shown
     .filter((i) => kept.has(i.ratingKey))
     .reduce((a, i) => a + i.sizeBytes, 0);
@@ -263,7 +305,7 @@ export default function KeepView({
     <button
       key={value}
       onClick={() => choose(value)}
-      className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+      className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1 text-sm transition-colors md:py-1.5 ${
         selection === value
           ? 'bg-slate-700 text-white'
           : 'text-slate-400 hover:text-white'
@@ -277,17 +319,23 @@ export default function KeepView({
     <div className="h-full flex flex-col">
       {/* Header + filters (under the top search bar). Padding is kept tight so a
           bottom-row card with the taller "OK to delete" button isn't clipped in
-          the no-scroll grid. */}
-      <div className="shrink-0 px-6 pt-4 pb-2">
-        <div className="flex items-baseline justify-between gap-4">
+          the no-scroll grid. On a phone only the filter chips stay: every pixel
+          of height decides whether a third row of posters fits. */}
+      <div className="shrink-0 px-3 pt-2 pb-2 md:px-6 md:pt-4">
+        <div className="hidden items-baseline justify-between gap-4 md:flex">
           <h1 className="text-2xl font-bold">What should we keep?</h1>
           <p className="text-sm text-slate-400">
             {triage
-              ? 'Tap anything you want to keep — everything else gets marked “I don’t care.”'
+              ? 'Tap anything you want to keep - everything else gets marked \u201cI don\u2019t care.\u201d'
               : 'Your biggest titles by size on disk.'}
           </p>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-1 rounded-lg bg-rail p-1">
+        {/* One scrolling row on a phone, so many libraries don't eat the grid's
+            height; wraps on desktop. */}
+        <div
+          data-tour="feed-filters"
+          className="no-scrollbar flex items-center gap-1 overflow-x-auto rounded-lg bg-rail p-1 md:mt-2 md:flex-wrap md:overflow-visible"
+        >
           {chip('all', 'For you')}
           {libraries.map((l) => chip(l.id, l.title))}
           {chip('largest', 'Largest')}
@@ -319,57 +367,81 @@ export default function KeepView({
       </div>
 
       {/* Grid (fills) + totals column */}
-      <div className="flex-1 min-h-0 px-6 flex gap-4">
+      <div className="flex-1 min-h-0 px-3 flex gap-4 md:px-6">
         <div ref={gridWrap} className="flex-1 min-w-0 overflow-hidden">
           {loading && shown.length === 0 ? (
-            <p className="text-slate-500 pt-10 text-center">Loading…</p>
+            <p className="text-slate-500 pt-10 text-center">Loading...</p>
           ) : shown.length === 0 ? (
             <div className="pt-10 text-center text-slate-400">
-              You’re all caught up here. Try another library above.
+              You&rsquo;re all caught up here. Try another library above.
             </div>
           ) : (
             <div
-              className="grid gap-3 content-start"
-              style={{ gridTemplateColumns: `repeat(${dims.cols}, minmax(0, 1fr))` }}
+              className="grid content-start"
+              style={{
+                gridTemplateColumns: `repeat(${dims.cols}, minmax(0, 1fr))`,
+                gap: (mobile ? MOBILE_GRID : DESKTOP_GRID).gap,
+              }}
             >
-              {shown.map((item) => (
-                <MediaCard
-                  key={item.ratingKey}
-                  item={item}
-                  onKeptChange={onKeptChange}
-                  onDeleteChange={onDeleteChange}
-                />
-              ))}
+              {shown.map((item, i) => {
+                const card = (
+                  <MediaCard
+                    key={item.ratingKey}
+                    item={item}
+                    compact={mobile}
+                    onKeptChange={onKeptChange}
+                    onDeleteChange={onDeleteChange}
+                    tourDeleteTarget={i === tourDeleteIndex}
+                  />
+                );
+                return i === 0 ? (
+                  <div key={item.ratingKey} data-tour="feed-card">
+                    {card}
+                  </div>
+                ) : (
+                  card
+                );
+              })}
             </div>
           )}
         </div>
 
-        <aside className="w-72 shrink-0 hidden lg:flex flex-col gap-3 py-1 overflow-y-auto">
+        <aside
+          data-tour="keep-totals"
+          className="w-72 shrink-0 hidden lg:flex flex-col gap-3 py-1 overflow-y-auto"
+        >
           {overview && <KeepTotals overview={overview} />}
         </aside>
       </div>
 
       {/* Bottom bar. The action + its explanation align with the GRID, not the
-          totals column — a matching spacer keeps them out from under the aside. */}
-      <div className="shrink-0 border-t border-slate-800 bg-rail px-6 py-2 flex items-center gap-4">
+          totals column - a matching spacer keeps them out from under the aside. */}
+      <div className="shrink-0 border-t border-slate-800 bg-rail px-3 py-1.5 flex items-center gap-4 md:px-6 md:py-2">
         <div className="flex flex-1 items-center gap-4">
           <span className="text-sm text-slate-400">
-            <span className="text-white font-semibold">{kept.size}</span> kept ·{' '}
-            {formatSize(keptSize)}
+            {mobile && triage && kept.size === 0 ? (
+              'Tap a poster to keep it'
+            ) : (
+              <>
+                <span className="text-white font-semibold">{kept.size}</span> kept &middot;{' '}
+                {formatSize(keptSize)}
+              </>
+            )}
           </span>
           {triage ? (
             <div className="ml-auto flex items-center gap-3">
               <span className="hidden text-right text-xs text-slate-500 sm:block max-w-xs">
-                Marks everything you didn’t keep as{' '}
-                <span className="text-rose-400">“I don’t care”</span> and loads a
+                Marks everything you didn&rsquo;t keep as{' '}
+                <span className="text-rose-400">&ldquo;I don&rsquo;t care&rdquo;</span> and loads a
                 fresh set.
               </span>
               <button
+                data-tour="feed-next"
                 onClick={next}
                 disabled={loading}
-                className="shrink-0 rounded-lg bg-brand hover:bg-brand-light text-ink font-semibold px-6 py-2.5 disabled:opacity-60"
+                className="shrink-0 rounded-lg bg-brand hover:bg-brand-light text-ink font-semibold px-6 py-2 md:py-2.5 disabled:opacity-60"
               >
-                {loading ? 'Loading…' : 'Next →'}
+                {loading ? 'Loading...' : <>Next &rarr;</>}
               </button>
             </div>
           ) : (
@@ -380,9 +452,9 @@ export default function KeepView({
               <button
                 onClick={loadFeed}
                 disabled={loading}
-                className="shrink-0 rounded-lg border border-slate-700 hover:border-slate-500 px-6 py-2.5 disabled:opacity-60"
+                className="shrink-0 rounded-lg border border-slate-700 hover:border-slate-500 px-6 py-2 md:py-2.5 disabled:opacity-60"
               >
-                {loading ? 'Loading…' : 'Refresh'}
+                {loading ? 'Loading...' : 'Refresh'}
               </button>
             </div>
           )}
@@ -390,6 +462,7 @@ export default function KeepView({
         {/* spacer matching the totals column so the button isn't beneath it */}
         <div className="hidden w-72 shrink-0 lg:block" />
       </div>
+      {tourPhase === 'open' && <Tour steps={tourSteps} onDone={closeTour} />}
     </div>
   );
 }
@@ -408,7 +481,7 @@ function KeepTotals({ overview }: { overview: Overview }) {
 
   return (
     <>
-      {/* Disk space — the headline, on top. Free = the empty part of the bar. */}
+      {/* Disk space - the headline, on top. Free = the empty part of the bar. */}
       {storage.configured && (
         <div className="rounded-lg border border-slate-800 bg-panel p-3">
           <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">
@@ -431,33 +504,37 @@ function KeepTotals({ overview }: { overview: Overview }) {
               height="h-3"
               max={storage.totalBytes}
               segments={[
-                { tone: 'kept', value: totals.keptBytes, label: 'Kept' },
-                { tone: 'dontcare', value: totals.dontcareBytes, label: 'I don’t care' },
-                { tone: 'undecided', value: totals.undecidedBytes, label: 'Undecided' },
+                { tone: 'kept', value: totals.keptBytes, label: 'Kept (by anyone)' },
+                { tone: 'dontcare', value: totals.dontcareBytes, label: "I don't care (you)" },
+                { tone: 'undecided', value: totals.undecidedBytes, label: 'Undecided (you)' },
                 { tone: 'other', value: otherBytes, label: 'Other files' },
               ]}
             />
           </div>
           <div className="mt-3 space-y-1.5">
-            <LegendRow tone="kept" label="Kept" value={formatSize(totals.keptBytes)} />
+            <LegendRow tone="kept" label="Kept (by anyone)" value={formatSize(totals.keptBytes)} />
             <LegendRow
               tone="dontcare"
-              label="I don’t care"
+              label="I don't care (you)"
               value={formatSize(totals.dontcareBytes)}
             />
             <LegendRow
               tone="undecided"
-              label="Undecided"
+              label="Undecided (you)"
               value={formatSize(totals.undecidedBytes)}
             />
             {otherBytes > 0 && (
               <LegendRow tone="other" label="Other files" value={formatSize(otherBytes)} />
             )}
           </div>
+          <p className="mt-2 text-[11px] leading-snug text-slate-500">
+            Kept counts everyone&apos;s keeps: anything someone keeps is safe. The
+            other two are only your choices, on titles nobody has kept.
+          </p>
         </div>
       )}
 
-      {/* By library — donut for share of the whole, then per-library composition. */}
+      {/* By library - donut for share of the whole, then per-library composition. */}
       <div className="rounded-lg border border-slate-800 bg-panel p-3">
         <div className="mb-3 text-xs uppercase tracking-wide text-slate-500">
           By library
@@ -504,13 +581,13 @@ function KeepTotals({ overview }: { overview: Overview }) {
         {/* one shared key for the per-library composition colors */}
         <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 border-t border-slate-800 pt-2 text-[11px] text-slate-500">
           <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm bg-brand" /> Kept
+            <span className="h-2 w-2 rounded-sm bg-brand" /> Kept (by anyone)
           </span>
           <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm bg-rose-500" /> I don’t care
+            <span className="h-2 w-2 rounded-sm bg-rose-500" /> I don&apos;t care (you)
           </span>
           <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm bg-blue-500" /> Undecided
+            <span className="h-2 w-2 rounded-sm bg-blue-500" /> Undecided (you)
           </span>
         </div>
       </div>
@@ -534,7 +611,7 @@ function KeepTotals({ overview }: { overview: Overview }) {
             height="h-2"
             segments={[
               { tone: 'kept', value: totals.keptByMeItems, label: 'Kept by you' },
-              { tone: 'dontcare', value: totals.dontcareItems, label: 'I don’t care' },
+              { tone: 'dontcare', value: totals.dontcareItems, label: "I don't care" },
               { tone: 'undecided', value: totals.undecidedItems, label: 'Undecided' },
             ]}
           />
@@ -547,7 +624,7 @@ function KeepTotals({ overview }: { overview: Overview }) {
           />
           <LegendRow
             tone="dontcare"
-            label="I don’t care"
+            label="I don't care"
             value={String(totals.dontcareItems)}
           />
           <LegendRow
@@ -556,6 +633,10 @@ function KeepTotals({ overview }: { overview: Overview }) {
             value={String(totals.undecidedItems)}
           />
         </div>
+        <p className="mt-2 text-[11px] leading-snug text-slate-500">
+          Only your own choices. Titles someone else already keeps are safe, so
+          they aren&apos;t counted as left to review.
+        </p>
       </div>
     </>
   );

@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import type { LibrarySection, MediaCardData } from '@/lib/types';
 import { formatSize } from '@/lib/format';
 import MediaCard, { CARD_GRID_CLASS } from './MediaCard';
+import { useIsMobile } from './useIsMobile';
 import MediaRow from './MediaRow';
 import MultiSelect, { type MSGroup } from './MultiSelect';
 import { useToast } from './Toaster';
@@ -133,16 +134,16 @@ export default function LibraryBrowser({
   sections: LibrarySection[];
   /** A watch source is connected and has data -> show the Watched filter. */
   watchAvailable?: boolean;
-  /** Sonarr/Radarr connected → show the quality/tag/monitored filters. */
+  /** Sonarr/Radarr connected -> show the quality/tag/monitored filters. */
   arr?: boolean;
-  /** Seerr connected → show the "OK to delete" status options. */
+  /** Seerr connected -> show the "OK to delete" status options. */
   seerr?: boolean;
   /** FORK: scheduled deletions enabled → show the "Scheduled for deletion" bucket. */
   deletion?: boolean;
   /** FORK: admin + deletion enabled → per-card "Schedule deletion" button. */
   canTagDeletion?: boolean;
 }) {
-  // Library selection lives in the URL (?sections=) — driven by the nav rail's
+  // Library selection lives in the URL (?sections=) - driven by the nav rail's
   // Browse list. Empty = all libraries.
   const searchParams = useSearchParams();
   const selectedKey = (searchParams.get('sections') || '')
@@ -173,6 +174,8 @@ export default function LibraryBrowser({
   const [sizeMismatch, setSizeMismatch] = useState(false);
   const [facets, setFacets] = useState<Facets>({ instances: [], tags: [], qualities: [], statuses: [] });
   const [view, setView] = useState<View>('grid');
+  // Phones always get the grid: the List table is too wide for them.
+  const mobile = useIsMobile();
   const toast = useToast();
 
   const [items, setItems] = useState<MediaCardData[]>([]);
@@ -299,16 +302,16 @@ export default function LibraryBrowser({
       params.set('offset', String(off));
       try {
         const data = await fetch(`/api/library?${params}`).then((r) => r.json());
-        if (seq !== fetchSeq.current) return; // superseded — drop it
-        // An error response (e.g. a 500) has no `items` — guard so the view
+        if (seq !== fetchSeq.current) return; // superseded - drop it
+        // An error response (e.g. a 500) has no `items` - guard so the view
         // doesn't crash on a spread/map of undefined.
         const list = Array.isArray(data.items) ? data.items : [];
         setHasMore(!!data.hasMore);
         if (typeof data.nextOffset === 'number') setOffset(data.nextOffset);
         setItems((prev) => (reset ? list : [...prev, ...list]));
       } catch {
-        if (seq !== fetchSeq.current) return; // superseded — don't toast for it
-        toast("Couldn't load the library — is the server reachable?", 'error');
+        if (seq !== fetchSeq.current) return; // superseded - don't toast for it
+        toast("Couldn't load the library - is the server reachable?", 'error');
       } finally {
         if (seq === fetchSeq.current) setLoading(false);
       }
@@ -335,7 +338,7 @@ export default function LibraryBrowser({
   const shownBytes = shownLibs.reduce((a, s) => a + s.sizeBytes, 0);
 
   return (
-    <div className="px-6 py-6">
+    <div className="px-3 py-4 md:px-6 md:py-6">
       <div className="mb-1 flex items-baseline gap-3">
         <h1 className="text-2xl font-bold">Browse</h1>
         <span className="text-sm text-slate-500">
@@ -529,8 +532,8 @@ export default function LibraryBrowser({
           Requested by me
         </label>
         )}
-        {/* Grid ↔ List view toggle (remembered across visits). */}
-        <div className="ml-auto flex overflow-hidden rounded-md border border-slate-700">
+        {/* Grid <-> List view toggle (remembered across visits). */}
+        <div className="ml-auto hidden overflow-hidden rounded-md border border-slate-700 md:flex">
           {(['grid', 'list'] as View[]).map((v) => (
             <button
               key={v}
@@ -548,12 +551,13 @@ export default function LibraryBrowser({
 
       {items.length === 0 && !loading ? (
         <p className="text-slate-400 py-12 text-center">No matches.</p>
-      ) : view === 'grid' ? (
+      ) : view === 'grid' || mobile ? (
         <div className={CARD_GRID_CLASS}>
           {items.map((item) => (
             <MediaCard
               key={item.ratingKey}
               item={item}
+              compact={mobile}
               skippable
               requested={requested.has(item.ratingKey)}
               taggable={canTagDeletion}

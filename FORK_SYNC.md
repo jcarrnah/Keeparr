@@ -65,6 +65,19 @@ git merge upstream/main
 4. **`CLAUDE.md` prose** — merge both descriptions rather than picking one. Keep
    the `FORK-ONLY` bullets grouped together (they read better contiguous, and it
    makes the next sync's diff smaller).
+5. **Upstream's ASCII style vs. fork prose** — since v0.3.17 upstream writes
+   comments and UI text in plain ASCII (` - `, `->`, `...`), so any fork line next
+   to an old em dash or arrow can conflict on punctuation alone. Keep the fork's
+   content; the punctuation doesn't matter.
+
+**A clean merge can still be wrong for the fork.** Upstream's UI copy assumes
+upstream's product: v0.3.17's tour said "Keeparr never deletes anything" and
+listed only upstream's tabs, and neither line conflicted. After a merge, read any
+new user-facing text against what the fork does, and grep for the claim:
+
+```bash
+git grep -niE "never deletes|nothing is deleted" -- components app lib
+```
 
 ## Verification gate
 

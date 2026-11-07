@@ -9,7 +9,7 @@ import { useVerdictCycle } from './useVerdictCycle';
 // FORK (3.2): the household's weighted score, so the Score column is legible.
 import ScoreBadge from './ScoreBadge';
 
-/** One row of Browse's List view — the dense, quality/tags-forward counterpart
+/** One row of Browse's List view - the dense, quality/tags-forward counterpart
  *  to MediaCard. Reuses `useKeepState` for keep / "I don't care" / "OK to delete". */
 export default function MediaRow({
   item,
@@ -100,9 +100,9 @@ export default function MediaRow({
         {item.sizeMismatch && (
           <span
             className="mr-1 cursor-help text-amber-400"
-            title={`Plex ${formatGB(item.sizeBytes)} vs *arr ${
+            title={`Server ${formatGB(item.sizeBytes)} vs *arr ${
               item.arrSizeBytes != null ? formatGB(item.arrSizeBytes) : '—'
-            } — possible partial/broken file`}
+            } - possible partial/broken file`}
           >
             ⚠
           </span>
@@ -172,7 +172,7 @@ export default function MediaRow({
             type="button"
             onClick={() => void toggleKeep()}
             disabled={busy}
-            title={keptByOthers && !keptByMe ? 'Kept by someone else — keep it yourself too' : undefined}
+            title={keptByOthers && !keptByMe ? 'Kept by someone else - keep it yourself too' : undefined}
             className={`w-16 shrink-0 rounded px-2 py-1 text-center text-[11px] disabled:opacity-60 ${
               keptByMe
                 ? 'bg-brand font-semibold text-ink'
@@ -202,7 +202,7 @@ export default function MediaRow({
               type="button"
               onClick={() => void toggleDelete()}
               disabled={deleteBusy}
-              title="You requested this — mark it OK to delete"
+              title="You requested this - mark it OK to delete"
               className={`w-28 shrink-0 whitespace-nowrap rounded px-2 py-1 text-center text-[11px] disabled:opacity-60 ${
                 markedForDelete
                   ? 'bg-rose-800 font-semibold text-rose-100'

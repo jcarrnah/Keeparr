@@ -6,7 +6,7 @@ import { getPlexClientId } from './settings';
  * checks) and the Plex Media Server read API (libraries, items, size-on-disk).
  * Node-only (used from route handlers + the sync engine with runtime 'nodejs').
  *
- * API details verified against Overseerr/python-plexapi — see CLAUDE.md.
+ * API details verified against Overseerr/python-plexapi - see CLAUDE.md.
  */
 
 export const PLEX_PRODUCT = 'Keeparr';
@@ -112,7 +112,7 @@ export interface ServerConnection {
 
 /**
  * The URL discovery should actually connect to. For a LAN-local connection,
- * prefer the raw `http://<ip>:<port>` — it's reliably reachable from inside a
+ * prefer the raw `http://<ip>:<port>` - it's reliably reachable from inside a
  * Docker container, unlike the `.plex.direct` `uri`, which needs public DNS +
  * HTTPS cert validation and typically fails from a bridge network. Remote/relay
  * connections keep the `.plex.direct` uri (that's the only routable option).
@@ -138,8 +138,8 @@ function ipv4FromUri(uri: string): string | null {
 }
 
 /** Docker's default address pool (172.16.0.0/12). When Plex runs in Docker it
- *  advertises a "local" connection for every bridge network — none reachable
- *  from another container — so these are noise. */
+ *  advertises a "local" connection for every bridge network - none reachable
+ *  from another container - so these are noise. */
 function isDockerBridge(ip: string): boolean {
   const p = ip.split('.').map(Number);
   return p[0] === 172 && p[1] >= 16 && p[1] <= 31;
@@ -153,8 +153,8 @@ function connRank(c: ServerConnection): number {
 
 /**
  * Trim a server's advertised connections to the useful ones for the discovery
- * UI: drop Docker-bridge addresses and order LAN → WAN → relay. Never returns
- * empty — falls back to all connections if filtering would remove everything.
+ * UI: drop Docker-bridge addresses and order LAN -> WAN -> relay. Never returns
+ * empty - falls back to all connections if filtering would remove everything.
  */
 export function usefulServerConnections(
   connections: ServerConnection[]
@@ -257,30 +257,14 @@ export async function getSharedUsers(
 }
 
 /**
- * Does `userPlexId` have access to the server identified by `machineId`?
- * The owner (adminPlexId) always has access. Shared users are looked up via the
- * admin token's friends list. `/api/users` returns XML, parsed by parseSharedUsers.
+ * Can the holder of these resources reach the server `machineId`? Pass the
+ * SIGNING-IN user's own `getResources()` list: it holds every server they own or
+ * have been shared, whoever set Keeparr up. The admin token's `/api/users` list
+ * is no substitute - it holds only that account's own shares, so when Keeparr
+ * was set up by a shared user rather than the server owner, nobody else matches.
  */
-export async function checkServerAccess(params: {
-  adminToken: string;
-  machineId: string;
-  userPlexId: string;
-  adminPlexId: string;
-}): Promise<boolean> {
-  if (params.userPlexId === params.adminPlexId) return true;
-  const res = await fetch(`${PLEX_TV}/api/users`, {
-    headers: {
-      'X-Plex-Token': params.adminToken,
-      'X-Plex-Client-Identifier': getClientId(),
-      'X-Plex-Product': PLEX_PRODUCT,
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`Plex checkServerAccess failed: ${res.status}`);
-  const xml = await res.text();
-  const shared = parseSharedUsers(xml);
-  const entry = shared.find((u) => u.id === params.userPlexId);
-  return !!entry && entry.machineIds.includes(params.machineId);
+export function hasServerResource(resources: PlexResource[], machineId: string): boolean {
+  return resources.some((r) => r.clientIdentifier === machineId);
 }
 
 // ---------------------------------------------------------------------------
@@ -372,8 +356,8 @@ export interface PlexMetadata {
   /** Genre tags — present in the section listing for movie/show items. */
   Genre?: { tag?: string }[];
   Media?: { Part?: { id?: number; file?: string; size?: number }[] }[];
-  /** On-disk folder(s) — present on show nodes in section listings (the series
-   *  folder). Movies carry no Location; their folder derives from Part.file. */
+  /** On-disk folder(s) of a show (the series folder); some PMS versions omit it
+   *  from section listings. Movies carry none; their folder derives from Part.file. */
   Location?: { path: string }[];
 }
 
@@ -416,10 +400,8 @@ export function sumLeafSizes(nodes: PlexMetadata[]): number {
 /**
  * Extract tmdb/tvdb ids from a node, as comma-joined lists (or null). A single
  * Plex item can legitimately carry MULTIPLE tvdb/tmdb ids in its `Guid[]` (e.g.
- * a show merged across two TheTVDB entries) — and Sonarr/Radarr may key on any
- * of them, so we keep them ALL. Keeping only one (the old behavior took the last)
- * meant items matched the wrong id and showed up as unmatched even though the
- * right id was right there. Falls back to the legacy single-`guid` string used by
+ * a show merged across two TheTVDB entries) - and Sonarr/Radarr may key on any
+ * of them, so we keep them ALL. Falls back to the legacy single-`guid` string used by
  * older agents (`com.plexapp.agents.thetvdb://376459`) when the modern array is
  * absent. The stored value may be a CSV like "376459,407505"; `ratingKeysByGuid`
  * splits it so any id matches.
@@ -438,7 +420,7 @@ export function extractGuids(node: PlexMetadata): {
     else if (g.id?.startsWith('imdb://')) imdb.add(g.id.slice('imdb://'.length));
   }
   // Legacy-agent fallback: the external id is inline in the single `guid` string.
-  // `thetvdb` contains "tvdb" / `themoviedb` is the tmdb agent — match either form.
+  // `thetvdb` contains "tvdb" / `themoviedb` is the tmdb agent - match either form.
   if (node.guid) {
     if (tvdb.size === 0) {
       const m = /(?:thetvdb|tvdb):\/\/(\d+)/i.exec(node.guid);
@@ -489,7 +471,7 @@ export async function getSectionItems(
 
 /**
  * The most recently added items in a section (newest first), capped at `limit`.
- * Cheap alternative to a full scan — used by the Recently Added job to pick up
+ * Cheap alternative to a full scan - used by the Recently Added job to pick up
  * new titles between full scans. type 1=movie, 2=show.
  */
 export async function getRecentlyAdded(
@@ -625,18 +607,19 @@ const PMS_OWNER_ACCOUNT_ID = '1';
 /**
  * Every user's play history, rolled up the way `watch_history` stores it
  * (movies by their own key, episodes by their series). This is the deep source:
- * on a live server it spans 4+ years and ~99k rows, where Tautulli only covers
+ * on a live server it spans 4+ years and over 100k rows, where Tautulli only covers
  * however long it has been installed.
  *
- * `ownerId` is the owner's plex.tv id (`getOwnerId()`). Shared users appear in
+ * `ownerId` is the server owner's Keeparr user id (never `getOwnerId()`, which
+ * names whoever set Keeparr up). Shared users appear in
  * history under their plex.tv id, but **the owner appears as `1`** - PMS's local
  * account id. Without the remap the owner's rows would key to a `plex_user_id`
  * no Keeparr user has, so their own watched badges and filters would silently
- * miss every native row. Verified on a live server: history `accountID` 1 =
- * the same account Tautulli reports as user_id 22839572.
+ * miss every native row. Verified on a live server: history `accountID` 1 is
+ * the owner, the same person Tautulli reports under their plex.tv id.
  *
  * Rows whose media has since been deleted lose their `ratingKey`/`grandparentKey`
- * (Plex keeps the view, drops the pointer) and are skipped - about 4% of rows.
+ * (Plex keeps the view, drops the pointer) and are skipped - a few percent of rows.
  *
  * Throws rather than returning a short list if paging can't complete: a silently
  * truncated history would mark watched titles as never-watched, which is the

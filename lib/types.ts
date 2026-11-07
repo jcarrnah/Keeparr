@@ -207,7 +207,7 @@ export interface MediaCardData {
   keptByMe?: boolean;
   /** True when the current user has marked this "don't care". */
   skipped?: boolean;
-  /** True when the current user has watched it (any plays, from Tautulli). */
+  /** True when the current user has watched it (any plays, from any watch source). */
   watched?: boolean;
   // --- FORK: OMDb ratings (swipe cards; undefined until the ratings job ran) ---
   imdbRating?: number;
@@ -237,7 +237,7 @@ export interface MediaCardData {
   requestedByMe?: boolean;
   /** True when the current user marked this "OK to delete". */
   markedForDeleteByMe?: boolean;
-  /** True when anyone marked it "OK to delete" — carries NO identity (Browse
+  /** True when anyone marked it "OK to delete" - carries NO identity (Browse
    *  never reveals who, except via markedForDeleteByMe). */
   markedForDeleteAny?: boolean;
   // --- Sonarr/Radarr metadata (present only when the title is arr-matched) ---
@@ -245,7 +245,7 @@ export interface MediaCardData {
   source?: string;
   instanceName?: string;
   monitored?: boolean;
-  /** Raw arr status (continuing/ended/released…). */
+  /** Raw arr status (continuing/ended/released...). */
   status?: string;
   /** Movie: actual file quality; series: quality profile name. */
   quality?: string;
@@ -294,6 +294,8 @@ export interface SessionUser {
   isAdmin: boolean;
   /** False = account is blocked from signing in. */
   enabled: boolean;
+  /** True once the user finished or skipped the Keep-page tour. */
+  tutorialDone: boolean;
 }
 
 /** A user as the admin "Users" management screen sees them. */
@@ -305,7 +307,7 @@ export interface AdminUserRow {
   isAdmin: boolean;
   /** False = account is blocked from signing in. */
   enabled: boolean;
-  /** True for the server Owner (plex_owner_id) — admin can never be revoked. */
+  /** True for the server Owner (plex_owner_id) - admin can never be revoked. */
   isOwner: boolean;
   lastLogin: number | null;
   createdAt: number;
@@ -320,7 +322,7 @@ export interface SyncStatus {
 
 export type JobStatus = 'never' | 'running' | 'ok' | 'error';
 
-/** One app-event log line (Settings → Logs). */
+/** One app-event log line (Settings -> Logs). */
 export interface LogRow {
   id: number;
   ts: number;
@@ -360,14 +362,14 @@ export type ProblemType =
   | 'missingFromPlex' // downloaded in *arr but not in the media server (arr_unmatched)
   | 'identityMismatch' // same folder claimed under two different external ids (server vs *arr)
   | 'duplicates' // two+ media items sharing an external id
-  | 'arrConflicts' // two *arr instances claiming the same media item
+  | 'arrConflicts' // two *arr records claiming one media item (two instances, or two titles of one)
   | 'zeroSize' // media server reports the title but no file bytes
   | 'removedButKept' // gone from the media server while someone still keeps it
-  | 'missingIds' // no tvdb/tmdb/imdb id — can never match *arr
-  | 'diskOrphans'; // on disk under a mapped library path, claimed by neither side
+  | 'missingIds' // no tvdb/tmdb/imdb id - can never match *arr
+  | 'diskOrphans'; // on disk under a mapped library root, claimed by neither the server nor *arr
 
 /** One pill on the Problems page.
- *  `bytes` semantics vary per category: sizeMismatch = summed |Plex−arr| delta;
+ *  `bytes` semantics vary per category: sizeMismatch = summed |Plex-arr| delta;
  *  missingFromPlex/arrConflicts = summed *arr size on disk; duplicates = summed
  *  member bytes (and `titles` = GROUP count, not item count); zeroSize = always 0;
  *  removedButKept = summed last-known sizes; notInArr/missingIds = summed Plex sizes. */
@@ -375,10 +377,10 @@ export interface ProblemCategorySummary {
   type: ProblemType;
   /** False = category can't run (arr not configured / storage unmapped / never scanned). */
   available: boolean;
-  /** Reserved for future not-yet-built categories — the UI shows a dimmed
+  /** Reserved for future not-yet-built categories - the UI shows a dimmed
    *  "Planned" pill. (No category sets it today; kept for API stability.) */
   planned?: boolean;
-  /** Why an otherwise-buildable category is unavailable — the UI shows a dimmed
+  /** Why an otherwise-buildable category is unavailable - the UI shows a dimmed
    *  pill with a fix-it tooltip instead of hiding it. */
   reason?: 'storage_not_configured' | 'not_scanned';
   titles: number;
